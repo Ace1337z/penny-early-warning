@@ -23,7 +23,7 @@
 #
 set -euo pipefail
 
-REPO_DEFAULT="https://github.com/USER/penny-early-warning"
+REPO_DEFAULT="https://github.com/Ace1337z/penny-early-warning"
 INSTALL_DIR="${PENNY_INSTALL_DIR:-/opt/penny}"
 PENNY_URL="${PENNY_URL:-$REPO_DEFAULT}"
 PENNY_VERSION="${PENNY_VERSION:-main}"
