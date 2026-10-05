@@ -4,7 +4,7 @@
 #
 # Usage (run directly, NOT piped into bash, so it can read your answers):
 #
-#   wget https://raw.githubusercontent.com/<USER>/penny-early-warning/main/install.sh
+#   wget https://raw.githubusercontent.com/Ace1337z/penny-early-warning/main/install.sh
 #   bash install.sh
 #
 # It is idempotent: running it again keeps existing values (shown masked;
@@ -14,7 +14,7 @@
 #   PENNY_NONINTERACTIVE=1
 #   PENNY_INSTALL_DIR=/opt/penny
 #   PENNY_VERSION=main            # or a tag such as v1.0.0
-#   PENNY_URL=https://github.com/<USER>/penny-early-warning
+#   PENNY_URL=https://github.com/Ace1337z/penny-early-warning
 #   MOOMOO_API_KEY=... MOOMOO_PRIVATE_KEY_PATH=... FINVIZ_TOKEN=...
 #   TELEGRAM_TOKEN=... TELEGRAM_CHAT_ID=... AI_BASE_URL=... AI_KEY=... AI_MODELS=...
 #   SEC_USER_AGENT="Name email" ...
