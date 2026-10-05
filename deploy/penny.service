@@ -1,6 +1,6 @@
 [Unit]
 Description=Penny Stock Early-Warning System
-Documentation=https://github.com/USER/penny-early-warning
+Documentation=https://github.com/Ace1337z/penny-early-warning
 After=network-online.target
 Wants=network-online.target
 
