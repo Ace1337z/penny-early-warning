@@ -163,7 +163,7 @@ DEFAULTS: dict[str, str] = {
     "SCORE_FROMHIGH_CAP": "15",
     "SCORE_DOLLAR_CAP": "100000",
     # --- Install / updater ---
-    "PENNY_URL": "https://github.com/USER/penny-early-warning",
+    "PENNY_URL": "https://github.com/Ace1337z/penny-early-warning",
     "PENNY_VERSION": "main",
     "INSTALL_DIR": "/opt/penny",
     "PENNY_HOME": "",
