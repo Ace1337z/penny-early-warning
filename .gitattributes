@@ -1,0 +1,8 @@
+# Normalise line endings in the repository.
+# Shell scripts must be LF so they run on Linux after a GitHub archive download.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gz binary
+*.gpg binary
+*.enc binary

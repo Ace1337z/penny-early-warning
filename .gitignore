@@ -1,0 +1,50 @@
+# Secrets and configuration (NEVER commit)
+.env
+*.env
+config.env
+penny.env
+secrets/
+*.key
+*.pem
+private_key*
+moomoo_private_key*
+
+# Databases and learning state
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/
+var/
+state/
+journal/
+bars/
+backups/
+logs/
+*.log
+*.out
+models_catalog.json
+
+# Runtime
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
