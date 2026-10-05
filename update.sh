@@ -15,7 +15,7 @@
 set -euo pipefail
 
 INSTALL_DIR="${PENNY_INSTALL_DIR:-/opt/penny}"
-PENNY_URL="${PENNY_URL:-https://github.com/USER/penny-early-warning}"
+PENNY_URL="${PENNY_URL:-https://github.com/Ace1337z/penny-early-warning}"
 PENNY_VERSION=""
 ROLLBACK=0
 
