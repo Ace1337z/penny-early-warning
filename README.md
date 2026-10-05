@@ -75,7 +75,7 @@ Download the installer and run it **directly** (not piped into `bash`, so it can
 your answers). It asks for every credential *first*, before anything is downloaded.
 
 ```bash
-wget https://raw.githubusercontent.com/<USER>/penny-early-warning/main/install.sh
+wget https://raw.githubusercontent.com/Ace1337z/penny-early-warning/main/install.sh
 bash install.sh
 ```
 
