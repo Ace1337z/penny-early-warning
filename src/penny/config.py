@@ -56,10 +56,21 @@ DEFAULTS: dict[str, str] = {
     # --- Finviz ---
     "FINVIZ_TOKEN": "",
     "FINVIZ_BASE": "https://elite.finviz.com",
-    "FINVIZ_VIEW": "111",
+    # Custom view: the Overview view (111) ignores `c=` and omits float, short
+    # float and average volume, so the report/verify columns must use 152.
+    "FINVIZ_VIEW": "152",
     "FINVIZ_FILTERS": "sh_price_u10,ind_stocksonly",
-    "FINVIZ_COLUMNS": "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66",
+    # 0..66 (custom view) plus the price/volume columns the quote shape reads:
+    # 67 Volume, 71/72 After-Hours Close/Change, 81 Prev Close, 86/87/88 Open/High/Low,
+    # 90..99 intraday performance. Without 67 the cumulative volume is always 0,
+    # which zeroes Volx and stops every tier from ever being reached.
+    "FINVIZ_COLUMNS": "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,71,72,81,86,87,88,90,91,92,93,94,95,96,97,98,99",
     "FINVIZ_SIGNALS": "top_gainers,new_high,most_active,unusual_volume,overbought,oversold,insider_buying",
+    # Intraday top-gainers screens (Elite). These surface a stock that is being
+    # bought *right now*, before it reaches the daily top-gainers list. Only the
+    # top_gainers/top_losers bases honour a timeframe suffix.
+    "FINVIZ_INTRADAY_SIGNALS": "top_gainers_1m,top_gainers_5m",
+    "FINVIZ_EXTENDED_HOURS": "1",
     "FINVIZ_MOVERS_TTL": "15",
     "FINVIZ_QUOTE_BATCH": "40",
     # --- Other sources ---
@@ -124,7 +135,7 @@ DEFAULTS: dict[str, str] = {
     "RISK_USD": "50",
     "BASELINE_FALLBACK": "300",
     "BASELINE_MIN_PER_MIN": "20",
-    "FINVIZ_MAX_PER_MIN": "20",
+    "FINVIZ_MAX_PER_MIN": "30",
     # --- Momentum-build watch feed (tier 1 before the alert bar) ---
     "BUILD_FEED": "1",
     "BUILD_FEED_SECONDS": "900",
@@ -176,7 +187,8 @@ GROUPS: dict[str, list[str]] = {
     "Feed": ["DATA_PROVIDER", "MOVERS_POLL_SECONDS", "UNIVERSE_POLL_SECONDS",
              "EXTRA_SYMBOLS"],
     "Finviz": ["FINVIZ_TOKEN", "FINVIZ_BASE", "FINVIZ_VIEW", "FINVIZ_FILTERS", "FINVIZ_COLUMNS",
-               "FINVIZ_SIGNALS", "FINVIZ_MOVERS_TTL", "FINVIZ_QUOTE_BATCH"],
+               "FINVIZ_SIGNALS", "FINVIZ_INTRADAY_SIGNALS", "FINVIZ_EXTENDED_HOURS",
+               "FINVIZ_MOVERS_TTL", "FINVIZ_QUOTE_BATCH"],
     "Other sources": ["ALPACA_KEY", "ALPACA_SECRET", "ALPACA_FEED", "FINNHUB_KEY", "SEC_USER_AGENT"],
     "Telegram": ["TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"],
     "Shariah": ["HALALTERMINAL_API_KEY", "HALALTERMINAL_BASE_URL",

@@ -4,13 +4,14 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-160%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-187%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
 
-A server-side system that watches **every US stock priced under $10** across pre-market,
-regular and post-market sessions, and alerts you on Telegram the moment a stock starts
+A server-side system that watches **every US stock priced under $10** during the
+pre-market, regular and post-market sessions (04:00-20:00 ET; Finviz carries no
+overnight prints), and alerts you on Telegram the moment a stock starts
 building a move on rising volume - early enough to enter manually.
 
 Market-mover screeners rank by **% change**, so a stock only appears after it has already
@@ -129,7 +130,9 @@ you can act on a symbol without typing anything.
  Finviz Elite ------> the single market feed: universe rows are the whole
                      sub-$10 quote feed, plus market movers (top gainers,
                      new high, unusual volume, overbought, oversold,
-                     most active, insider buying)
+                     most active, insider buying) and the intraday (1m/5m)
+                     top-gainers screens that catch a stock being bought
+                     right now, before it reaches the daily list
                             |
                             v
                     quote normalization
@@ -209,8 +212,10 @@ activated.
 ## Features
 
 - **Whole-universe watching** - market-mover screens (top gainers, new highs, unusual
-  volume, overbought, oversold, most active, insider buying) plus a full sweep of sub-$10
-  US stocks, in all three sessions, so nothing depends on a single screener's ranking.
+  volume, overbought, oversold, most active, insider buying) plus the **intraday
+  top-gainers screens** (1m/5m), which surface a stock that is being bought *right now*,
+  plus a full sweep of sub-$10 US stocks, in all three sessions, so nothing depends on a
+  single screener's ranking.
 - **Momentum-build watch feed** - the alert bar is a *confirmed* tier-2 move. Stocks that
   are clearly accumulating (rising volume, price above VWAP) but sit just below that bar
   are surfaced separately, with the exact tier-2 gate still missing, so quiet grinds are
@@ -361,7 +366,7 @@ time changes - most changes apply from the next cycle without a restart. See
 | Group | Highlights |
 |---|---|
 | **Feed** | `DATA_PROVIDER` (Finviz), mover signals/filters, poll intervals, extra symbols |
-| **Finviz** | token, base URL, view, filters, columns |
+| **Finviz** | token, base URL, view (`152`, the custom view), filters, columns, mover + intraday signals, extended-hours preference |
 | **Other sources** | Alpaca, Finnhub, SEC contact |
 | **Telegram** | bot token and chat id |
 | **Shariah** | keys, `SHARIAH_MODE`, TTL, monthly call limit |
@@ -472,7 +477,7 @@ fake Telegram, and asserts the documented acceptance results:
 - a model that does not beat the baselines is not activated
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **160 passed**.
+Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **187 passed** (1 skipped).
 
 ---
 

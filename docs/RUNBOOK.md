@@ -222,7 +222,8 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 | No alerts during a session | `$PENNY doctor`; is `DATA_PROVIDER` reachable? Is the session open? Check `/status` and the log for feed failures |
 | "Feed failing: 5 consecutive cycles returned no quotes" | check outbound HTTPS and the Finviz token; the universe screener *is* the quote feed for sub-$10 names, so a rejected token means no feed |
 | "Finviz token rejected" | `$PENNY set FINVIZ_TOKEN` or `/set FINVIZ_TOKEN <token>` from the bot; alerts continue meanwhile |
-| Finviz rate-limited (`429`) | lower `FINVIZ_MAX_PER_MIN` (default 20) and `UNIVERSE_POLL_SECONDS`; the client caches and back-fills |
+| Finviz rate-limited (`429`) | lower `FINVIZ_MAX_PER_MIN` (default 30; measured safe at 30/min) and `UNIVERSE_POLL_SECONDS`; the client caches, back-fills and honours `Retry-After` |
+| A stock is clearly running but never alerts or shows in `/builds` | confirm the feed has **Volume**: `FINVIZ_COLUMNS` must include `67`. Without it every `volx` is 0 and no tier or build can fire. Use the shipped default columns; `verify()` must use `FINVIZ_VIEW=152`, not the Overview view `111` |
 | `SETUP: NONE` on a `/check` | not an error: the alert bar is `WATCH` and above. The `SETUP` line names the unmet rule (move, volume, dollars, VWAP). `/check` reports any symbol on demand |
 | Nothing building in `/builds` | expected on a quiet tape; the feed only lists stocks meeting `BUILD_RISE15`/`BUILD_VOLX15`/`BUILD_DOLLAR15` with `BUILD_MIN_MINUTES` of history. Lower `BUILD_MIN_SCORE` to widen it |
 | `/builds` feed too chatty | raise `BUILD_FEED_SECONDS` (default 900) and/or `BUILD_MIN_SCORE`; `BUILD_FEED=0` turns it off entirely |

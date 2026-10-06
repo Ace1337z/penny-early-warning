@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from .fib import FibLevels, TradePlan, fib_levels, trade_plan
-from .sources.finviz import FinvizTokenRejected, row_get, row_num
+from .sources.finviz import FinvizTokenRejected, avg_volume_shares, row_get, row_num
 from .technicals import Technicals, analyze
 from .util import ET, age_str, safe_div
 
@@ -356,7 +356,7 @@ class Enricher:
             mismatch.append(f"volume feed {m_volume:.0f} vs Finviz {f_volume:.0f}")
         return {
             "row": row,
-            "float_shares": row_num(row, "Float"),
+            "float_shares": row_num(row, "Shares Float", "Float"),
             "market_cap": row_num(row, "Market Cap"),
             "sector": row_get(row, "Sector") or "",
             "verification": {
@@ -366,8 +366,8 @@ class Enricher:
                 "price": f_price,
                 "change_pct": f_change,
                 "volume": f_volume,
-                "avg_volume": row_num(row, "Avg Volume"),
-                "rel_volume": row_num(row, "Rel Volume"),
+                "avg_volume": avg_volume_shares(row),
+                "rel_volume": row_num(row, "Relative Volume", "Rel Volume"),
                 "short_float": row_num(row, "Short Float"),
                 "earnings": row_get(row, "Earnings") or "",
             },

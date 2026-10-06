@@ -33,9 +33,64 @@ SIGNALS: dict[str, str] = {
     "insider_selling": "it_latestsales",
     "upgrades": "n_upgrades",
     "downgrades": "n_downgrades",
+    # Intraday top gainers/losers (Elite). These catch a stock that is being
+    # bought *right now*, before it reaches the daily top-gainers screen.
+    "top_gainers_1m": "ta_topgainers_1m",
+    "top_gainers_5m": "ta_topgainers_5m",
+    "top_gainers_15m": "ta_topgainers_15m",
+    "top_gainers_30m": "ta_topgainers_30m",
+    "top_gainers_1h": "ta_topgainers_1h",
+    "top_losers_1m": "ta_toplosers_1m",
+    "top_losers_5m": "ta_toplosers_5m",
+    "top_losers_15m": "ta_toplosers_15m",
+    "top_losers_30m": "ta_toplosers_30m",
+    "top_losers_1h": "ta_toplosers_1h",
 }
 DEFAULT_SIGNALS = ("top_gainers", "new_high", "most_active", "unusual_volume",
                    "overbought", "oversold", "insider_buying")
+
+# Only the top gainers/losers bases honour an intraday timeframe suffix on the
+# Elite export endpoint. Every other base silently ignores the suffix and
+# returns the whole universe instead (thousands of rows), so those are refused.
+INTRADAY_TIMEFRAMES = ("1m", "5m", "15m", "30m", "1h")
+INTRADAY_BASES = ("ta_topgainers", "ta_toplosers")
+
+# Views that render a fixed column set and ignore `c=` (Overview 111, Valuation
+# 121, Ownership 131, Performance 141, Financial 161, Technical 171). Requesting
+# custom columns against one of these silently drops them, which once zeroed
+# Volume and stopped every tier and build from firing, so a custom column request
+# always falls back to the custom view (152).
+FIXED_VIEWS = {"111", "121", "131", "141", "161", "171"}
+DEFAULT_VIEW = "152"
+
+# Finviz intraday performance columns, keyed by the scorer's window minutes.
+PERF_COLUMNS: tuple[tuple[int, str], ...] = (
+    (5, "Performance (5 Minutes)"),
+    (15, "Performance (15 Minutes)"),
+    (60, "Performance (1 Hour)"),
+    (240, "Performance (4 Hours)"),
+)
+
+
+def intraday_signal_ok(code: str) -> bool:
+    """True when `code` honours an intraday timeframe (or has none)."""
+    for tf in INTRADAY_TIMEFRAMES:
+        suffix = "_" + tf
+        if code.endswith(suffix):
+            return code[: -len(suffix)] in INTRADAY_BASES
+    return True
+
+
+def avg_volume_shares(row: dict[str, str]) -> Optional[float]:
+    """Average daily volume in raw shares.
+
+    Finviz's `Average Volume` column is in thousands (583.28 == 583.28K) while
+    the test doubles and other feeds provide `Avg Volume` in raw shares.
+    """
+    thousands = row_num(row, "Average Volume")
+    if thousands is not None:
+        return thousands * 1000.0
+    return row_num(row, "Avg Volume")
 
 # Fixed link table (5.2). Adding a link needs no new authentication code.
 FINVIZ_LINKS: dict[str, str] = {
@@ -63,7 +118,7 @@ class FinvizClient(BaseClient):
     def __init__(self, cfg, secrets: Optional[Iterable[str]] = None):
         super().__init__(cfg, secrets)
         self.base = str(cfg.raw("FINVIZ_BASE") or "https://elite.finviz.com").rstrip("/")
-        self.limiter = RateLimiter(rate=max(1, cfg.int("FINVIZ_MAX_PER_MIN", 20)), per_seconds=60.0)
+        self.limiter = RateLimiter(rate=max(1, cfg.int("FINVIZ_MAX_PER_MIN", 30)), per_seconds=60.0)
         self._token_rejected = False
         self._rejected_token = ""
 
@@ -143,12 +198,21 @@ class FinvizClient(BaseClient):
         return rows
 
     # -- use cases ----------------------------------------------------------
-    def screener(self, *, tickers: str = "", filters: str = "", view: str = "152",
+    def screener(self, *, tickers: str = "", filters: Optional[str] = None,
+                 view: str = "",
                  columns: str = "", signal: str = "", order: str = "",
                  ttl: float = 0.0) -> list[dict[str, str]]:
+        # `filters=None` means "use the configured sub-price screen"; an explicit
+        # "" means unfiltered (used for single-symbol lookups such as verify).
+        view = view or self.cfg.raw("FINVIZ_VIEW") or DEFAULT_VIEW
+        if columns and view in FIXED_VIEWS:
+            # That view ignores c=; without this the requested columns (including
+            # Volume) would be dropped and no tier or build could ever fire.
+            log.warning("finviz: view %s ignores custom columns; using %s", view, DEFAULT_VIEW)
+            view = DEFAULT_VIEW
         params = {
-            "v": view or self.cfg.raw("FINVIZ_VIEW") or "152",
-            "f": filters or self.cfg.raw("FINVIZ_FILTERS") or "",
+            "v": view,
+            "f": self.cfg.raw("FINVIZ_FILTERS") if filters is None else filters,
         }
         if tickers:
             params["t"] = tickers
@@ -162,7 +226,7 @@ class FinvizClient(BaseClient):
 
     def universe(self, ttl: float = 300.0) -> list[dict[str, str]]:
         """Universe rows for the sub-price screen (6.2). Doubles as the quote feed."""
-        return self.screener(filters=self.cfg.raw("FINVIZ_FILTERS"),
+        return self.screener(filters=None,
                              columns=self.cfg.raw("FINVIZ_COLUMNS"),
                              ttl=ttl)
 
@@ -170,11 +234,20 @@ class FinvizClient(BaseClient):
     def movers(self, session: Optional[str] = None, top_n: int = 200,
                signals: Optional[Iterable[str]] = None) -> list[dict[str, str]]:
         """Rows for every configured market-mover screen: top gainers, new highs,
-        unusual volume, overbought, oversold, most active, recent insider buying."""
+        unusual volume, overbought, oversold, most active, recent insider buying,
+        plus the intraday (1m/5m/15m) top-gainers screens that catch a stock
+        being bought right now.
+
+        An intraday timeframe is only honoured by the top-gainers/losers bases;
+        anything else silently returns the whole universe, so those are skipped.
+        """
         session = session or session_for()
         if session == "closed":
             return []
-        names = list(signals) if signals is not None else self.cfg.list("FINVIZ_SIGNALS")
+        if signals is not None:
+            names = list(signals)
+        else:
+            names = self.cfg.list("FINVIZ_SIGNALS") + self.cfg.list("FINVIZ_INTRADAY_SIGNALS")
         if not names:
             names = list(DEFAULT_SIGNALS)
         ttl = max(0.0, self.cfg.float("FINVIZ_MOVERS_TTL", 15.0))
@@ -184,6 +257,9 @@ class FinvizClient(BaseClient):
         seen: set[str] = set()
         for name in names:
             signal = SIGNALS.get(name, name)
+            if not intraday_signal_ok(signal):
+                log.warning("finviz movers: %s ignores intraday timeframes; skipping", signal)
+                continue
             try:
                 rows = self.screener(filters=filters, signal=signal, columns=columns, ttl=ttl)
             except FinvizTokenRejected:
@@ -231,24 +307,44 @@ class FinvizClient(BaseClient):
     def normalize_row(self, row: dict[str, str], session: str) -> Optional[dict]:
         """Turn one screener row into the system's quote shape (6.4).
 
-        Finviz has no bid/ask and no per-session split price, so those stay empty;
-        the previous close is derived from the Change percentage.
+        Finviz has no bid/ask, so those stay empty. The previous close comes from
+        the Change percentage (or the `Prev Close` column). In pre/post the
+        regular `Price`/`Change` stay frozen at the last regular close, so the
+        dedicated After-Hours Close/Change columns are preferred when present.
         """
         symbol = str(row_get(row, "Ticker") or "").upper().strip()
         if not symbol:
             return None
         price = row_num(row, "Price")
+        change_pct = row_num(row, "Change")
+        # Only the post session needs the override: Finviz keeps Price/Change at
+        # the regular close after 16:00, with the real move in After-Hours
+        # Close/Change. In pre-market Finviz already folds the pre-market print
+        # into Price/Change, and the After-Hours columns would be yesterday's.
+        extended = session == "post"
+        if extended and self.cfg.bool("FINVIZ_EXTENDED_HOURS", True):
+            ah_price = row_num(row, "After-Hours Close")
+            ah_change = row_num(row, "After-Hours Change")
+            if ah_price and ah_price > 0:
+                # Express the move from the regular close so pct_vs_close
+                # includes the extended-hours move.
+                base = price if (price and price > 0) else None
+                if base is not None and ah_change is not None:
+                    price = base * (1 + ah_change / 100.0)
+                else:
+                    price = ah_price
         if not price or price <= 0:
             return None
-        change_pct = row_num(row, "Change")
         prev_close = None
         if change_pct is not None and (1 + change_pct / 100.0) > 0:
             prev_close = price / (1 + change_pct / 100.0)
-        else:
-            prev_close = row_num(row, "Previous Close")
+        if prev_close is None or extended:
+            # The Change-derived value is wrong once an extended price is used,
+            # and is unavailable when the Change column is blank.
+            prev_close = row_num(row, "Prev Close", "Previous Close") or prev_close
         volume = row_num(row, "Volume") or 0.0
-        avg_volume = row_num(row, "Avg Volume")
-        rel_volume = row_num(row, "Rel Volume")
+        avg_volume = avg_volume_shares(row)
+        rel_volume = row_num(row, "Relative Volume", "Rel Volume")
         return {
             "symbol": symbol,
             "code": symbol,
@@ -262,20 +358,27 @@ class FinvizClient(BaseClient):
             "bid": None,
             "ask": None,
             "market_cap": row_num(row, "Market Cap"),
-            "float_shares": row_num(row, "Float", "Shares Float"),
+            "float_shares": row_num(row, "Shares Float", "Float"),
             "avg_volume": avg_volume,
             "rel_volume": rel_volume,
             "sector": row_get(row, "Sector") or "",
             "change_pct": change_pct,
+            "intraday_perf": {str(mins): row_num(row, col) for mins, col in PERF_COLUMNS
+                              if row_num(row, col) is not None},
             "halted": False,
             "session": session,
             "source": "finviz",
         }
 
     def verify(self, ticker: str) -> Optional[dict[str, str]]:
-        """Verification row for one alerted stock (6.7)."""
+        """Verification row for one alerted stock (6.7).
+
+        Uses the configured view (default 152) so the custom column set applies: the
+        Overview view (111) ignores `c=` and omits float, short float and average volume.
+        """
         try:
-            rows = self.screener(tickers=ticker, filters="", view="111",
+            rows = self.screener(tickers=ticker, filters="",
+                                 view=self.cfg.raw("FINVIZ_VIEW") or "152",
                                  columns=self.cfg.raw("FINVIZ_COLUMNS"), ttl=0)
         except FinvizTokenRejected:
             raise

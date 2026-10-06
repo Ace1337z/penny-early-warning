@@ -18,7 +18,7 @@ from .enrich import Enricher
 from .fib import reentry_guidance
 from .market_context import MarketContextProvider
 from .scoring import (PHASE_EXTENDED, PHASE_FADING, TIER_EARLY, Metrics, Scorer)
-from .sources.finviz import FinvizTokenRejected, row_get, row_num
+from .sources.finviz import FinvizTokenRejected, avg_volume_shares, row_get, row_num
 from .ui import button, cb, inline
 from .util import (SESSION_CLOSED, age_str, is_trading_day, money, pct, session_end,
                    session_for, to_et)
@@ -143,7 +143,7 @@ class Engine:
                         continue
                     symbols.append(ticker)
                     fresh[ticker] = row
-                    avg = row_num(row, "Avg Volume")
+                    avg = avg_volume_shares(row)
                     if avg:
                         self.avg_volume[ticker] = avg
                 if fresh:

@@ -17,9 +17,12 @@ needs a live check.
 - **Default adopted:** yes — `FinvizClient.universe()` returns the screened rows and
   `normalize_row()` maps each to the system's quote shape. Finviz has no bid/ask and no
   per-session split price, so `bid`/`ask` stay empty. The previous close is derived from the
-  `Change` percentage (`price / (1 + change/100)`), falling back to a `Previous Close`
-  column. `DATA_PROVIDER` defaults to `finviz`; there is **no second quote feed**.
-- **Status:** **TO CONFIRM** on the VPS (acceptance tests 1, 5).
+  `Change` percentage (`price / (1 + change/100)`), falling back to the `Prev Close` column
+  (which is required once an extended-hours price is used). `DATA_PROVIDER` defaults to
+  `finviz`; there is **no second quote feed**. The `Average Volume` column is in
+  **thousands** and is multiplied by 1000 by `avg_volume_shares()`.
+- **Status:** **TO CONFIRM** on the VPS (acceptance tests 1, 5); the column set and volume
+  units were verified against a live Elite account (see C23).
 - **Where:** `src/penny/sources/finviz.py` (`universe`, `snapshot`, `normalize_row`),
   `src/penny/engine.py` (`build_universe`, `_fetch_quotes`).
 
@@ -36,19 +39,30 @@ needs a live check.
 ## C3 — Does the Finviz `Volume` column include extended hours?
 - **Question:** is the screener's `Volume` the full-day cumulative volume, and does it
   include pre/post? Is it refreshed during extended sessions?
-- **Default adopted:** treat `Volume` as the cumulative day volume and use it for Volx and
-  dollar volume. Extended-session prices are not split out (Finviz returns one price), so
-  the session is recorded from the clock, not from the row.
+- **Default adopted:** `Volume` is the cumulative day volume (used for Volx and dollar
+  volume); `Relative Volume` is volume divided by average volume. In the **post** session
+  Finviz keeps `Price`/`Change` at the regular close and the real move sits in
+  `After-Hours Close`/`After-Hours Change`, so those are preferred when
+  `FINVIZ_EXTENDED_HOURS=1` (default) and the move is expressed from the regular close so
+  `% vs close` includes it. In **pre-market** Finviz already folds the pre-market print into
+  `Price`/`Change` (the after-hours columns would be yesterday's), so no override is applied.
+  The session is also recorded from the clock, not from the row.
 - **Status:** **TO CONFIRM** against a live screener call at 09:00 and 17:00 ET.
 
 ## C4 — Safe request rate and latency from the VPS
 - **Question:** what Finviz request rate is safe, and what latency is achievable?
-- **Default adopted:** `FINVIZ_MAX_PER_MIN` (20) global rate limit; movers polled every
+- **Default adopted:** `FINVIZ_MAX_PER_MIN` (30) global rate limit; movers polled every
   `MOVERS_POLL_SECONDS` (20 s) with a `FINVIZ_MOVERS_TTL` (15 s) cache; universe/quote feed
   refreshed every `UNIVERSE_POLL_SECONDS` (30 s) during sessions, hourly when closed. Targeted
   snapshots batch `FINVIZ_QUOTE_BATCH` (40) tickers per `t=` call. HTTP 429 waits
   `Retry-After` or `2^n` seconds.
-- **Status:** **TO CONFIRM** on the VPS (acceptance tests 1, 9).
+- **Measured:** against a live Elite account, 60 single-symbol exports paced at **30/min**
+  completed with **zero 429s** and ~0.3 s median latency (first call ~1 s). The in-session
+  cycle wants 7 daily + 2 intraday mover calls per 20 s plus one universe call per 30 s
+  (~29/min), so the default was raised from 20 to 30 to stop the limiter queueing and
+  stretching the cadence.
+- **Status:** **TO CONFIRM** on the VPS (acceptance tests 1, 9); 429 handling is already
+  in place if the Elite plan is stricter.
 
 ## C5 — WebSocket push
 - **Question:** authentication and subscription quota for WebSocket push.
@@ -60,14 +74,15 @@ needs a live check.
   with Avg Volume, Rel Volume, Float, Short Float, Market Cap, Change, Price; multi-ticker
   `t=`; extended-hours prices; news; insiders; groups/calendar/latest-filings columns;
   request limits.
-- **Default adopted:** filters `sh_price_u10,ind_stocksonly` and the full custom view
-  `c=0..66` (`FINVIZ_FILTERS`, `FINVIZ_COLUMNS`) so Avg Volume, Rel Volume, Float, Short
-  Float, Market Cap and Sector are present; mover screens add `s=<signal>` from
-  `FINVIZ_SIGNALS`. The fixed links in section 5.2 are used with the token read **per
-  request** from `FINVIZ_TOKEN`; HTML or HTTP 401/403 means the token is invalid. If average
-  volume is missing, the baseline falls back to 300 shares/min. Unsupported elements are
-  skipped and listed under "missing". Finviz calls are capped by `FINVIZ_MAX_PER_MIN` (20)
-  and cached.
+- **Default adopted:** filters `sh_price_u10,ind_stocksonly` and the extended custom view
+  `c=0..66,67,71,72,81,86,87,88,90..99` (84 columns; `FINVIZ_FILTERS`, `FINVIZ_COLUMNS`) so
+  Avg Volume, Rel Volume, Float, Short Float, Market Cap and Sector **plus** Volume, Prev
+  Close, After-Hours Close/Change, O/H/L and the intraday Performance columns are present;
+  mover screens add `s=<signal>` from `FINVIZ_SIGNALS` and `FINVIZ_INTRADAY_SIGNALS`. The
+  fixed links in section 5.2 are used with the token read **per request** from
+  `FINVIZ_TOKEN`; HTML or HTTP 401/403 means the token is invalid. If average volume is
+  missing, the baseline falls back to 300 shares/min. Unsupported elements are skipped and
+  listed under "missing". Finviz calls are capped by `FINVIZ_MAX_PER_MIN` (30) and cached.
 - **Status:** **TO CONFIRM** (acceptance tests 2, 6, 7). The mover `s=` codes and the exact
   column-index mapping are the main things to verify against a live Elite account.
 - **Where:** `src/penny/sources/finviz.py` (`SIGNALS`, `screener`, `movers`, `normalize_row`).
@@ -211,16 +226,19 @@ needs a live check.
   `src/penny/sources/finviz.py` (`universe`, `movers`, `FINVIZ_FILTERS`).
 
 ## C21 — Finviz rate budget vs the poll cadence
-- **Question:** one in-session cycle issues ~7 mover calls plus 1 universe call (~16/min)
-  on a shared 20/min limiter also used by market context, enrichment and `/check`. Under
-  load the limiter queues and the 20-30 s cadence stretches. How much can be trimmed?
-- **Default adopted:** **partly fixed.** The `/check` path no longer forces the hourly
-  market data (sectors/events/news) — it refreshes only the 30 s index quotes — and the two
-  Finviz verifications per symbol were collapsed into one shared row, so a manual check costs
-  fewer rate-limited calls. Remaining reductions are still open: fewer `FINVIZ_SIGNALS`, a
-  longer `FINVIZ_MOVERS_TTL`, skipping snapshots for symbols already present in the cycle's
-  rows, and/or raising `FINVIZ_MAX_PER_MIN` if the Elite plan allows it.
-- **Status:** **OPEN** (the `/check` share is reduced; the background-cycle share is not).
+- **Question:** one in-session cycle issues ~7 daily mover calls plus 2 intraday top-gainer
+  calls plus 1 universe call (~29/min) on a shared limiter also used by market context,
+  enrichment and `/check`. Under load the limiter queues and the 20-30 s cadence stretches.
+  How much can be trimmed?
+- **Default adopted:** **resolved for the steady state.** `FINVIZ_MAX_PER_MIN` is now **30**
+  (was 20) after a live probe sustained 30/min with no 429s, which covers the ~29/min cycle
+  plus a little headroom. The `/check` path no longer forces the hourly market data
+  (sectors/events/news) — it refreshes only the 30 s index quotes — and the two Finviz
+  verifications per symbol were collapsed into one shared row, so a manual check costs fewer
+  rate-limited calls. Further optional reductions: fewer `FINVIZ_SIGNALS`, a longer
+  `FINVIZ_MOVERS_TTL`, and skipping snapshots for symbols already present in the cycle's rows
+  (already done in `_fetch_quotes`).
+- **Status:** fixed (default raised); re-confirm on the VPS under a real session.
 - **Where:** `src/penny/sources/finviz.py` (`movers`, `SIGNALS`), `src/penny/engine.py`
   (`_symbols_for_cycle`, `_fetch_quotes`), `src/penny/market_context.py` (`get`),
   `src/penny/enrich.py` (`enrich`).
@@ -240,6 +258,37 @@ needs a live check.
   `_call_many`, `analyze`), `src/penny/commands.py` (`_run_check`),
   `src/penny/market_context.py` (`get`), `src/penny/enrich.py` (`enrich`, `_short`).
 
+## C23 — The missing `Volume` column and the intraday top-gainers screens
+- **Question:** why did momentum builders (e.g. VCIG, +175% intraday) never alert or even
+  appear in `/builds`, when the scanner was live and the feed looked healthy?
+- **Root cause (confirmed live):** the default custom column set ended at index `66`
+  (`Change`) and never requested `67` (`Volume`). `cum_volume` was therefore always `0`,
+  which zeroed `volx` on every symbol - so no tier gate (`volx >= 3/10/20`) and no build gate
+  (`volx15 >= 2`) could ever be met. The header also mismatched on three names
+  (`Avg Volume` vs `Average Volume`, `Rel Volume` vs `Relative Volume`, `Previous Close` vs
+  `Prev Close`) and `verify()` forced `view=111` (Overview), which ignores `c=` and drops
+  float/short/avg-volume. The two live intraday screens (`ta_topgainers_1m`, `_5m`) and the
+  bigger universe payload then made the built-in 20/min limiter a real constraint.
+- **Default adopted:** the custom view is `v=152` with
+  `c=0..66,67,71,72,81,86,87,88,90..99` (84 columns), so `Volume`, `After-Hours Close/Change`,
+  `Prev Close`, `Open/High/Low` and the intraday `Performance` columns are all present;
+  `FINVIZ_VIEW` (default now `152`) applies to both the feed and `verify()`. When custom
+  columns are requested against a **fixed** view (Overview 111, Valuation 121, Ownership 131,
+  Performance 141, Financial 161, Technical 171 — all of which ignore `c=`), the client
+  coerces the request to `152`, so an `FINVIZ_VIEW=111` left in an existing `config.env` (the
+  updater preserves it) cannot silently re-break Volume. Mover screens add **intraday
+  top-gainers** (`FINVIZ_INTRADAY_SIGNALS`, default `top_gainers_1m,top_gainers_5m`) beside the
+  daily signals; only the `ta_topgainers`/`ta_toplosers` bases honour a timeframe suffix, so any
+  other base with a suffix is refused (it would return the whole universe). `Average Volume`
+  (thousands) is converted to raw shares; `rel_volume` is exposed so the scorer/plan can use
+  Finviz's own ratio.
+- **Status:** implemented; the column set, header names, volume units and the intraday
+  screens were verified against a live Elite account. Covered by `tests/test_finviz.py`.
+- **Where:** `src/penny/sources/finviz.py` (`SIGNALS`, `intraday_signal_ok`,
+  `avg_volume_shares`, `PERF_COLUMNS`, `screener`, `movers`, `normalize_row`, `verify`),
+  `src/penny/config.py` (`FINVIZ_VIEW`, `FINVIZ_COLUMNS`, `FINVIZ_INTRADAY_SIGNALS`,
+  `FINVIZ_EXTENDED_HOURS`), `src/penny/engine.py` (`_symbols_for_cycle`, `_fetch_quotes`).
+
 ## C18 — Encryption tool on the VPS
 - **Question:** is `age` or GnuPG available?
 - **Default adopted:** **GnuPG symmetric** (AES-256) when `gpg` is present; otherwise an
@@ -254,6 +303,13 @@ needs a live check.
 
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
+
+### Unit tests (`pytest -q`) — 187 passed, 1 skipped
+Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
+phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
+journal, backups, the Telegram client, `/check` latency bounds, and the Finviz feed
+(`tests/test_finviz.py`: column coverage, intraday-signal guard, extended-hours price
+override, average-volume units, intraday performance).
 
 ### Offline self-test (`penny selftest`) — ALL PASS
 Configuration defaults and round-trip; owner-only permissions; state and journal schemas
