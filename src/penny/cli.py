@@ -23,8 +23,8 @@ PROMPTS: dict[str, tuple[str, bool, str]] = {
                      "Finviz Elite account, API/export section"),
     "TELEGRAM_TOKEN": ("Telegram bot token (alerts and commands)", True, "@BotFather"),
     "TELEGRAM_CHAT_ID": ("Telegram chat id", True, "detected automatically after a message"),
-    "AI_BASE_URL": ("AI gateway base URL (reaction and price forecasts)", False,
-                    "the AI gateway account; can also be set later with /set"),
+    "AI_BASE_URL": ("AI gateway base URL (OpenAI-compatible, e.g. https://host/v1)", False,
+                    "the provider's base URL; /set can also change it later"),
     "AI_KEY": ("AI gateway key", False, "the AI gateway account; can also be set later with /set"),
     "AI_MODELS": ("Active panel model ids, comma separated", False,
                   "e.g. model-a,model-b,model-c"),
@@ -267,13 +267,21 @@ def cmd_doctor(args) -> int:
         runtime.close()
     print(report.text())
     if not report.ok and args.reenter:
+        keys: list[str] = []
         for check in report.failures():
             key = _key_for_check(check.name)
-            if key:
-                value = _ask(f"new value for {key}", secret=key in SECRET_KEYS,
-                             current=cfg.raw(key))
-                if value:
-                    cfg.set(key, value)
+            if key and key not in keys:
+                keys.append(key)
+        # A failing AI section usually needs both the URL and the key, so offer both.
+        if any(k in ("AI_BASE_URL", "AI_KEY") for k in keys):
+            for k in ("AI_BASE_URL", "AI_KEY"):
+                if k not in keys:
+                    keys.append(k)
+        for key in keys:
+            value = _ask(f"new value for {key}", secret=key in SECRET_KEYS,
+                         current=cfg.raw(key))
+            if value:
+                cfg.set(key, value)
         cfg.save()
         print("credentials updated; run penny doctor again.")
     return 0 if report.ok else 1
@@ -289,6 +297,8 @@ def _key_for_check(name: str) -> Optional[str]:
     }
     if name in mapping:
         return mapping[name]
+    if name == "AI model list" or name == "AI models":
+        return "AI_BASE_URL"
     if name.startswith("AI model") or name == "AI gateway":
         return "AI_KEY"
     if name.startswith("Shariah: halalterminal"):

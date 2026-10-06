@@ -127,20 +127,32 @@ def run_doctor(runtime, *, test_models: bool = True) -> DoctorReport:
                    "not configured yet (send /set AI_BASE_URL ... then /set AI_KEY ...)",
                    optional=True)
     else:
+        gateway = runtime.gateway
+        models: list[str] = []
         try:
-            models = runtime.gateway.list_models()
-            report.add("AI model list", bool(models), f"{len(models)} model(s) listed")
+            models = gateway.list_models()
+            report.add("AI model list", bool(models),
+                       f"{len(models)} model(s) listed")
         except Exception as exc:  # noqa: BLE001
+            # Many OpenAI-compatible gateways (OpenCode-style) have no /models
+            # endpoint. That is not fatal: test the configured ids directly.
             report.add("AI model list", False,
-                       f"{exc} (send /models set id:multiplier,id:multiplier)", optional=True)
-            models = []
+                       f"{exc} (optional: not all providers expose /models)",
+                       optional=True)
+        targets = list(dict.fromkeys(
+            cfg.list("AI_MODELS") + cfg.list("AI_FALLBACK_MODELS")))
         if test_models:
-            targets = list(dict.fromkeys(cfg.list("AI_MODELS") + cfg.list("AI_FALLBACK_MODELS")))
-            if not targets and models:
+            if not targets:
                 targets = models[:3]
+            available = set(models)
             for model in targets:
+                if models and model not in available:
+                    report.add(f"AI model {model}", False,
+                               "not in the provider's list; available: "
+                               + ", ".join(models[:8]), optional=True)
+                    continue
                 try:
-                    result = runtime.gateway.test_model(model)
+                    result = gateway.test_model(model)
                     report.add(f"AI model {model}", result.ok,
                                f"{result.latency_ms:.0f} ms" if result.ok else result.error)
                 except Exception as exc:  # noqa: BLE001

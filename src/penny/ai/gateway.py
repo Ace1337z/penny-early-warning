@@ -29,15 +29,58 @@ class ChatResult:
 
 
 class AIGateway:
-    """POST {AI_BASE_URL}/v1/chat/completions with a Bearer key."""
+    """OpenAI-compatible chat client (the style OpenCode's `openai-compatible` uses).
+
+    Provider base URLs are written in several ways (`https://host`, `https://host/v1`,
+    or with a gateway prefix such as `https://host/openai`), and many gateways do not
+    implement `GET /models` at all. The client therefore tries the plausible endpoints
+    in order, remembers the one that answers, treats a missing model list as optional,
+    and adapts the request body when a provider rejects `max_tokens`/`temperature`/
+    JSON mode (as the newest OpenAI models do).
+    """
 
     def __init__(self, cfg, secrets: Optional[Iterable[str]] = None):
         self.cfg = cfg
         self._secrets = list(secrets or [])
+        self._base: Optional[str] = None  # resolved endpoint, cached after a success
+
+    def _entered_base(self) -> str:
+        raw = str(self.cfg.raw("AI_BASE_URL") or "").strip().rstrip("/")
+        for suffix in ("/chat/completions", "/completions", "/models", "/responses"):
+            if raw.endswith(suffix):
+                raw = raw[: -len(suffix)].rstrip("/")
+        return raw
+
+    def bases(self) -> list[str]:
+        """Plausible gateway roots, in the order they should be tried."""
+        if self._base:
+            return [self._base]
+        raw = self._entered_base()
+        if not raw:
+            return []
+        candidates = [raw] if raw.endswith("/v1") else [f"{raw}/v1", raw]
+        out: list[str] = []
+        for c in candidates:
+            if c and c not in out:
+                out.append(c)
+        return out
 
     @property
     def base(self) -> str:
-        return str(self.cfg.raw("AI_BASE_URL") or "").rstrip("/")
+        bases = self.bases()
+        return bases[0] if bases else ""
+
+    @property
+    def models_url(self) -> str:
+        return f"{self.base}/models"
+
+    @property
+    def chat_url(self) -> str:
+        return f"{self.base}/chat/completions"
+
+    @property
+    def endpoints(self) -> list[str]:
+        return [f"{b}/chat/completions" for b in self.bases()]
 
     @property
     def key(self) -> str:
@@ -45,99 +88,162 @@ class AIGateway:
 
     @property
     def configured(self) -> bool:
-        return bool(self.base and self.key)
+        return bool(self._entered_base() and self.key)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.key}", "Content-Type": "application/json"}
 
     # -- model listing ------------------------------------------------------
     def list_models(self, timeout: float = 15.0) -> list[str]:
-        """Read the provider's model list. Raises on error/empty/unsupported (6.19 step 5)."""
+        """Read the provider's model list.
+
+        Many OpenAI-compatible gateways (and OpenCode-style setups) do not expose
+        `/models`; that is normal and never fatal. Raises only when nothing works,
+        with the last error, so the caller can fall back to the configured ids.
+        """
         if not self.configured:
             raise RuntimeError("ai: AI_BASE_URL or AI_KEY not set")
         import requests
-        url = f"{self.base}/v1/models"
-        try:
-            resp = requests.get(url, headers=self._headers(), timeout=timeout)
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(scrub(f"ai: model list request failed: {exc}", self._secrets)) from exc
-        if resp.status_code >= 400:
-            raise RuntimeError(f"ai: model list HTTP {resp.status_code}")
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            raise RuntimeError("ai: model list was not JSON") from exc
-        items = data.get("data") if isinstance(data, dict) else data
-        if not isinstance(items, list):
-            raise RuntimeError("ai: model list has an unexpected shape")
-        ids = []
-        for item in items:
-            if isinstance(item, str):
-                ids.append(item)
-            elif isinstance(item, dict) and item.get("id"):
-                ids.append(str(item["id"]))
-        if not ids:
-            raise RuntimeError("ai: model list was empty")
-        return ids
-
-    # -- chat ---------------------------------------------------------------
-    def chat(self, model: str, messages: list[dict], *, max_tokens: int = 900,
-             temperature: float = 0.2, timeout: float = 45.0, json_mode: bool = True,
-             retries: int = 1) -> ChatResult:
-        if not self.configured:
-            return ChatResult(model=model, ok=False, error="ai: not configured")
-        import requests
-        url = f"{self.base}/v1/chat/completions"
-        body: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-        if json_mode:
-            body["response_format"] = {"type": "json_object"}
-
-        last = ChatResult(model=model, ok=False)
-        for attempt in range(retries + 1):
-            started = time.monotonic()
+        last_error = "ai: no endpoint to try"
+        for base in self.bases():
+            url = f"{base}/models"
             try:
-                resp = requests.post(url, headers=self._headers(), json=body, timeout=timeout)
+                resp = requests.get(url, headers=self._headers(), timeout=timeout)
             except Exception as exc:  # noqa: BLE001
-                last = ChatResult(model=model, ok=False,
-                                  latency_ms=(time.monotonic() - started) * 1000,
-                                  error=scrub(str(exc), self._secrets))
-                if attempt >= retries:
-                    return last
+                last_error = scrub(f"ai: could not reach {url}: {exc}", self._secrets)
                 continue
-            latency = (time.monotonic() - started) * 1000
-
-            if resp.status_code == 400 and json_mode and attempt == 0:
-                # Provider may not support JSON mode; retry once without it.
-                body.pop("response_format", None)
-                continue
+            if resp.status_code in (401, 403):
+                raise RuntimeError(scrub(
+                    f"ai: HTTP {resp.status_code} at {url} (check AI_KEY)",
+                    self._secrets))
             if resp.status_code >= 400:
-                return ChatResult(model=model, ok=False, latency_ms=latency,
-                                  error=scrub(f"HTTP {resp.status_code} {resp.text[:200]}",
-                                              self._secrets))
+                last_error = scrub(
+                    f"ai: model list HTTP {resp.status_code} at {url}: "
+                    f"{resp.text[:200]}", self._secrets)
+                continue
             try:
                 data = resp.json()
             except ValueError:
-                return ChatResult(model=model, ok=False, latency_ms=latency,
-                                  error="invalid JSON envelope")
-            try:
-                text = data["choices"][0]["message"]["content"]
-            except (KeyError, IndexError, TypeError):
-                return ChatResult(model=model, ok=False, latency_ms=latency,
-                                  error="unexpected response shape")
-            tokens = int((data.get("usage") or {}).get("total_tokens") or 0)
-            return ChatResult(model=model, text=text or "", tokens=tokens,
-                              latency_ms=latency, ok=True)
-        return last
+                last_error = f"ai: model list at {url} was not JSON"
+                continue
+            items = data.get("data") if isinstance(data, dict) else data
+            if not isinstance(items, list):
+                last_error = f"ai: model list at {url} has an unexpected shape"
+                continue
+            ids = []
+            for item in items:
+                if isinstance(item, str):
+                    ids.append(item)
+                elif isinstance(item, dict) and item.get("id"):
+                    ids.append(str(item["id"]))
+            if ids:
+                self._base = base
+                return ids
+            last_error = f"ai: model list at {url} was empty"
+        raise RuntimeError(last_error)
+
+    # -- chat ---------------------------------------------------------------
+    def _build_body(self, model: str, messages: list[dict], *, max_tokens: int,
+                    temperature: float, json_mode: bool,
+                    token_field: str = "max_tokens",
+                    use_temperature: bool = True) -> dict[str, Any]:
+        body: dict[str, Any] = {"model": model, "messages": messages,
+                                token_field: max_tokens}
+        if use_temperature:
+            body["temperature"] = temperature
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        return body
+
+    def chat(self, model: str, messages: list[dict], *, max_tokens: int = 900,
+             temperature: float = 0.2, timeout: float = 45.0, json_mode: bool = True,
+             retries: int = 1, url: Optional[str] = None) -> ChatResult:
+        if not self.configured:
+            return ChatResult(model=model, ok=False, error="ai: not configured")
+        import requests
+
+        endpoints = [url] if url else self.endpoints
+        if not endpoints:
+            return ChatResult(model=model, ok=False, error="ai: AI_BASE_URL is not set")
+
+        # Adaptations tried on a 400/404/422, in order: drop JSON mode, use
+        # max_completion_tokens, drop temperature (newest OpenAI models reject
+        # some of these).
+        variants = [
+            {"json_mode": json_mode, "token_field": "max_tokens", "use_temperature": True},
+            {"json_mode": False, "token_field": "max_tokens", "use_temperature": True},
+            {"json_mode": False, "token_field": "max_completion_tokens", "use_temperature": True},
+            {"json_mode": False, "token_field": "max_completion_tokens", "use_temperature": False},
+            {"json_mode": False, "token_field": "max_tokens", "use_temperature": False},
+        ]
+        seen: list[str] = []
+        last_error = "ai: no endpoint accepted the request"
+        for v in variants:
+            sig = (v["json_mode"], v["token_field"], v["use_temperature"])
+            if sig in seen:
+                continue
+            seen.append(sig)
+            body = self._build_body(model, messages, max_tokens=max_tokens,
+                                    temperature=temperature, **v)
+            for endpoint in endpoints:
+                for attempt in range(retries + 1):
+                    started = time.monotonic()
+                    try:
+                        resp = requests.post(endpoint, headers=self._headers(),
+                                             json=body, timeout=timeout)
+                    except Exception as exc:  # noqa: BLE001
+                        result = ChatResult(
+                            model=model, ok=False,
+                            latency_ms=(time.monotonic() - started) * 1000,
+                            error=scrub(f"{exc} (at {endpoint})", self._secrets))
+                        if attempt >= retries:
+                            break
+                        continue
+                    latency = (time.monotonic() - started) * 1000
+
+                    if resp.status_code in (400, 404, 405, 415, 422):
+                        # Wrong endpoint or an unsupported body field; try the next
+                        # endpoint/variant. Keep the message for the final error.
+                        last_error = scrub(
+                            f"HTTP {resp.status_code} at {endpoint}: {resp.text[:200]}",
+                            self._secrets)
+                        break
+                    if resp.status_code >= 500:
+                        if attempt < retries:
+                            time.sleep(min(2 ** attempt, 4))
+                            continue
+                        return ChatResult(model=model, ok=False, latency_ms=latency,
+                                          error=scrub(f"HTTP {resp.status_code} at "
+                                                      f"{endpoint}: {resp.text[:200]}",
+                                                      self._secrets))
+                    if resp.status_code >= 400:
+                        return ChatResult(model=model, ok=False, latency_ms=latency,
+                                          error=scrub(f"HTTP {resp.status_code} at "
+                                                      f"{endpoint}: {resp.text[:200]}",
+                                                      self._secrets))
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        return ChatResult(model=model, ok=False, latency_ms=latency,
+                                          error=f"invalid JSON envelope at {endpoint}")
+                    try:
+                        text = data["choices"][0]["message"]["content"]
+                    except (KeyError, IndexError, TypeError):
+                        return ChatResult(model=model, ok=False, latency_ms=latency,
+                                          error=f"unexpected response shape at {endpoint}")
+                    tokens = int((data.get("usage") or {}).get("total_tokens") or 0)
+                    # Remember the endpoint that worked so later calls skip discovery.
+                    marker = "/chat/completions"
+                    if endpoint.endswith(marker):
+                        self._base = endpoint[: -len(marker)]
+                    return ChatResult(model=model, text=text or "", tokens=tokens,
+                                      latency_ms=latency, ok=True)
+        return ChatResult(model=model, ok=False, error=last_error)
 
     def test_model(self, model: str, timeout: float = 20.0) -> ChatResult:
-        """Minimal test call: reply OK, at most 10 tokens (6.19 step 2)."""
+        """Minimal test call: reply OK, at most 16 tokens (6.19 step 2)."""
         return self.chat(model, [{"role": "user", "content": "Reply with OK only."}],
-                         max_tokens=10, temperature=0.0, timeout=timeout, json_mode=False,
+                         max_tokens=16, temperature=0.0, timeout=timeout, json_mode=False,
                          retries=0)
 
     def health(self, model: Optional[str] = None) -> tuple[bool, str]:
@@ -150,10 +256,11 @@ class AIGateway:
             listing_error = scrub(str(exc), self._secrets)
         else:
             listing_error = ""
-        target = model or (models[0] if models else str(self.cfg.raw("AI_MODELS") or "").split(",")[0])
+        target = model or (models[0] if models
+                           else str(self.cfg.raw("AI_MODELS") or "").split(",")[0].strip())
         if not target:
             return False, listing_error or "no model to test"
-        result = self.test_model(target.strip())
+        result = self.test_model(target)
         if result.ok:
             extra = f"; model list ok ({len(models)})" if models else f"; {listing_error}"
             return True, f"model {target} answered in {result.latency_ms:.0f} ms{extra}"

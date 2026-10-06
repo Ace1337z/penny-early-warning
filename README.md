@@ -170,7 +170,7 @@ activated.
 |---|---|---|
 | Telegram bot token + chat id | yes (to reach the bot) | alerts and commands |
 | Finviz Elite token | yes | the entire market feed: universe, movers, quotes, news, filings, sector, calendar |
-| AI gateway base URL, key, model ids | recommended | reaction and price forecasts |
+| AI gateway base URL, key, model ids | recommended | reaction and price forecasts (any OpenAI-compatible endpoint) |
 | SEC contact (`Name email`) | recommended | SEC EDGAR requests |
 | halalterminal.com API key | optional | Shariah screening |
 | Alpaca / Finnhub | optional | candle fallback, extra news |
