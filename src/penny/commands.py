@@ -517,16 +517,27 @@ class CommandHandler:
                 log.info("check %s: %s in %.1fs", symbol, name, now - stage["t"])
                 stage["t"] = now
 
-            quote = self.engine._quotes_by_symbol.get(symbol)
+            # Fetch the symbol now: the cached cycle quote is up to one cycle old
+            # and does not exist at all for a stock outside the sub-$10 universe
+            # (NVDA, AAPL), which used to answer "no quote available".
+            quote = self.engine.check_quote(symbol)
+            session = session_for()
             metrics = {m.symbol: m for m in (self.engine._last_metrics or [])}
             m = metrics.get(symbol)
-            if m is None and quote:
-                m = self.engine.scorer.compute(quote, session_for())
+            if quote is not None:
+                # Recompute from the fresh quote so the price and the windows
+                # reflect the current (including after-hours) print.
+                avg = quote.get("avg_volume")
+                if avg and float(avg) > 0:
+                    self.engine.scorer.set_avg_volume(symbol, float(avg))
+                fresh = self.engine.scorer.compute(quote, session)
+                if fresh is not None:
+                    m = fresh
             if m is None:
                 self._reply(f"{bold(symbol)}: no quote available right now.",
                             markup=MAIN_MENU)
                 return
-            enr = self.engine.enricher.enrich(symbol, self.engine._quote_for(m), m)
+            enr = self.engine.enricher.enrich(symbol, quote or self.engine._quote_for(m), m)
             mark("enrichment")
             # Keep the hourly market data cached; only the 30s index quotes
             # really need to be fresh, and forcing everything cost several

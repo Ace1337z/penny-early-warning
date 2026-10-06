@@ -261,33 +261,64 @@ needs a live check.
 ## C23 — The missing `Volume` column and the intraday top-gainers screens
 - **Question:** why did momentum builders (e.g. VCIG, +175% intraday) never alert or even
   appear in `/builds`, when the scanner was live and the feed looked healthy?
-- **Root cause (confirmed live):** the default custom column set ended at index `66`
-  (`Change`) and never requested `67` (`Volume`). `cum_volume` was therefore always `0`,
-  which zeroed `volx` on every symbol - so no tier gate (`volx >= 3/10/20`) and no build gate
-  (`volx15 >= 2`) could ever be met. The header also mismatched on three names
-  (`Avg Volume` vs `Average Volume`, `Rel Volume` vs `Relative Volume`, `Previous Close` vs
-  `Prev Close`) and `verify()` forced `view=111` (Overview), which ignores `c=` and drops
-  float/short/avg-volume. The two live intraday screens (`ta_topgainers_1m`, `_5m`) and the
-  bigger universe payload then made the built-in 20/min limiter a real constraint.
+- **Root cause (confirmed live):** three separate faults stacked up.
+  1. The default custom column set ended at index `66` (`Change`) and never requested `67`
+     (`Volume`). `cum_volume` was therefore always `0`, which zeroed `volx` on every symbol -
+     so no tier gate (`volx >= 3/10/20`) and no build gate (`volx15 >= 2`) could ever be met.
+     The header also mismatched on three names (`Avg Volume` vs `Average Volume`, `Rel Volume`
+     vs `Relative Volume`, `Previous Close` vs `Prev Close`) and `verify()` forced `view=111`
+     (Overview), which ignores `c=` and drops float/short/avg-volume.
+  2. `movers()` applied one list-wide `top_n` cap *while* iterating the signals, and the
+     intraday top-gainers run last. The daily screens already produced **267 unique tickers**
+     by `unusual_volume`, so `top_gainers_1m/5m` were skipped on **every** cycle - the
+     momentum-build signal never fired even with the columns fixed.
+  3. The updater preserves `config.env`, so a VPS that had been installed before this work
+     still held the old column set (`…,66`) and `FINVIZ_VIEW=111`, which shadowed every
+     code-level default.
 - **Default adopted:** the custom view is `v=152` with
   `c=0..66,67,71,72,81,86,87,88,90..99` (84 columns), so `Volume`, `After-Hours Close/Change`,
   `Prev Close`, `Open/High/Low` and the intraday `Performance` columns are all present;
-  `FINVIZ_VIEW` (default now `152`) applies to both the feed and `verify()`. When custom
-  columns are requested against a **fixed** view (Overview 111, Valuation 121, Ownership 131,
-  Performance 141, Financial 161, Technical 171 — all of which ignore `c=`), the client
-  coerces the request to `152`, so an `FINVIZ_VIEW=111` left in an existing `config.env` (the
-  updater preserves it) cannot silently re-break Volume. Mover screens add **intraday
-  top-gainers** (`FINVIZ_INTRADAY_SIGNALS`, default `top_gainers_1m,top_gainers_5m`) beside the
-  daily signals; only the `ta_topgainers`/`ta_toplosers` bases honour a timeframe suffix, so any
-  other base with a suffix is refused (it would return the whole universe). `Average Volume`
-  (thousands) is converted to raw shares; `rel_volume` is exposed so the scorer/plan can use
-  Finviz's own ratio.
-- **Status:** implemented; the column set, header names, volume units and the intraday
-  screens were verified against a live Elite account. Covered by `tests/test_finviz.py`.
+  `FINVIZ_VIEW` (default now `152`) applies to both the feed and `verify()`. Three defences
+  make a stale config harmless:
+  - the client **merges** `REQUIRED_COLUMNS` (Volume, after-hours, Prev Close, O/H/L,
+    intraday perf) into every custom-column request (`merge_columns`), so an old `c=…,66`
+    still returns Volume;
+  - a custom-column request against a **fixed** view (Overview 111, Valuation 121, Ownership
+    131, Performance 141, Financial 161, Technical 171 - all of which ignore `c=`) is coerced
+    to `152`;
+  - `top_n` now bounds **each screen** (`per_screen`), not the merged list, so the intraday
+    screens always contribute.
+  Mover screens add **intraday top-gainers** (`FINVIZ_INTRADAY_SIGNALS`, default
+  `top_gainers_1m,top_gainers_5m`) beside the daily signals; only the
+  `ta_topgainers`/`ta_toplosers` bases honour a timeframe suffix, so any other base with a
+  suffix is refused (it would return the whole universe). `Average Volume` (thousands) is
+  converted to raw shares; `rel_volume` is exposed so the scorer/plan can use Finviz's own
+  ratio.
+- **Status:** implemented; the column set, header names, volume units, the intraday screens,
+  the per-screen cap and the stale-config merge were verified against a live Elite account
+  (VCIG reaches the merged movers list). Covered by `tests/test_finviz.py`.
 - **Where:** `src/penny/sources/finviz.py` (`SIGNALS`, `intraday_signal_ok`,
-  `avg_volume_shares`, `PERF_COLUMNS`, `screener`, `movers`, `normalize_row`, `verify`),
-  `src/penny/config.py` (`FINVIZ_VIEW`, `FINVIZ_COLUMNS`, `FINVIZ_INTRADAY_SIGNALS`,
-  `FINVIZ_EXTENDED_HOURS`), `src/penny/engine.py` (`_symbols_for_cycle`, `_fetch_quotes`).
+  `avg_volume_shares`, `merge_columns`, `REQUIRED_COLUMNS`, `PERF_COLUMNS`, `screener`,
+  `movers`, `normalize_row`, `verify`), `src/penny/config.py` (`FINVIZ_VIEW`,
+  `FINVIZ_COLUMNS`, `FINVIZ_INTRADAY_SIGNALS`, `FINVIZ_EXTENDED_HOURS`),
+  `src/penny/engine.py` (`_symbols_for_cycle`, `_fetch_quotes`, `check_quote`).
+
+## C24 — `/check` price freshness and symbols outside the universe
+- **Question:** why did `/check` show the regular-session (open) price during the post
+  session, and answer *"no quote available right now"* for a normal stock such as NVDA or
+  AAPL?
+- **Root cause:** `_run_check` read only `engine._quotes_by_symbol`, which is the previous
+  cycle's cache. That cache holds just the sub-$10 universe and the mover screens, so a
+  normal stock was never present (no quote), and for a stock that *was* present the row could
+  be one cycle old and, in the post session, still the regular close.
+- **Default adopted:** `Engine.check_quote(symbol)` fetches the symbol **on demand** with the
+  current session and normalizes it (so the after-hours override from C3 applies), falling
+  back to the cached quote only when the fetch fails. `_run_check` recomputes the metrics from
+  that fresh quote and registers its average volume, so the price, windows and Volx all
+  reflect the live print. This also makes `/check` work for any symbol, not just the sub-$10
+  universe.
+- **Status:** implemented; covered by `tests/test_check_quote.py`.
+- **Where:** `src/penny/engine.py` (`check_quote`), `src/penny/commands.py` (`_run_check`).
 
 ## C18 — Encryption tool on the VPS
 - **Question:** is `age` or GnuPG available?
@@ -304,12 +335,13 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 187 passed, 1 skipped
+### Unit tests (`pytest -q`) — 194 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
-journal, backups, the Telegram client, `/check` latency bounds, and the Finviz feed
-(`tests/test_finviz.py`: column coverage, intraday-signal guard, extended-hours price
-override, average-volume units, intraday performance).
+journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
+Finviz feed (`tests/test_finviz.py`: column coverage, required-column merge, view coercion,
+intraday-signal guard, per-screen mover cap, extended-hours price override, average-volume
+units, intraday performance).
 
 ### Offline self-test (`penny selftest`) — ALL PASS
 Configuration defaults and round-trip; owner-only permissions; state and journal schemas

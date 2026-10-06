@@ -127,6 +127,59 @@ def test_screener_keeps_an_explicit_custom_view(cfg, monkeypatch):
     assert seen[-1]["v"] == "152"
 
 
+# --- required columns are always requested ----------------------------------
+
+def test_merge_columns_adds_the_quote_fields():
+    """A stale config.env can drop Volume/after-hours; the feed must still ask."""
+    from penny.sources.finviz import REQUIRED_COLUMNS, merge_columns
+    merged = {int(c) for c in merge_columns("0,1,66").split(",")}
+    assert {0, 1, 66} <= merged
+    assert set(REQUIRED_COLUMNS) <= merged
+    assert 67 in merged and 81 in merged and 95 in merged
+
+
+def test_screener_requests_the_required_columns(cfg, monkeypatch):
+    """Even with the old column set, the request carries Volume and Prev Close."""
+    client = _client(cfg)
+    seen: list[dict] = []
+
+    def fake_fetch(link, **params):
+        seen.append(params)
+        return "Ticker,Price\nAAPL,1.00\n"
+
+    monkeypatch.setattr(client, "fetch", fake_fetch)
+    client.screener(columns="0,1,66")
+    sent = {c for c in seen[-1]["c"].split(",")}
+    assert "67" in sent  # Volume
+    assert "81" in sent  # Prev Close
+    assert "0" in sent
+
+
+# --- intraday screens are never starved by a list-wide cap ------------------
+
+def test_movers_cap_does_not_hide_the_intraday_screens(cfg, monkeypatch):
+    """The daily screens alone can exceed top_n; the intraday screens run last
+    and must still be reached."""
+    client = _client(cfg)
+    calls: list[str] = []
+
+    def fake_screener(**kw):
+        sig = kw.get("signal", "")
+        calls.append(sig)
+        ticker = "D" if "1m" not in sig else "M"
+        return [{"Ticker": f"{ticker}{i}", "Price": "1.00"} for i in range(5)]
+
+    monkeypatch.setattr(client, "screener", fake_screener)
+    cfg.set("FINVIZ_SIGNALS", "top_gainers")
+    cfg.set("FINVIZ_INTRADAY_SIGNALS", "top_gainers_1m")
+    rows = client.movers("regular", top_n=3)
+    # Both screens ran despite the small cap, and each contributed its own rows.
+    assert calls == ["ta_topgainers", "ta_topgainers_1m"]
+    tickers = {r["Ticker"] for r in rows}
+    assert any(t.startswith("D") for t in tickers)
+    assert any(t.startswith("M") for t in tickers)
+
+
 # --- extended-hours prices --------------------------------------------------
 
 def _row(**kw):

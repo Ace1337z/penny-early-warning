@@ -63,6 +63,38 @@ INTRADAY_BASES = ("ta_topgainers", "ta_toplosers")
 FIXED_VIEWS = {"111", "121", "131", "141", "161", "171"}
 DEFAULT_VIEW = "152"
 
+# Columns the quote shape reads. A long-lived config.env (the updater keeps the
+# configuration) can still hold the old column set that stopped at 66 (Change)
+# and omitted Volume, which silently zeroes Volx and the after-hours price. Any
+# custom column request is merged with these so the feed always carries them.
+REQUIRED_COLUMNS: tuple[int, ...] = (
+    67,                    # Volume
+    71, 72,                # After-Hours Close / Change
+    81,                    # Prev Close
+    86, 87, 88,            # Open / High / Low
+    90, 91, 92, 93, 94,    # Performance 5m..2h
+    95, 96, 97, 98, 99,    # Performance 4H..1Y
+)
+
+
+def merge_columns(columns: str) -> str:
+    """Return `columns` plus every column the quote shape needs, in order."""
+    seen: list[int] = []
+    for part in str(columns or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            cid = int(part)
+        except ValueError:
+            continue
+        if cid not in seen:
+            seen.append(cid)
+    for cid in REQUIRED_COLUMNS:
+        if cid not in seen:
+            seen.append(cid)
+    return ",".join(str(c) for c in seen)
+
 # Finviz intraday performance columns, keyed by the scorer's window minutes.
 PERF_COLUMNS: tuple[tuple[int, str], ...] = (
     (5, "Performance (5 Minutes)"),
@@ -217,7 +249,8 @@ class FinvizClient(BaseClient):
         if tickers:
             params["t"] = tickers
         if columns:
-            params["c"] = columns
+            # Always carry the quote columns, even if an old config dropped them.
+            params["c"] = merge_columns(columns)
         if signal:
             params["s"] = signal
         if order:
@@ -240,6 +273,10 @@ class FinvizClient(BaseClient):
 
         An intraday timeframe is only honoured by the top-gainers/losers bases;
         anything else silently returns the whole universe, so those are skipped.
+
+        `top_n` bounds each individual screen, not the merged result: a single
+        list-wide cap used to cut off the intraday top-gainers, which run last, so
+        the momentum-build signal never fired.
         """
         session = session or session_for()
         if session == "closed":
@@ -253,6 +290,7 @@ class FinvizClient(BaseClient):
         ttl = max(0.0, self.cfg.float("FINVIZ_MOVERS_TTL", 15.0))
         filters = self.cfg.raw("FINVIZ_FILTERS")
         columns = self.cfg.raw("FINVIZ_COLUMNS")
+        per_screen = max(1, top_n)
         out: list[dict[str, str]] = []
         seen: set[str] = set()
         for name in names:
@@ -267,14 +305,16 @@ class FinvizClient(BaseClient):
             except Exception as exc:  # noqa: BLE001
                 log.warning("finviz movers signal %s failed: %s", name, self.error_text(exc))
                 continue
+            added = 0
             for row in rows:
                 ticker = str(row_get(row, "Ticker") or "").upper().strip()
                 if not ticker or ticker in seen:
                     continue
                 seen.add(ticker)
                 out.append(row)
-                if len(out) >= max(1, top_n):
-                    return out
+                added += 1
+                if added >= per_screen:
+                    break
         return out
 
     def snapshot(self, symbols: Iterable[str], session: Optional[str] = None,

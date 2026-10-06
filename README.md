@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-187%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-194%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -216,6 +216,9 @@ activated.
   top-gainers screens** (1m/5m), which surface a stock that is being bought *right now*,
   plus a full sweep of sub-$10 US stocks, in all three sessions, so nothing depends on a
   single screener's ranking.
+- **On-demand checks for any symbol** - `/check SYM` fetches the symbol live (including
+  after-hours) rather than reading the last cycle's cache, so it works for NVDA or AAPL
+  just as well as for a sub-$10 name.
 - **Momentum-build watch feed** - the alert bar is a *confirmed* tier-2 move. Stocks that
   are clearly accumulating (rising volume, price above VWAP) but sit just below that bar
   are surfaced separately, with the exact tier-2 gate still missing, so quiet grinds are
@@ -477,7 +480,7 @@ fake Telegram, and asserts the documented acceptance results:
 - a model that does not beat the baselines is not activated
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **187 passed** (1 skipped).
+Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **194 passed** (1 skipped).
 
 ---
 

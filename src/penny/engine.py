@@ -476,6 +476,35 @@ class Engine:
                 "prev_close": m.prev_close, "float_shares": m.float_shares,
                 "market_cap": m.market_cap, "ts": m.ts, "halted": m.halted}
 
+    def check_quote(self, symbol: str) -> Optional[dict]:
+        """A fresh quote for an interactive `/check`.
+
+        The cycle only quotes the sub-$10 universe and the mover screens, so a
+        normal stock (NVDA, AAPL) has no cached quote at all, and a cached row can
+        be up to one cycle old. This fetches the symbol on demand with the current
+        session, so the price reflects the live (including after-hours) print.
+        """
+        symbol = str(symbol or "").upper().strip()
+        if not symbol:
+            return None
+        cached = self._quotes_by_symbol.get(symbol)
+        if not self.finviz:
+            return cached
+        session = self.forced_session or session_for()
+        try:
+            quotes = self.finviz.snapshot([symbol], session)
+        except FinvizTokenRejected:
+            self._notify_finviz_rejected()
+            return cached
+        except Exception as exc:  # noqa: BLE001
+            log.warning("check quote fetch failed for %s: %s", symbol, exc)
+            return cached
+        for quote in quotes:
+            if str(quote.get("symbol") or "").upper() == symbol:
+                return quote
+        return cached
+
+
     def _time_to_horizons(self) -> dict:
         now = self.clock()
         end = session_end(datetime.fromtimestamp(now, tz=timezone.utc))
