@@ -9,30 +9,72 @@ from typing import Optional
 
 from .ai.leaderboard import apply_selection, leaderboard_text
 from .alerts import tier_name
+from .ui import (arrow_for, bar, bold, button, cb, code, divider, h, inline,
+                 parse_cb, reply_keyboard)
 from .util import money, pct, session_for
 
 log = logging.getLogger(__name__)
 
-HELP = """penny commands
+HELP = """<b>Penny Early-Warning</b>
+Tap a button below, or type a command.
+
+<b>Live</b>
 /top - champions and hidden gems
-/watch SYM ENTRY [STOP] [TARGET] - add to the watchlist
-/unwatch SYM - remove from the watchlist
-/watchlist - current watchlist
-/check SYM - full analysis on demand
 /market - market context now
+/status - system health
+
+<b>Symbols</b>
+/check SYM - full analysis on demand
+/watch SYM ENTRY [STOP] [TARGET]
+/unwatch SYM
+/watchlist
+
+<b>Models and keys</b>
 /models - leaderboard and active panel
-/models refresh - re-read the provider's model list
-/models add ID MULTIPLIER - confirm a new model
-/models remove ID - drop a model
-/setmodels A,B,C - set the panel manually
-/set KEY VALUE - set any setting (e.g. /set FINVIZ_TOKEN abc123)
-/setkey - same as /set, for secrets
-/keys - what is configured and what is still missing
-/halal SYM - Shariah status now
-/backup now - run a backup
-/backups - recent backups and destination health
-/status - uptime, session, cycle, tokens, backups
-/help - this message"""
+/setmodels A,B,C - set the panel
+/set KEY VALUE - change any setting
+/keys - what is configured
+
+<b>Maintenance</b>
+/halal SYM - Shariah status
+/backup now
+/help"""
+
+# Command menu published to Telegram's UI.
+COMMANDS: list[tuple[str, str]] = [
+    ("start", "open the button menu"),
+    ("top", "champions and hidden gems"),
+    ("market", "market context now"),
+    ("status", "system health"),
+    ("check", "full analysis for a symbol"),
+    ("watchlist", "your watchlist"),
+    ("models", "model leaderboard and panel"),
+    ("keys", "what is configured"),
+    ("backup", "run a backup now"),
+    ("help", "all commands"),
+]
+
+MAIN_MENU = inline([
+    [button("Top", cb("top")), button("Market", cb("market")),
+     button("Status", cb("status"))],
+    [button("Models", cb("models")), button("Watchlist", cb("watch")),
+     button("Keys", cb("keys"))],
+    [button("Backup", cb("backup")), button("Help", cb("help"))],
+])
+
+MARKET_MENU = inline([
+    [button("\U0001F504 Refresh", cb("market")), button("Status", cb("status")),
+     button("\U0001F3E0 Menu", cb("menu"))],
+])
+
+STATUS_MENU = inline([
+    [button("\U0001F504 Refresh", cb("status")), button("Market", cb("market")),
+     button("\U0001F3E0 Menu", cb("menu"))],
+])
+
+MODELS_MENU = inline([
+    [button("\U0001F504 Refresh", cb("models")), button("\U0001F3E0 Menu", cb("menu"))],
+])
 
 
 class CommandHandler:
@@ -58,6 +100,11 @@ class CommandHandler:
         handled = 0
         for upd in updates:
             self._offset = max(self._offset, int(upd.get("update_id", 0)) + 1)
+            callback = upd.get("callback_query")
+            if callback:
+                if self._handle_callback(callback):
+                    handled += 1
+                continue
             msg = upd.get("message") or upd.get("edited_message") or {}
             chat_id = str((msg.get("chat") or {}).get("id", ""))
             text = str(msg.get("text") or "").strip()
@@ -71,7 +118,36 @@ class CommandHandler:
             handled += 1
         return handled
 
+    def _handle_callback(self, callback: dict) -> bool:
+        """A button tap: acknowledge it, then run the same handler as the command."""
+        msg = callback.get("message") or {}
+        chat_id = str((msg.get("chat") or {}).get("id", ""))
+        if not self._authorized(chat_id):
+            log.warning("ignoring callback from unauthorized chat %s", chat_id)
+            return False
+        data = str(callback.get("data") or "")
+        action, arg = parse_cb(data)
+        message_id = msg.get("message_id")
+        try:
+            self.telegram.answer_callback(str(callback.get("id") or ""))
+        except Exception:  # noqa: BLE001
+            pass
+        handler = self._CALLBACKS.get(action)
+        if handler is None:
+            self._reply("That button is no longer valid.", markup=MAIN_MENU)
+            return True
+        try:
+            handler(self, arg, message_id)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("callback %s failed: %s", action, exc)
+            self._reply(f"Command failed: {h(exc)}")
+        return True
+
     def run_forever(self, poll_seconds: float = 2.0) -> None:
+        try:
+            self.telegram.set_commands(COMMANDS)
+        except Exception:  # noqa: BLE001
+            pass
         while not self._stop.is_set():
             try:
                 self.poll_once()
@@ -86,11 +162,102 @@ class CommandHandler:
         configured = str(self.cfg.raw("TELEGRAM_CHAT_ID") or "")
         return bool(configured) and chat_id == configured
 
-    def _reply(self, text: str) -> None:
+    def _reply(self, text: str, markup: Optional[dict] = None, *,
+               html: bool = True) -> None:
         try:
-            self.telegram.send(text)
+            self.telegram.send(text, markup=markup, html=html, silent=True)
         except Exception as exc:  # noqa: BLE001
             log.debug("reply failed: %s", exc)
+
+    def _typing(self) -> None:
+        try:
+            self.telegram.send_chat_action("typing")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _render(self, text: str, markup: Optional[dict] = None,
+                message_id: Optional[int] = None, *, html: bool = True) -> None:
+        """Edit the tapped message in place when we have its id, else send new."""
+        if message_id:
+            try:
+                if self.telegram.edit(int(message_id), text, markup=markup, html=html):
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+        self._reply(text, markup=markup, html=html)
+
+    # -- callback actions ---------------------------------------------------
+    def _cb_top(self, arg: str, mid: Optional[int]) -> None:
+        self._render(self._render_top_text(), self._top_menu(), mid)
+
+    def _cb_market(self, arg: str, mid: Optional[int]) -> None:
+        self._typing()
+        self._render(self._render_market_text(), MARKET_MENU, mid)
+
+    def _cb_status(self, arg: str, mid: Optional[int]) -> None:
+        text = self.engine.status_text() if self.engine else "engine not available"
+        self._render(text, STATUS_MENU, mid)
+
+    def _cb_models(self, arg: str, mid: Optional[int]) -> None:
+        text = (leaderboard_text(self.db, self.cfg, self.catalog)
+                if self.catalog else "models are not configured")
+        self._render(text, MODELS_MENU, mid, html=False)
+
+    def _cb_keys(self, arg: str, mid: Optional[int]) -> None:
+        self._render(self._render_keys_text(), MAIN_MENU, mid)
+
+    def _cb_watch(self, arg: str, mid: Optional[int]) -> None:
+        self._render(self._render_watchlist_text(), MAIN_MENU, mid)
+
+    def _cb_backup(self, arg: str, mid: Optional[int]) -> None:
+        if not self.backup:
+            self._render("Backup is not configured.", MAIN_MENU, mid)
+            return
+        self._typing()
+        result = self.backup.run("manual")
+        self._render(f"Backup {h(result.status)}: {result.size / 1024:.0f} KB "
+                     f"({h(result.note or 'ok')})", MAIN_MENU, mid)
+
+    def _cb_help(self, arg: str, mid: Optional[int]) -> None:
+        self._render(HELP, MAIN_MENU, mid)
+
+    def _cb_check(self, arg: str, mid: Optional[int]) -> None:
+        symbol = (arg or "").strip().upper()
+        if not symbol:
+            self._render("Send <code>/check SYM</code> to analyse a symbol.",
+                         MAIN_MENU, mid)
+            return
+        if mid:
+            self.telegram.edit(int(mid), f"Running a full analysis for "
+                                         f"{bold(symbol)}...", html=True)
+        else:
+            self._reply(f"Running a full analysis for {bold(symbol)}...")
+        threading.Thread(target=self._run_check, args=(symbol,), daemon=True).start()
+
+    def _cb_halal(self, arg: str, mid: Optional[int]) -> None:
+        symbol = (arg or "").strip().upper()
+        if not symbol:
+            self._render("Send <code>/halal SYM</code>.", MAIN_MENU, mid)
+            return
+        if not self.shariah:
+            self._render("Shariah screening is not configured.", MAIN_MENU, mid)
+            return
+        text = self.cmd_halal_text(symbol)
+        self._render(text, self._check_menu(symbol), mid)
+
+    _CALLBACKS = {
+        "top": _cb_top,
+        "market": _cb_market,
+        "status": _cb_status,
+        "models": _cb_models,
+        "keys": _cb_keys,
+        "watch": _cb_watch,
+        "backup": _cb_backup,
+        "help": _cb_help,
+        "check": _cb_check,
+        "halal": _cb_halal,
+        "menu": _cb_help,
+    }
 
     # -- dispatch -----------------------------------------------------------
     def handle(self, text: str) -> None:
@@ -115,47 +282,91 @@ class CommandHandler:
                 "/backups": self.cmd_backups,
                 "/status": self.cmd_status,
                 "/help": self.cmd_help,
-                "/start": self.cmd_help,
+                "/start": self.cmd_start,
             }.get(cmd)
             if handler is None:
-                self._reply(f"Unknown command {cmd}. /help for the list.")
+                self._reply(f"Unknown command {code(cmd)}. Try /help.", markup=MAIN_MENU)
                 return
             handler(args)
         except Exception as exc:  # noqa: BLE001
             log.exception("command %s failed: %s", cmd, exc)
-            self._reply(f"Command failed: {exc}")
+            self._reply(f"Command failed: {h(exc)}")
 
     # -- commands -----------------------------------------------------------
     def cmd_help(self, args) -> None:
-        self._reply(HELP)
+        self._reply(HELP, markup=MAIN_MENU)
 
-    def cmd_top(self, args) -> None:
+    def cmd_start(self, args) -> None:
+        """Welcome + a persistent reply keyboard for one-tap navigation."""
+        greeting = (f"{bold('Penny Early-Warning')}\n"
+                    f"Live penny-stock screening. Buttons below, or tap "
+                    f"<code>/help</code> for everything.")
+        try:
+            self.telegram.send(greeting, html=True,
+                               markup=reply_keyboard([
+                                   ["/top", "/market", "/status"],
+                                   ["/watchlist", "/models", "/keys"],
+                                   ["/help"],
+                               ]))
+        except TypeError:
+            # A client that does not accept markup yet.
+            self._reply(greeting, markup=MAIN_MENU)
+            return
+        self._reply(HELP, markup=MAIN_MENU)
+
+    # -- shared renderers ---------------------------------------------------
+    def _render_top_text(self) -> str:
         metrics = getattr(self.engine, "_last_metrics", None) if self.engine else None
         if not metrics:
-            self._reply("No scored symbols yet (market may be closed).")
-            return
+            return (f"{bold('TOP')}\nNo scored symbols yet. The market may be closed, "
+                    f"or the first cycles are still warming up.")
         ranked = self.engine.scorer.rank(metrics)
-        lines = ["TOP"]
+        lines = [bold("TOP MOVES")]
         if ranked["champions"]:
-            lines.append("Champions:")
+            lines.append(bold("Champions"))
             for m in ranked["champions"]:
-                lines.append(f"  {m.symbol} {money(m.price)} "
-                             f"{pct((m.pct_vs_close or 0) * 100)} score {m.score:.0f} "
-                             f"{tier_name(m.tier)}"
-                             + (" [EXTENDED]" if m.phase == "EXTENDED" else "")
-                             + (" [FADING]" if m.phase == "FADING" else ""))
+                lines.append(self._stock_line(m))
         if ranked["hidden_gems"]:
-            lines.append("Hidden gems:")
+            lines.append(bold("Hidden gems"))
             for m in ranked["hidden_gems"]:
-                lines.append(f"  {m.symbol} {money(m.price)} "
-                             f"{pct((m.pct_vs_close or 0) * 100)} score {m.score:.0f}")
+                lines.append(self._stock_line(m, with_tier=False))
         if len(lines) == 1:
-            lines.append("  nothing at tier >= 2 yet")
-        self._reply("\n".join(lines))
+            lines.append("Nothing at tier \u2265 2 yet.")
+        lines.append("\U0001F4A1 Tap a symbol below for the full analysis")
+        return "\n".join(lines)
+
+    def _stock_line(self, m, with_tier: bool = True) -> str:
+        pv = m.pct_vs_close * 100 if m.pct_vs_close is not None else None
+        tag = ""
+        if with_tier:
+            tag = " " + h(tier_name(m.tier))
+            if m.phase == "EXTENDED":
+                tag += " [ext]"
+            elif m.phase == "FADING":
+                tag += " [fade]"
+        return (f"{arrow_for(pv)} {code(m.symbol)} {money(m.price)} "
+                f"{pct(pv)}{tag} \u00b7 {bar((m.score or 0) / 100)} {m.score:.0f}")
+
+    def _top_menu(self) -> dict:
+        """Buttons that open a full analysis for each ranked symbol."""
+        metrics = getattr(self.engine, "_last_metrics", None) if self.engine else None
+        rows: list[list[dict]] = []
+        if metrics:
+            ranked = self.engine.scorer.rank(metrics)
+            picks = list(ranked.get("champions") or []) + list(ranked.get("hidden_gems") or [])
+            rows = [[button(f"\\U0001F50D {m.symbol}", cb("check", m.symbol))]
+                    for m in picks[:8]]
+        return inline(rows + [
+            [button("\\U0001F504 Refresh", cb("top")), button("Market", cb("market")),
+             button("\\U0001F3E0 Menu", cb("menu"))],
+        ]) or MAIN_MENU
+
+    def cmd_top(self, args) -> None:
+        self._reply(self._render_top_text(), markup=self._top_menu())
 
     def cmd_watch(self, args) -> None:
         if not args:
-            self._reply("usage: /watch SYM ENTRY [STOP] [TARGET]")
+            self._reply("Usage: <code>/watch SYM ENTRY [STOP] [TARGET]</code>")
             return
         symbol = args[0].upper()
         def num(i):
@@ -167,65 +378,76 @@ class CommandHandler:
             return None
         entry, stop, target = num(1), num(2), num(3)
         if entry is None:
-            self._reply("usage: /watch SYM ENTRY [STOP] [TARGET]")
+            self._reply("Usage: <code>/watch SYM ENTRY [STOP] [TARGET]</code>")
             return
         self.db.execute(
             "INSERT INTO watch(symbol, entry, stop, target, ts) VALUES(?,?,?,?,?) "
             "ON CONFLICT(symbol) DO UPDATE SET entry=excluded.entry, stop=excluded.stop, "
             "target=excluded.target, ts=excluded.ts",
             (symbol, entry, stop, target, time.time()))
-        self._reply(f"watching {symbol}: entry {money(entry)}"
-                    + (f", stop {money(stop)}" if stop else "")
-                    + (f", target {money(target)}" if target else ""))
+        self._reply(f"Watching {bold(symbol)}: entry {h(money(entry))}"
+                    + (f", stop {h(money(stop))}" if stop else "")
+                    + (f", target {h(money(target))}" if target else ""),
+                    markup=MAIN_MENU)
 
     def cmd_unwatch(self, args) -> None:
         if not args:
-            self._reply("usage: /unwatch SYM")
+            self._reply("Usage: <code>/unwatch SYM</code>")
             return
         self.db.execute("DELETE FROM watch WHERE symbol=?", (args[0].upper(),))
-        self._reply(f"stopped watching {args[0].upper()}")
+        self._reply(f"Stopped watching {bold(args[0].upper())}", markup=MAIN_MENU)
 
-    def cmd_watchlist(self, args) -> None:
+    def _render_watchlist_text(self) -> str:
         rows = self.db.query("SELECT * FROM watch ORDER BY ts")
         if not rows:
-            self._reply("watchlist is empty")
-            return
+            return (f"{bold('WATCHLIST')}\nEmpty. Add one with "
+                    f"<code>/watch SYM ENTRY [STOP] [TARGET]</code>.")
         metrics = {m.symbol: m for m in (getattr(self.engine, "_last_metrics", []) or [])}
-        lines = ["WATCHLIST"]
+        lines = [bold("WATCHLIST")]
         for row in rows:
             m = metrics.get(row["symbol"])
             price = m.price if m else None
             pl = None
             if price and row["entry"]:
                 pl = (price / row["entry"] - 1) * 100
-            lines.append(f"  {row['symbol']} entry {money(row['entry'])} "
-                         + (f"stop {money(row['stop'])} " if row["stop"] else "")
-                         + (f"target {money(row['target'])} " if row["target"] else "")
-                         + (f"now {money(price)} ({pct(pl)})" if price else "no price yet"))
-        self._reply("\n".join(lines))
+            extra = []
+            if row["stop"]:
+                extra.append(f"stop {h(money(row['stop']))}")
+            if row["target"]:
+                extra.append(f"target {h(money(row['target']))}")
+            tail = (f"now {h(money(price))} {arrow_for(pl)} {h(pct(pl))}"
+                    if price else "no price yet")
+            lines.append(f"{arrow_for(pl)} {code(row['symbol'])} "
+                         f"entry {h(money(row['entry']))}"
+                         + (" \u00b7 " + " \u00b7 ".join(extra) if extra else "")
+                         + f" \u00b7 {tail}")
+        return "\n".join(lines)
+
+    def cmd_watchlist(self, args) -> None:
+        self._reply(self._render_watchlist_text(), markup=MAIN_MENU)
 
     def cmd_check(self, args) -> None:
         if not args:
-            self._reply("usage: /check SYM")
+            self._reply("Usage: <code>/check SYM</code>", markup=MAIN_MENU)
             return
         symbol = args[0].upper()
-        self._reply(f"running a full analysis for {symbol}...")
+        self._reply(f"Running a full analysis for {bold(symbol)}...")
         threading.Thread(target=self._run_check, args=(symbol,), daemon=True).start()
 
     def _run_check(self, symbol: str) -> None:
         if not self.engine:
-            self._reply("engine not available")
+            self._reply("Engine not available.")
             return
         try:
             from .alerts import build_ai_facts, format_alert2
-            from .scoring import Metrics
             quote = self.engine._quotes_by_symbol.get(symbol)
             metrics = {m.symbol: m for m in (self.engine._last_metrics or [])}
             m = metrics.get(symbol)
             if m is None and quote:
                 m = self.engine.scorer.compute(quote, session_for())
             if m is None:
-                self._reply(f"{symbol}: no quote available right now")
+                self._reply(f"{bold(symbol)}: no quote available right now.",
+                            markup=MAIN_MENU)
                 return
             enr = self.engine.enricher.enrich(symbol, self.engine._quote_for(m), m)
             market = self.engine.market.get(force=True)
@@ -247,70 +469,103 @@ class CommandHandler:
             text = format_alert2(m, enr, market, shariah_lines=shariah_lines,
                                  reaction=reaction, price_forecast=price_fc,
                                  ai_running=False, validated=validated, risk_usd=risk_usd)
-            self._reply(text)
+            self._reply(text, markup=self._check_menu(symbol), html=False)
         except Exception as exc:  # noqa: BLE001
             log.exception("check failed for %s: %s", symbol, exc)
-            self._reply(f"check failed: {exc}")
+            self._reply(f"Check failed: {h(exc)}")
+
+    @staticmethod
+    def _check_menu(symbol: str) -> dict:
+        return inline([
+            [button(f"\U0001F504 Re-check {symbol}", cb("check", symbol)),
+             button("\U0001F54C Halal", cb("halal", symbol)),
+             button("\U0001F441 Watchlist", cb("watch"))],
+            [button("Market", cb("market")), button("\U0001F3E0 Menu", cb("menu"))],
+        ])
+
+    def _render_market_text(self) -> str:
+        if not self.engine:
+            return "Engine not available."
+        ctx = self.engine.market.get(force=True)
+        lines = [bold("MARKET")]
+        regime = (ctx.regime or "unknown").upper()
+        lines.append(f"Regime: {h(regime)} \u00b7 {h(session_for())}")
+        if ctx.quotes or ctx.index_levels:
+            lines.append(divider())
+        for sym, q in ctx.quotes.items():
+            ch = q.get("change_pct")
+            lines.append(f"{arrow_for(ch)} {code(sym)} {h(money(q.get('price')))} "
+                         f"{h(pct(ch))} \u00b7 15m {h(pct(q.get('change_15m')))} "
+                         f"\u00b7 60m {h(pct(q.get('change_60m')))}")
+        for sym, lv in ctx.index_levels.items():
+            ch = lv.get("change_pct")
+            price = lv.get("price")
+            price_txt = f"{price:,.2f}" if isinstance(price, (int, float)) else "-"
+            lines.append(f"{arrow_for(ch)} {code(sym)} {price_txt} {h(pct(ch))}")
+        if ctx.sectors:
+            lines.append(divider("Sectors"))
+            for s in ctx.sectors[:6]:
+                ch = s.get("change_pct")
+                lines.append(f"{arrow_for(ch)} {h(s['name'])} {h(pct(ch))}")
+        if ctx.events:
+            lines.append(divider("Events"))
+            for e in ctx.events[:4]:
+                lines.append(f"\u2022 {h(e.get('time'))} {h(e.get('event'))}")
+        if ctx.news:
+            lines.append(divider("News"))
+            for n in ctx.news[:3]:
+                lines.append(f"\u2022 {h(n)}")
+        if ctx.missing:
+            lines.append(divider())
+            lines.append(f"\u26A0\uFE0F missing: {h(', '.join(ctx.missing))}")
+        return "\n".join(lines)
 
     def cmd_market(self, args) -> None:
         if not self.engine:
-            self._reply("engine not available")
+            self._reply("Engine not available.")
             return
-        ctx = self.engine.market.get(force=True)
-        lines = [ctx.headline()]
-        for sym, q in ctx.quotes.items():
-            lines.append(f"  {sym} {money(q.get('price'))} {pct(q.get('change_pct'))} "
-                         f"15m {pct(q.get('change_15m'))} 60m {pct(q.get('change_60m'))}")
-        for sym, lv in ctx.index_levels.items():
-            lines.append(f"  {sym} {lv.get('price'):,.2f} {pct(lv.get('change_pct'))}")
-        if ctx.sectors:
-            lines.append("sectors: " + ", ".join(
-                f"{s['name']} {pct(s['change_pct'])}" for s in ctx.sectors[:6]))
-        if ctx.events:
-            lines.append("events: " + "; ".join(
-                f"{e.get('time')} {e.get('event')}" for e in ctx.events[:4]))
-        if ctx.news:
-            lines.append("news: " + " | ".join(ctx.news[:3]))
-        if ctx.missing:
-            lines.append("missing: " + ", ".join(ctx.missing))
-        self._reply("\n".join(lines))
+        self._reply(self._render_market_text(), markup=MARKET_MENU)
 
     def cmd_models(self, args) -> None:
         if not self.catalog or not self.runner:
-            self._reply("models are not configured")
+            self._reply("Models are not configured.")
             return
         sub = args[0].lower() if args else ""
         if sub == "refresh":
+            self._typing()
             result = self.runner.discovery(self.telegram)
-            self._reply("model list refreshed.\n"
+            self._reply(f"{bold('Model list refreshed')}\n"
                         f"listed: {len(result['listed'])}\n"
-                        f"failed test: {', '.join(result['failed_tests']) or 'none'}\n"
-                        f"new (confirm with /models add): "
-                        f"{', '.join(result['unknown_to_user']) or 'none'}")
+                        f"failed test: {h(', '.join(result['failed_tests']) or 'none')}\n"
+                        f"new (confirm with <code>/models add</code>): "
+                        f"{h(', '.join(result['unknown_to_user']) or 'none')}",
+                        markup=MODELS_MENU)
             return
         if sub == "add":
             if len(args) < 3:
-                self._reply("usage: /models add ID MULTIPLIER")
+                self._reply("Usage: <code>/models add ID MULTIPLIER</code>")
                 return
             try:
                 multiplier = float(args[2])
             except ValueError:
-                self._reply("multiplier must be a number")
+                self._reply("Multiplier must be a number.")
                 return
             self.catalog.add(args[1], multiplier)
-            self._reply(f"added {args[1]} at {multiplier}x")
+            self._reply(f"Added {code(args[1])} at {multiplier}x", markup=MODELS_MENU)
             return
         if sub == "remove":
             if len(args) < 2:
-                self._reply("usage: /models remove ID")
+                self._reply("Usage: <code>/models remove ID</code>")
                 return
             ok = self.catalog.remove(args[1])
-            self._reply(f"removed {args[1]}" if ok else f"{args[1]} was not in the catalogue")
+            self._reply(f"Removed {code(args[1])}" if ok
+                        else f"{code(args[1])} was not in the catalogue",
+                        markup=MODELS_MENU)
             return
         if sub == "apply":
             panel, changed = apply_selection(self.db, self.cfg, self.catalog, self.telegram)
-            self._reply(f"panel {'changed to ' if changed else 'unchanged: '}"
-                        + ", ".join(panel))
+            self._reply(f"Panel {'changed to' if changed else 'unchanged: '} "
+                        + ", ".join(code(m) for m in panel), markup=MODELS_MENU)
             return
         if sub == "set":
             ids = []
@@ -319,20 +574,23 @@ class CommandHandler:
                     model, _, mult = token.partition(":")
                     self.catalog.add(model, float(mult or 1.0))
                 ids.append(token.split(":")[0])
-            self._reply("model ids recorded: " + ", ".join(ids))
+            self._reply("Model ids recorded: " + ", ".join(code(i) for i in ids),
+                        markup=MODELS_MENU)
             return
-        self._reply(leaderboard_text(self.db, self.cfg, self.catalog))
+        self._reply(leaderboard_text(self.db, self.cfg, self.catalog),
+                    markup=MODELS_MENU, html=False)
 
     def cmd_setmodels(self, args) -> None:
         if not args:
-            self._reply("usage: /setmodels A,B,C")
+            self._reply("Usage: <code>/setmodels A,B,C</code>")
             return
         models = [m.strip() for m in args[0].split(",") if m.strip()]
         if len(models) < 1:
-            self._reply("usage: /setmodels A,B,C")
+            self._reply("Usage: <code>/setmodels A,B,C</code>")
             return
         self.db.kv_set("active_panel", models)
-        self._reply("active panel set to: " + ", ".join(models))
+        self._reply("Active panel set to: " + ", ".join(code(m) for m in models),
+                    markup=MODELS_MENU)
         if self.backup:
             self.backup.run("panel-change")
 
@@ -340,20 +598,21 @@ class CommandHandler:
         """Set any configuration value from the bot. Secrets are saved, not echoed."""
         from .config import DEFAULTS, SECRET_KEYS, RESTART_KEYS
         if len(args) < 2:
-            self._reply("usage: /set KEY VALUE   (e.g. /set FINVIZ_TOKEN abc123)")
+            self._reply("Usage: <code>/set KEY VALUE</code> "
+                        "(e.g. <code>/set FINVIZ_TOKEN abc123</code>)")
             return
         key = args[0].upper()
         value = " ".join(args[1:]).strip()
         if key not in DEFAULTS:
             known = ", ".join(sorted(k for k in DEFAULTS if k in SECRET_KEYS))
-            self._reply(f"unknown key {key}.\nSettable secrets: {known}")
+            self._reply(f"Unknown key {code(key)}.\nSettable secrets: {h(known)}")
             return
         was_secret = key in SECRET_KEYS
         self.cfg.set(key, value)
         try:
             self.cfg.save()
         except Exception as exc:  # noqa: BLE001
-            self._reply(f"could not save {key}: {exc}")
+            self._reply(f"Could not save {code(key)}: {h(exc)}")
             return
         try:
             from .logging_setup import update_secrets
@@ -367,61 +626,69 @@ class CommandHandler:
             except Exception:  # noqa: BLE001
                 pass
             shown = self.cfg.display(key)
-            self._reply(f"{key} saved (now {shown}).")
+            self._reply(f"\u2705 {code(key)} saved (now {h(shown)}).")
         else:
-            self._reply(f"{key} = {value}")
+            self._reply(f"\u2705 {code(key)} = {h(value)}")
         if key in RESTART_KEYS:
-            self._reply(f"note: {key} takes effect after the next restart "
-                        f"(sudo systemctl restart penny).")
+            self._reply(f"\u26A0\uFE0F {code(key)} takes effect after the next restart "
+                        f"(<code>sudo systemctl restart penny</code>).")
 
-    def cmd_keys(self, args) -> None:
+    def _render_keys_text(self) -> str:
         """Show which settings are configured, masking every secret."""
-        from .config import DEFAULTS, GROUPS
         important = [
             "FINVIZ_TOKEN", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "AI_BASE_URL", "AI_KEY",
             "HALALTERMINAL_API_KEY", "SEC_USER_AGENT", "BACKUP_PASSPHRASE", "BACKUP_REMOTE",
         ]
-        lines = ["KEYS"]
+        lines = [bold("KEYS")]
         for key in important:
             value = str(self.cfg.raw(key))
-            mark = "set" if value.strip() else "MISSING"
-            lines.append(f"  {key} = {self.cfg.display(key) if value.strip() else '-'} [{mark}]")
-        extra = [k for k in DEFAULTS if k not in important and k in GROUPS.get("Feed", [])]
-        lines.append("send /set KEY VALUE to change any of the above")
-        self._reply("\n".join(lines))
+            ok = bool(value.strip())
+            mark = "\u2705" if ok else "\u274C"
+            shown = h(self.cfg.display(key)) if ok else "-"
+            lines.append(f"{mark} {code(key)} = {shown}")
+        lines.append(divider())
+        lines.append("Send <code>/set KEY VALUE</code> to change any of the above.")
+        return "\n".join(lines)
+
+    def cmd_keys(self, args) -> None:
+        self._reply(self._render_keys_text(), markup=MAIN_MENU)
+
+    def cmd_halal_text(self, symbol: str) -> str:
+        status = self.shariah.status(symbol, fetch=True)
+        lines = [bold(f"SHARIAH {symbol}")] + self.shariah.detail_lines(status)
+        return "\n".join(h(line) for line in lines)
 
     def cmd_halal(self, args) -> None:
         if not args:
-            self._reply("usage: /halal SYM")
+            self._reply("Usage: <code>/halal SYM</code>", markup=MAIN_MENU)
             return
         symbol = args[0].upper()
         if not self.shariah:
-            self._reply("Shariah screening is not configured")
+            self._reply("Shariah screening is not configured.", markup=MAIN_MENU)
             return
-        status = self.shariah.status(symbol, fetch=True)
-        self._reply("\n".join(self.shariah.detail_lines(status)))
+        self._reply(self.cmd_halal_text(symbol), markup=self._check_menu(symbol))
 
     def cmd_backup(self, args) -> None:
         if not self.backup:
-            self._reply("backup is not configured")
+            self._reply("Backup is not configured.")
             return
         sub = args[0].lower() if args else "now"
         if sub != "now":
-            self._reply("usage: /backup now")
+            self._reply("Usage: <code>/backup now</code>")
             return
-        self._reply("running a backup...")
+        self._typing()
         result = self.backup.run("manual")
-        self._reply(f"backup {result.status}: {result.size / 1024:.0f} KB "
-                    f"({result.note or 'ok'})")
+        self._reply(f"\u2705 Backup {h(result.status)}: {result.size / 1024:.0f} KB "
+                    f"({h(result.note or 'ok')})", markup=MAIN_MENU)
 
     def cmd_backups(self, args) -> None:
         if not self.backup:
-            self._reply("backup is not configured")
+            self._reply("Backup is not configured.")
             return
-        self._reply(self.backup.health_text())
+        self._reply(self.backup.health_text(), html=False, markup=MAIN_MENU)
 
     def cmd_status(self, args) -> None:
         if not self.engine:
-            self._reply("engine not available")
+            self._reply("Engine not available.")
             return
-        self._reply(self.engine.status_text())
+        self._reply(self.engine.status_text(), html=False, markup=STATUS_MENU)

@@ -18,6 +18,7 @@ from .fib import reentry_guidance
 from .market_context import MarketContextProvider
 from .scoring import (PHASE_EXTENDED, PHASE_FADING, TIER_EARLY, Metrics, Scorer)
 from .sources.finviz import FinvizTokenRejected, row_get, row_num
+from .ui import button, cb, inline
 from .util import (SESSION_CLOSED, age_str, is_trading_day, money, pct, session_end,
                    session_for, to_et)
 
@@ -25,6 +26,15 @@ log = logging.getLogger(__name__)
 
 EXCLUDED_SUFFIXES = {"W", "WS", "WT", "U", "UN", "R", "RT", "P", "PR", "A", "B", "C"}
 SPLIT_ARTIFACT_PCT = 400.0
+
+
+def alert_menu(symbol: str) -> dict:
+    """Inline buttons under an alert so a symbol is one tap away."""
+    return inline([
+        [button(f"\U0001F504 Re-check {symbol}", cb("check", symbol)),
+         button("\U0001F54C Halal", cb("halal", symbol))],
+        [button("\U0001F4CA Market", cb("market")), button("\U0001F3E0 Menu", cb("menu"))],
+    ])
 
 
 class Engine:
@@ -347,7 +357,7 @@ class Engine:
         text1 = format_alert1(m, shariah_line=shariah_line, pct_rank=rank, resumed=resumed)
         msg_id = None
         try:
-            msg_id = self.telegram.send(text1)
+            msg_id = self.telegram.send(text1, markup=alert_menu(m.symbol))
         except Exception as exc:  # noqa: BLE001
             log.error("alert 1 send failed: %s", exc)
 
@@ -389,7 +399,8 @@ class Engine:
         if msg_id and self.shariah and shariah.get("combined") != "UNKNOWN":
             try:
                 self.telegram.edit(msg_id, format_alert1(
-                    m, shariah_line=self.shariah.one_line(shariah), pct_rank=rank))
+                    m, shariah_line=self.shariah.one_line(shariah), pct_rank=rank),
+                    markup=alert_menu(m.symbol))
             except Exception:  # noqa: BLE001
                 pass
         if alert_id and shariah.get("combined"):
@@ -402,7 +413,7 @@ class Engine:
         try:
             detail_id = self.telegram.send(format_alert2(
                 m, enr, market, shariah_lines=shariah_lines, ai_running=True,
-                risk_usd=risk_usd))
+                risk_usd=risk_usd), markup=alert_menu(m.symbol))
         except Exception as exc:  # noqa: BLE001
             log.error("alert 2 send failed: %s", exc)
 
@@ -426,7 +437,7 @@ class Engine:
                               validated=agg.validated, risk_usd=risk_usd)
         if detail_id:
             try:
-                self.telegram.edit(detail_id, text2)
+                self.telegram.edit(detail_id, text2, markup=alert_menu(m.symbol))
             except Exception as exc:  # noqa: BLE001
                 log.debug("alert 2 edit failed: %s", exc)
         else:
