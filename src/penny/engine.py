@@ -12,7 +12,8 @@ from typing import Optional
 
 from .ai.evaluate import evaluate_due, store_predictions
 from .ai.panel import AggregateForecast, ModelForecast, price_forecast_text, reaction_text
-from .alerts import build_ai_facts, format_alert1, format_alert2, tier_name
+from .alerts import (build_ai_facts, format_alert1, format_alert2, format_build_digest,
+                     tier_name)
 from .enrich import Enricher
 from .fib import reentry_guidance
 from .market_context import MarketContextProvider
@@ -79,6 +80,7 @@ class Engine:
         self._movers_ts = 0.0
         self._quotes_by_symbol: dict[str, dict] = {}
         self._last_metrics: list[Metrics] = []
+        self._builds: list = []
         self._split_cache: dict[str, bool] = {}
         self._last_alert: dict[str, tuple[float, int]] = {}
         self._alert_ids: dict[str, int] = {}
@@ -90,6 +92,8 @@ class Engine:
         self._feed_notified = False
         self._last_cycle: dict = {}
         self._last_digest_key = ""
+        self._last_build_ts = 0.0
+        self._last_build_ids: set[str] = set()
         self._last_eod_day = ""
         self._last_hourly_backup = 0.0
         self._last_full_backup = 0.0
@@ -215,6 +219,7 @@ class Engine:
                 stats["alerts"] += 1
 
         self._track_watchlist(metrics_list, session)
+        self._maybe_build_feed(session, metrics_list)
         self._maybe_digest(session, metrics_list)
         self._evaluate_forecasts()
         self.scorer.cycle()
@@ -540,6 +545,42 @@ class Engine:
         return ""
 
     # -- digests / end of day ----------------------------------------------
+    def _maybe_build_feed(self, session: str, metrics: list[Metrics]) -> None:
+        """Surface quiet accumulations the alert rules stay silent on.
+
+        A gainers screen only shows a stock after it has moved, and the alert bar
+        is tier 2. This keeps the tier-1 builds on the radar with a throttled,
+        low-noise digest of *new* names (so it does not repeat every cycle).
+        """
+        if not self.cfg.bool("BUILD_FEED", True) or session not in ("pre", "regular", "post"):
+            return
+        try:
+            builds = self.scorer.build_candidates(metrics)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("build scan failed: %s", exc)
+            return
+        self._builds = builds
+        if not builds:
+            # Forget the last set so a build that reappears is announced again.
+            self._last_build_ids = set()
+            return
+
+        now = self.clock()
+        every = max(60, self.cfg.int("BUILD_FEED_SECONDS", 900))
+        current = {b.metrics.symbol for b in builds[:self.cfg.int("BUILD_TOP_N", 6)]}
+        fresh = current - self._last_build_ids
+        due = now - self._last_build_ts >= every
+        # Always speak up for a brand-new build; otherwise keep the cadence and
+        # only repeat when the set of names changed.
+        if not fresh and not (due and current != self._last_build_ids):
+            return
+        self._last_build_ts = now
+        self._last_build_ids = current
+        note = format_build_digest(builds, seconds=every,
+                                   limit=self.cfg.int("BUILD_TOP_N", 6), html=True)
+        if note:
+            self._safe_send(note)
+
     def _maybe_digest(self, session: str, metrics: list[Metrics]) -> None:
         if session not in ("pre", "regular", "post") or not metrics:
             return

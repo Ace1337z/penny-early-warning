@@ -8,10 +8,10 @@ import time
 from typing import Optional
 
 from .ai.leaderboard import apply_selection, leaderboard_text
-from .alerts import tier_name
+from .alerts import format_build_feed, tier_name
 from .ui import (arrow_for, bar, bold, button, cb, code, divider, h, inline,
                  parse_cb, reply_keyboard)
-from .util import money, pct, session_for
+from .util import money, num, pct, session_for
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ Tap a button below, or type a command.
 
 <b>Live</b>
 /top - champions and hidden gems
+/builds - motion building below the alert bar
 /market - market context now
 /status - system health
 
@@ -44,6 +45,7 @@ Tap a button below, or type a command.
 COMMANDS: list[tuple[str, str]] = [
     ("start", "open the button menu"),
     ("top", "champions and hidden gems"),
+    ("builds", "momentum building below the alert bar"),
     ("market", "market context now"),
     ("status", "system health"),
     ("check", "full analysis for a symbol"),
@@ -55,11 +57,11 @@ COMMANDS: list[tuple[str, str]] = [
 ]
 
 MAIN_MENU = inline([
-    [button("Top", cb("top")), button("Market", cb("market")),
-     button("Status", cb("status"))],
-    [button("Models", cb("models")), button("Watchlist", cb("watch")),
-     button("Keys", cb("keys"))],
-    [button("Backup", cb("backup")), button("Help", cb("help"))],
+    [button("Top", cb("top")), button("Builds", cb("builds")),
+     button("Market", cb("market"))],
+    [button("Status", cb("status")), button("Models", cb("models")),
+     button("Watchlist", cb("watch"))],
+    [button("Keys", cb("keys")), button("Backup", cb("backup")), button("Help", cb("help"))],
 ])
 
 MARKET_MENU = inline([
@@ -190,6 +192,9 @@ class CommandHandler:
     def _cb_top(self, arg: str, mid: Optional[int]) -> None:
         self._render(self._render_top_text(), self._top_menu(), mid)
 
+    def _cb_builds(self, arg: str, mid: Optional[int]) -> None:
+        self._render(self._render_builds_text(), self._build_menu(), mid)
+
     def _cb_market(self, arg: str, mid: Optional[int]) -> None:
         self._typing()
         self._render(self._render_market_text(), MARKET_MENU, mid)
@@ -247,6 +252,7 @@ class CommandHandler:
 
     _CALLBACKS = {
         "top": _cb_top,
+        "builds": _cb_builds,
         "market": _cb_market,
         "status": _cb_status,
         "models": _cb_models,
@@ -267,6 +273,7 @@ class CommandHandler:
         try:
             handler = {
                 "/top": self.cmd_top,
+                "/builds": self.cmd_builds,
                 "/watch": self.cmd_watch,
                 "/unwatch": self.cmd_unwatch,
                 "/watchlist": self.cmd_watchlist,
@@ -304,9 +311,9 @@ class CommandHandler:
         try:
             self.telegram.send(greeting, html=True,
                                markup=reply_keyboard([
-                                   ["/top", "/market", "/status"],
-                                   ["/watchlist", "/models", "/keys"],
-                                   ["/help"],
+                                   ["/top", "/builds", "/market"],
+                                   ["/status", "/watchlist", "/models"],
+                                   ["/keys", "/help"],
                                ]))
         except TypeError:
             # A client that does not accept markup yet.
@@ -363,6 +370,51 @@ class CommandHandler:
 
     def cmd_top(self, args) -> None:
         self._reply(self._render_top_text(), markup=self._top_menu())
+
+    def _render_builds_text(self) -> str:
+        """Stocks accumulating below the alert bar, with what is still missing."""
+        metrics = getattr(self.engine, "_last_metrics", None) if self.engine else None
+        if not metrics:
+            return (f"{bold('MOMENTUM BUILDS')}\nNo scored symbols yet. The market may be "
+                    f"closed, or the first cycles are still warming up.")
+        builds = getattr(self.engine, "_builds", None)
+        if builds is None and getattr(self.engine, "scorer", None):
+            try:
+                builds = self.engine.scorer.build_candidates(metrics)
+            except Exception:  # noqa: BLE001
+                builds = []
+        builds = builds or []
+        if not builds:
+            return (f"{bold('MOMENTUM BUILDS')}\nNothing building below the alert bar "
+                    f"right now - that is expected on a quiet tape.")
+        lines = [bold("MOMENTUM BUILDS"), "Accumulating, not yet alert-tier."]
+        for sig in builds[:self.cfg.int("BUILD_TOP_N", 6)]:
+            m = sig.metrics
+            lines.append(f"{arrow_for((m.pct_vs_close or 0) * 100)} {code(m.symbol)} "
+                         f"{h(money(m.price))} {h(pct((m.pct_vs_close or 0) * 100))} "
+                         f"\u00b7 {h(sig.stage.lower())} {sig.score:.0f} "
+                         f"\u00b7 {bar(sig.score / 100)}")
+            detail = [f"15m {h(pct((m.rise.get(15, 0) or 0) * 100))}",
+                      f"vol {h(num(m.volx.get(15, 0), 1))}x",
+                      "above VWAP" if sig.above_vwap else "below VWAP"]
+            lines.append("   " + " \u00b7 ".join(detail))
+            if sig.missing:
+                lines.append(f"   \u2192 to alert: {h('; '.join(sig.missing))}")
+        lines.append("\U0001F50D Tap a symbol for the full analysis")
+        return "\n".join(lines)
+
+    def _build_menu(self) -> dict:
+        metrics = getattr(self.engine, "_last_metrics", None) if self.engine else None
+        builds = getattr(self.engine, "_builds", None) or []
+        picks = [b.metrics.symbol for b in builds[:8]]
+        rows = [[button(f"\U0001F50D {s}", cb("check", s))] for s in picks]
+        return inline(rows + [
+            [button("\U0001F504 Refresh", cb("builds")), button("Top", cb("top")),
+             button("Market", cb("market")), button("\U0001F3E0 Menu", cb("menu"))],
+        ]) or MAIN_MENU
+
+    def cmd_builds(self, args) -> None:
+        self._reply(self._render_builds_text(), markup=self._build_menu())
 
     def cmd_watch(self, args) -> None:
         if not args:

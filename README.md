@@ -1,10 +1,10 @@
-# Penny Stock Early-Warning System
+﻿# Penny Stock Early-Warning System
 
 **Catches sub-$10 US stocks while a move is still *building*, not after it has already run.**
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-135%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-155%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -175,6 +175,27 @@ A **`NONE` tier** is not an error. The alert bar is `WATCH` and above; `NONE` me
 the message came from a manual `/check`, a resumed halt, or a signal override, and
 the `SETUP` line names the rule that is not met yet.
 
+### Watching a build before it alerts
+
+`/builds` (and the periodic feed) shows stocks that are accumulating below the alert
+bar. `coiled 96/100` is progress toward the tier-2 gates - not a confidence score -
+and each line names exactly what is still missing:
+
+```text
+BUILDING NOW - watch, not a buy signal
+ABCD   $1.27   +26.7% vs close  [coiled 96/100]
+  +26.7% vs close | +3.7% 15m | 9.0x vol | $17.1K 15m | above VWAP
+  to alert: volume 9.0x -> 10x
+WXYZ   $1.14   +14.2% vs close  [building 74/100]
+  +14.2% vs close | +2.1% 15m | 4.0x vol | $6.9K 15m | above VWAP
+  to alert: volume 4.0x -> 10x; $6.9K -> $10K
+```
+
+Stages are `warming` -> `building` -> `accelerating` -> `coiled` (nearly at the
+alert bar). Tune it with `BUILD_FEED`, `BUILD_FEED_SECONDS`, `BUILD_TOP_N`,
+`BUILD_MIN_SCORE`, `BUILD_RISE15`, `BUILD_VOLX15`, `BUILD_DOLLAR15` and
+`BUILD_MIN_MINUTES`.
+
 The AI panel does not just answer once. Every candidate is forecast, and each forecast is
 **evaluated at its horizon** against what actually happened. The three models with the best
 track record form the active panel; models that fail to beat simple baselines are not
@@ -187,6 +208,10 @@ activated.
 - **Whole-universe watching** - market-mover screens (top gainers, new highs, unusual
   volume, overbought, oversold, most active, insider buying) plus a full sweep of sub-$10
   US stocks, in all three sessions, so nothing depends on a single screener's ranking.
+- **Momentum-build watch feed** - the alert bar is a *confirmed* tier-2 move. Stocks that
+  are clearly accumulating (rising volume, price above VWAP) but sit just below that bar
+  are surfaced separately, with the exact tier-2 gate still missing, so quiet grinds are
+  not invisible until the burst.
 - **Two-stage alerts** - instant Alert 1, then a fact-rich Alert 2 enriched in parallel.
 - **AI panel with a leaderboard** - parallel model calls, shadow candidates, stored
   forecasts, horizon evaluation, automatic selection of the best three, and a cost
@@ -355,6 +380,7 @@ buttons under every reply to drill in without typing.
 ```text
 /start                   welcome + persistent button keyboard
 /top                     champions and hidden gems (one tap per symbol)
+/builds                  momentum building below the alert bar
 /watch SYM ENTRY [STOP] [TARGET]
 /unwatch SYM
 /watchlist
@@ -378,12 +404,13 @@ buttons under every reply to drill in without typing.
 buttons, so a symbol is always one tap away:
 
 - Alerts and `/check` - **Re-check**, **Halal**, **Market**, **Menu**.
-- `/top` - one button per ranked symbol plus **Refresh**.
+- `/top`, `/builds` - one button per listed symbol plus **Refresh**.
 - `/market`, `/status`, `/models` - **Refresh**, **Market**, **Menu**.
 - Tapping a button edits the message in place instead of posting a new one.
 
-Messages are HTML-formatted (bold headers, monospace symbols, direction and
-score meters). Alert bodies stay plain text so nothing needs escaping.
+Alerts, `/check` and `/builds` are HTML-formatted (bold headers, monospace
+symbols, direction and score meters) with all dynamic text escaped. Lower-risk
+notices (feed health, digests) stay plain text.
 
 ---
 
@@ -431,7 +458,7 @@ fake Telegram, and asserts the documented acceptance results:
 - a model that does not beat the baselines is not activated
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **135 passed**.
+Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **155 passed**.
 
 ---
 
@@ -458,13 +485,13 @@ config.env.example         every setting, no real values
 src/penny/
   cli.py                   command line
   runtime.py               builds every component from configuration
-  engine.py                poll loop, alert rules, digests, tracking, end of day
-  scoring.py               rolling state, Rise/Volx/Accel/VWAP, tiers, score, phase
+  engine.py                poll loop, alert rules, build feed, digests, tracking, end of day
+  scoring.py               rolling state, Rise/Volx/Accel/VWAP, tiers, score, phase, builds
   sources/                 finviz, alpaca, finnhub, sec, finra, yahoo
   ai/                      catalog, gateway, panel, evaluate, leaderboard, runner
   shariah.py               halalterminal.com, screening rules, modes, cache
   enrich.py                parallel enrichment, technicals, Fibonacci, plan
-  alerts.py                Alert 1 / Alert 2 formatting and the AI fact bundle
+  alerts.py                Alert 1 / Alert 2 / build feed formatting + the AI fact bundle
   telegram.py              Telegram client + offline fake
   ui.py                    HTML escaping, inline/reply keyboards, callback codes
   journal.py               events, bar download, metrics, rule search

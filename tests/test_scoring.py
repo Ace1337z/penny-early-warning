@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from penny.scoring import (PHASE_FADING, TIER_CONFIRMED, TIER_NONE, TIER_WATCH,
+from penny.scoring import (PHASE_FADING, TIER_CONFIRMED, TIER_EARLY, TIER_NONE, TIER_WATCH,
                            Scorer)
 
 
@@ -91,3 +91,93 @@ def test_ranking_champions_and_gems(cfg):
     ranked = Scorer(cfg).rank(metrics)
     assert ranked["champions"]
     assert all(m.tier >= 1 for m in ranked["hidden_gems"])
+
+
+# --- momentum builds (below the alert bar) ---------------------------------
+
+def _build_feed(scorer, symbol="BUILD", samples=90, per_sample=400.0,
+                step=0.00233, avg=96_000):
+    prices = [1.0 + i * step for i in range(samples)]
+    return _feed(scorer, symbol, prices, [per_sample] * samples, time.time() - 3600,
+                 prev_close=1.0, avg=avg)
+
+
+def test_build_candidate_is_surfaced_below_the_alert_bar(cfg):
+    cfg.set("WARMUP_CYCLES", "0")
+    scorer = Scorer(cfg)
+    scorer.cycles = 5
+    m = _build_feed(scorer)
+    # It is a genuine build, but not yet an alert.
+    assert m.tier < TIER_EARLY
+    assert m.rise.get(15, 0) >= 0.015
+    builds = scorer.build_candidates([m])
+    assert len(builds) == 1
+    sig = builds[0]
+    assert sig.metrics.symbol == "BUILD"
+    assert 0 < sig.score <= 100
+    assert sig.stage in ("WARMING", "BUILDING", "ACCELERATING", "COILED")
+    assert sig.missing  # it names what is still needed
+
+
+def test_build_candidate_excludes_quiet_noise(cfg):
+    cfg.set("WARMUP_CYCLES", "0")
+    scorer = Scorer(cfg)
+    scorer.cycles = 5
+    m = _feed(scorer, "NOISE", [2.0 + (0.01 if i % 2 else -0.01) for i in range(90)],
+              [100] * 90, time.time() - 3600, prev_close=2.0, avg=96_000)
+    assert scorer.build_candidates([m]) == []
+
+
+def test_build_candidate_excludes_alert_tier_stocks(cfg):
+    cfg.set("WARMUP_CYCLES", "0")
+    scorer = Scorer(cfg)
+    scorer.cycles = 5
+    m = _feed(scorer, "TEST", [1.0 if i < 10 else 1.0 + (i - 10) * 0.011
+                               for i in range(90)], [2500] * 90,
+              time.time() - 3600)
+    assert m.tier >= TIER_EARLY
+    assert scorer.build_candidates([m]) == []
+
+
+def test_build_candidate_excludes_fading_stocks(cfg):
+    cfg.set("WARMUP_CYCLES", "0")
+    scorer = Scorer(cfg)
+    scorer.cycles = 5
+    m = _build_feed(scorer, "FADE")
+    m.phase = PHASE_FADING
+    assert scorer.build_candidates([m]) == []
+
+
+def test_build_candidate_honours_a_minimum_score(cfg):
+    cfg.set("WARMUP_CYCLES", "0")
+    cfg.set("BUILD_MIN_SCORE", "101")  # impossible
+    scorer = Scorer(cfg)
+    scorer.cycles = 5
+    m = _build_feed(scorer)
+    assert scorer.build_candidates([m]) == []
+
+
+def test_build_candidate_ranking_is_by_score(cfg):
+    cfg.set("WARMUP_CYCLES", "0")
+    scorer = Scorer(cfg)
+    scorer.cycles = 5
+    weak = _build_feed(scorer, "WEAK", per_sample=400.0, step=0.0016)
+    strong = _build_feed(scorer, "STRONG", per_sample=900.0, step=0.003)
+    builds = scorer.build_candidates([weak, strong])
+    assert [b.metrics.symbol for b in builds] == ["STRONG", "WEAK"]
+
+
+def test_build_stage_needs_near_completion_to_coil(cfg):
+    from penny.scoring import Metrics as _M
+    scorer = Scorer(cfg)
+    m = _M(symbol="X", ts=0.0, price=1.0)
+    m.accel = 1.0
+    # High progress but two gates still open is not "coiled".
+    assert scorer._build_stage(74.0, m, True, missing_count=2) == "BUILDING"
+    # High progress with one gate left is.
+    assert scorer._build_stage(96.0, m, True, missing_count=1) == "COILED"
+    # A fast, above-VWAP builder that is not near the bar.
+    assert scorer._build_stage(50.0, m, True, missing_count=3) == "BUILDING"
+    m.accel = 2.0
+    assert scorer._build_stage(50.0, m, True, missing_count=3) == "ACCELERATING"
+    assert scorer._build_stage(50.0, m, False, missing_count=3) == "WARMING"

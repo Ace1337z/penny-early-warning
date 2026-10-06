@@ -178,6 +178,49 @@ needs a live check.
   with a warning when the archive exceeds ~45 MB.
 - **Status:** **TO CONFIRM** (set `BACKUP_REMOTE` and `BACKUP_PASSPHRASE`).
 
+## C19 — Surfacing momentum builds below the alert bar
+- **Question:** the alert bar is tier 2 (`TIER_EARLY`), so slow accumulations (steady
+  volume with a mild rise) and pre-burst coils never notify. Does that lose real
+  "momentum build" stocks?
+- **Default adopted:** a separate **momentum-build watch feed**. `Scorer.build_candidates()`
+  ranks stocks that are below the alert bar but clearly accumulating (rise, relative volume
+  and dollar volume above `BUILD_*` floors), with `BUILD_MIN_MINUTES` of history and not
+  `EXTENDED`/`FADING`. Each signal gets a 0-100 **progress** score toward the tier-2 gates
+  (its weakest gate sets the pace), a stage (`WARMING` -> `BUILDING` -> `ACCELERATING` ->
+  `COILED`) and the exact gate still missing. Surfaced on demand with `/builds` and as a
+  throttled digest (`BUILD_FEED_SECONDS`, default 900) that speaks immediately for a
+  brand-new name and otherwise only when the set changes. It is explicitly **not a buy
+  signal**.
+- **Where:** `src/penny/scoring.py` (`BuildSignal`, `build_candidates`, `_build_stage`),
+  `src/penny/alerts.py` (`format_build_feed`, `format_build_digest`),
+  `src/penny/engine.py` (`_maybe_build_feed`), `src/penny/commands.py` (`/builds`).
+- **Status:** implemented and covered by tests; tune thresholds on the VPS from the
+  `cycles`/`daily` data and the forward-return evidence.
+
+## C20 — Tracking a runner that leaves the sub-$10 band
+- **Question:** the universe and mover screens both floor at `sh_price_u10`, and
+  `_fetch_quotes` drops any price outside `[MIN_PRICE, MAX_PRICE]`. A sub-$10 stock that
+  becomes a +200% runner crosses $10 and stops being quoted exactly when the move is
+  largest. Does that break tracking and re-alerts?
+- **Default adopted:** **not yet changed.** The alert still fires on the way up, but
+  post-$10 tracking can go dark. The intended fix is a separate, higher ceiling for
+  symbols already known to the scorer (a "tracked" set), so they keep being quoted after
+  they leave the scanner band.
+- **Status:** **OPEN** (not implemented; the user chose the build feed first).
+- **Where:** `src/penny/engine.py` (`build_universe`, `_fetch_quotes`),
+  `src/penny/sources/finviz.py` (`universe`, `movers`, `FINVIZ_FILTERS`).
+
+## C21 — Finviz rate budget vs the poll cadence
+- **Question:** one in-session cycle issues ~7 mover calls plus 1 universe call (~16/min)
+  on a shared 20/min limiter also used by market context, enrichment and `/check`. Under
+  load the limiter queues and the 20-30 s cadence stretches. How much can be trimmed?
+- **Default adopted:** **not yet changed.** Candidate reductions: fewer `FINVIZ_SIGNALS`,
+  a longer `FINVIZ_MOVERS_TTL`, skipping snapshots for symbols already present in the
+  cycle's rows, and/or raising `FINVIZ_MAX_PER_MIN` if the Elite plan allows it.
+- **Status:** **OPEN** (not implemented; the user chose the build feed first).
+- **Where:** `src/penny/sources/finviz.py` (`movers`, `SIGNALS`), `src/penny/engine.py`
+  (`_symbols_for_cycle`, `_fetch_quotes`).
+
 ## C18 — Encryption tool on the VPS
 - **Question:** is `age` or GnuPG available?
 - **Default adopted:** **GnuPG symmetric** (AES-256) when `gpg` is present; otherwise an
@@ -214,6 +257,8 @@ enrichment and a forecast (Alert 2 sent); Fibonacci levels and a plan appear; ma
 appears in the AI input; a forced price mismatch produces the DATA MISMATCH line; forecasts
 are stored for all candidates and evaluated at their horizons against the simulated prices;
 the leaderboard ranks the deliberately accurate fake model above the deliberately wrong one;
+the momentum-build feed surfaces accumulating stocks below the alert bar and never lists an
+alert-tier stock;
 a model that does not beat the naive baselines is not activated; automatic selection returns
 a three-model panel or keeps the current one; the cache reuses an analysis within the cache
 window; the AI panel survives a failing model; parsers reject HTML and missing columns;

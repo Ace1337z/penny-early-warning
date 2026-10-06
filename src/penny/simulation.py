@@ -483,6 +483,8 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
 
     steps = int(minutes * 60 / cycle_seconds)
     alerts_by_symbol: dict[str, dict] = {}
+    max_builds = 0
+    build_tiers: list[int] = []
     for step in range(steps):
         minute = int(step * cycle_seconds / 60)
         sim_clock["t"] = day_start + step * cycle_seconds
@@ -491,6 +493,8 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
         alpaca.set_minute(minute)
         stats = engine.cycle()
         report.cycle_ms.append(stats.get("ms", 0.0))
+        max_builds = max(max_builds, len(getattr(engine, "_builds", []) or []))
+        build_tiers.extend(b.metrics.tier for b in (getattr(engine, "_builds", []) or []))
         # The detail worker runs on a thread; give it a moment to finish.
         time.sleep(0.02)
         for row in state.query("SELECT * FROM alerts ORDER BY id"):
@@ -506,6 +510,15 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     report.add("no alerts on noise stocks",
                not any(s.startswith("NZ") for s in symbols),
                f"alerted: {sorted(symbols)}")
+
+    builds_seen = [m for m in telegram.outbox if "MOMENTUM BUILDS" in m
+                   or "BUILDING NOW" in m]
+    report.add("momentum-build feed surfaces accumulating stocks below the alert bar",
+               max_builds > 0 and bool(builds_seen),
+               f"max {max_builds} build(s) in a cycle, {len(builds_seen)} feed message(s)")
+    report.add("build feed never lists an alert-tier stock",
+               all(t < TIER_EARLY for t in build_tiers),
+               f"build tiers seen: {sorted(set(build_tiers))}")
 
     grnd = alerts_by_symbol.get("GRND")
     if grnd:

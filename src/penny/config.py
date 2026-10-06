@@ -124,6 +124,15 @@ DEFAULTS: dict[str, str] = {
     "BASELINE_FALLBACK": "300",
     "BASELINE_MIN_PER_MIN": "20",
     "FINVIZ_MAX_PER_MIN": "20",
+    # --- Momentum-build watch feed (tier 1 before the alert bar) ---
+    "BUILD_FEED": "1",
+    "BUILD_FEED_SECONDS": "900",
+    "BUILD_TOP_N": "6",
+    "BUILD_MIN_SCORE": "35",
+    "BUILD_RISE15": "1.5",
+    "BUILD_VOLX15": "2",
+    "BUILD_DOLLAR15": "5000",
+    "BUILD_MIN_MINUTES": "10",
     "RETENTION_DAYS": "365",
     "UNIVERSE_BATCH": "400",
     "MOVERS_TOP_N": "200",
@@ -182,6 +191,8 @@ GROUPS: dict[str, list[str]] = {
     "Behaviour": ["MAX_PRICE", "MIN_PRICE", "ALERT_MIN_TIER", "REALERT_SECONDS", "ALERT_EXTENDED",
                   "EXTENDED_PCT", "WARMUP_CYCLES", "WORKERS", "RISK_USD", "BASELINE_FALLBACK",
                   "FINVIZ_MAX_PER_MIN", "RETENTION_DAYS"],
+    "Build feed": ["BUILD_FEED", "BUILD_FEED_SECONDS", "BUILD_TOP_N", "BUILD_MIN_SCORE",
+                   "BUILD_RISE15", "BUILD_VOLX15", "BUILD_DOLLAR15", "BUILD_MIN_MINUTES"],
     "Install": ["PENNY_URL", "PENNY_VERSION", "INSTALL_DIR", "PENNY_HOME", "LOG_LEVEL"],
 }
 

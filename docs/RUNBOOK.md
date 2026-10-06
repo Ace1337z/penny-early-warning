@@ -224,6 +224,9 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 | "Finviz token rejected" | `$PENNY set FINVIZ_TOKEN` or `/set FINVIZ_TOKEN <token>` from the bot; alerts continue meanwhile |
 | Finviz rate-limited (`429`) | lower `FINVIZ_MAX_PER_MIN` (default 20) and `UNIVERSE_POLL_SECONDS`; the client caches and back-fills |
 | `SETUP: NONE` on a `/check` | not an error: the alert bar is `WATCH` and above. The `SETUP` line names the unmet rule (move, volume, dollars, VWAP). `/check` reports any symbol on demand |
+| Nothing building in `/builds` | expected on a quiet tape; the feed only lists stocks meeting `BUILD_RISE15`/`BUILD_VOLX15`/`BUILD_DOLLAR15` with `BUILD_MIN_MINUTES` of history. Lower `BUILD_MIN_SCORE` to widen it |
+| `/builds` feed too chatty | raise `BUILD_FEED_SECONDS` (default 900) and/or `BUILD_MIN_SCORE`; `BUILD_FEED=0` turns it off entirely |
+| A stock is clearly building but never alerts | tier 2 needs a confirmed move. Use `/builds` to watch it before then; the alert still fires if the gates complete |
 | `regime unknown` in the market line | the regime needs S&P and Nasdaq risk appetite. It now also reads Yahoo index levels (`^GSPC`/`^IXIC`), so it resolves even when the ETF quotes are missing |
 | `AI PANEL: no model answered` | every configured model failed; run `penny doctor` and `/models refresh` |
 | Telegram commands ignored | the chat id must match `TELEGRAM_CHAT_ID`; re-run `$PENNY detect-chat` |

@@ -322,9 +322,50 @@ def _truncate(text: str, limit: int) -> str:
         cut = cut[:nl]
     return cut + "\n...(truncated)"
 
+def _build_detail(m: Metrics, score: float, above_vwap: bool) -> str:
+    """The measurements that define the build, without the symbol."""
+    bits = [f"{_pct(m.pct_vs_close)} vs close",
+            f"{_pct(m.rise.get(15, 0))} 15m",
+            f"{num(m.volx.get(15, 0), 1)}x vol"]
+    if m.dollar_vol.get(15):
+        bits.append(f"${compact(m.dollar_vol[15])} 15m")
+    bits.append("above VWAP" if above_vwap else "below VWAP")
+    return " | ".join(bits)
 
-def build_ai_facts(m: Metrics, enr: Enrichment, market, *, session: str,
-                   pct_rank: Optional[int] = None,
+
+def format_build_feed(signals, *, limit: int = 6, html: bool = True) -> str:
+    """Surfaced momentum builds: stocks accumulating before they hit the alert bar."""
+    msg = _Msg(html)
+    msg.line(("b", "BUILDING NOW - watch, not a buy signal"))
+    for sig in signals[:limit]:
+        m = sig.metrics
+        msg.line(("b", f"{m.symbol}  {money(m.price)}  {_pct(m.pct_vs_close)} vs close"),
+                 f"  [{sig.stage.lower()} {sig.score:.0f}/100]")
+        msg.line("  " + _build_detail(m, sig.score, sig.above_vwap))
+        if sig.missing:
+            msg.line("  to alert: " + "; ".join(sig.missing))
+    msg.line("These are not yet alert-tier. /check SYM for the full read.")
+    return msg.text()
+
+
+def format_build_digest(signals, *, seconds: int = 0, limit: int = 6,
+                        html: bool = True) -> str:
+    """A periodic digest of the current momentum builds, if any."""
+    if not signals:
+        return ""
+    msg = _Msg(html)
+    window = f" (last {max(1, seconds // 60)}m)" if seconds else ""
+    msg.line(("b", f"MOMENTUM BUILDS{window}"))
+    for sig in signals[:limit]:
+        m = sig.metrics
+        msg.line(("b", f"{m.symbol} "), f"{sig.stage.lower()} {sig.score:.0f}/100 | ",
+                 _build_detail(m, sig.score, sig.above_vwap))
+        if sig.missing:
+            msg.line("  to alert: ", "; ".join(sig.missing))
+    return msg.text()
+
+
+def build_ai_facts(m: Metrics, enr: Enrichment, market, *, session: str,                   pct_rank: Optional[int] = None,
                    time_to_horizon: Optional[dict] = None,
                    trade_plan_dict: Optional[dict] = None) -> dict:
     """The compact JSON facts sent to the models (6.11)."""

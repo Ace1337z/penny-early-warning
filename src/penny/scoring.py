@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .util import ET, clamp, now_et, safe_div
+from .util import ET, clamp, compact, now_et, safe_div
 
 log = logging.getLogger(__name__)
 
@@ -87,9 +87,19 @@ class Metrics:
         }
 
 
+@dataclass
+class BuildSignal:
+    """A stock that is accumulating before it reaches the alert bar."""
+
+    metrics: "Metrics"
+    score: float = 0.0            # 0-100 progress toward the tier-2 gates
+    stage: str = "WARMING"        # WARMING / BUILDING / ACCELERATING / COILED
+    missing: list[str] = field(default_factory=list)
+    above_vwap: bool = False
+
+
 class SymbolState:
     """Time-ordered samples and derived accumulators for one symbol."""
-
     def __init__(self, symbol: str, sample_seconds: float = 55.0, retain_hours: float = 6.0):
         self.symbol = symbol
         self.sample_seconds = sample_seconds
@@ -434,3 +444,81 @@ class Scorer:
 
     def cycle(self) -> None:
         self.cycles += 1
+
+    # -- momentum builds (surfaced below the alert bar) ---------------------
+    def build_candidates(self, metrics: list[Metrics], *,
+                         exclude: Optional[set[str]] = None) -> list["BuildSignal"]:
+        """Quiet accumulators: ramping volume/price that has not reached tier 2 yet.
+
+        The alert bar is tier `TIER_EARLY` (2). Stocks that are clearly building
+        volume and price but sit at `TIER_WATCH` (or just under it) are the ones a
+        gainers screen shows too late and the alert rules stay silent on. This
+        returns them, ranked, so the operator can watch them before the burst.
+        """
+        exclude = exclude or set()
+        cfg = self.cfg
+        min_score = cfg.float("BUILD_MIN_SCORE", 35)
+        out: list[BuildSignal] = []
+        for m in metrics:
+            if m.symbol in exclude or m.tier >= TIER_EARLY:
+                continue
+            if m.phase in (PHASE_EXTENDED, PHASE_FADING):
+                continue
+            rise15 = m.rise.get(15, 0.0) or 0.0
+            rise60 = m.rise.get(60, 0.0) or 0.0
+            volx15 = m.volx.get(15, 0.0) or 0.0
+            dv15 = m.dollar_vol.get(15, 0.0) or 0.0
+            above_vwap = m.vwap is not None and m.price > m.vwap
+            if rise15 < cfg.float("BUILD_RISE15", 1.5) / 100.0:
+                continue
+            if volx15 < cfg.float("BUILD_VOLX15", 2.0):
+                continue
+            if dv15 < cfg.float("BUILD_DOLLAR15", 5000):
+                continue
+            if self.states.get(m.symbol, None) is not None:
+                st = self.states[m.symbol]
+                if st.history_minutes() < cfg.float("BUILD_MIN_MINUTES", 10):
+                    continue
+
+            # How far each tier-2 gate has come (0..1). The weakest gate sets the
+            # pace, and the gaps are what the message reports.
+            t2_rise = cfg.float("TIER2_RISE60", 8) / 100.0
+            t2_rise15 = cfg.float("TIER2_RISE15", 5) / 100.0
+            t2_volx = cfg.float("TIER2_VOLX15", 10)
+            t2_dv = cfg.float("TIER2_DOLLAR15", 10000)
+            rise_prog = min(max(rise60, rise15) / max(t2_rise, t2_rise15, 1e-9), 1.0)
+            volx_prog = min(volx15 / t2_volx, 1.0) if t2_volx else 0.0
+            dv_prog = min(dv15 / t2_dv, 1.0) if t2_dv else 0.0
+            score = 100.0 * (0.4 * rise_prog + 0.35 * volx_prog + 0.15 * dv_prog
+                             + (0.1 if above_vwap else 0.0))
+            if score < min_score:
+                continue
+
+            missing: list[str] = []
+            if rise60 < t2_rise and rise15 < t2_rise15:
+                missing.append(f"needs +{t2_rise15 * 100:.0f}% 15m or "
+                               f"+{t2_rise * 100:.0f}% 60m")
+            if volx15 < t2_volx:
+                missing.append(f"volume {volx15:.1f}x -> {t2_volx:.0f}x")
+            if dv15 < t2_dv:
+                missing.append(f"${compact(dv15)} -> ${compact(t2_dv)}")
+            if not above_vwap:
+                missing.append("reclaim VWAP")
+
+            stage = self._build_stage(score, m, above_vwap, len(missing))
+            out.append(BuildSignal(metrics=m, score=round(score, 1), stage=stage,
+                                   missing=missing, above_vwap=above_vwap))
+        out.sort(key=lambda b: b.score, reverse=True)
+        return out
+
+    @staticmethod
+    def _build_stage(score: float, m: Metrics, above_vwap: bool, missing_count: int) -> str:
+        accel = m.accel or 1.0
+        # "Coiled" means it is nearly at the alert bar, not just high on the gates.
+        if score >= 70 and missing_count <= 1:
+            return "COILED"
+        if accel >= 1.5 and above_vwap:
+            return "ACCELERATING"
+        if above_vwap:
+            return "BUILDING"
+        return "WARMING"
