@@ -229,6 +229,7 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 | A stock is clearly building but never alerts | tier 2 needs a confirmed move. Use `/builds` to watch it before then; the alert still fires if the gates complete |
 | `regime unknown` in the market line | the regime needs S&P and Nasdaq risk appetite. It now also reads Yahoo index levels (`^GSPC`/`^IXIC`), so it resolves even when the ETF quotes are missing |
 | `AI PANEL: no model answered` | every configured model failed; run `penny doctor` and `/models refresh` |
+| `/check` takes minutes | the AI panel is bounded by `AI_DEADLINE` (default 60 s) and hung endpoints are no longer replayed per body variant. If it is still slow, read the per-stage log lines (`check SYM: <stage> in Ns`) to see whether enrichment, market or the panel is the cost; raise `AI_TIMEOUT` only if the provider genuinely needs longer, and lower `AI_DEADLINE` for snappier checks |
 | Telegram commands ignored | the chat id must match `TELEGRAM_CHAT_ID`; re-run `$PENNY detect-chat` |
 | No AI text on alerts | `$PENNY doctor`; check `AI_BASE_URL`/`AI_KEY`; the usual cause is `AI_MODELS` still holding the shipped example ids, which your provider does not offer |
 | Example model ids still configured | `/models refresh` detects it, adopts the provider's working models and reports them; or set them: `/set AI_MODELS a,b,c` (no restart needed) |

@@ -734,7 +734,7 @@ class Engine:
         if not self.shariah or not self.shariah.enabled:
             return {"symbol": symbol, "combined": "UNKNOWN", "sources": {}}
         try:
-            return self.shariah.status(symbol, filings, True)
+            return self.shariah.status(symbol, filings, fetch)
         except Exception as exc:  # noqa: BLE001
             log.debug("shariah lookup failed for %s: %s", symbol, exc)
             return {"symbol": symbol, "combined": "UNKNOWN", "sources": {}}

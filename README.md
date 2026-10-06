@@ -326,6 +326,16 @@ string, `content` as a list of parts, and reasoning models that leave `content`
 null while answering in `reasoning_content`. An empty or unusable completion is
 reported as an error, not a silent success.
 
+A `/check` runs the panel and its fallbacks under one wall-clock budget,
+`AI_DEADLINE` (default 60 s): each call's timeout is clamped to the time left, a
+slow endpoint is dropped instead of retried for every body variant, and the
+fallbacks run in parallel. So a slow provider degrades to a shorter answer
+instead of a command that hangs for minutes.
+
+```text
+/set AI_DEADLINE 60      # total seconds for panel + fallbacks on a manual check
+```
+
 **Manual install:**
 
 ```bash

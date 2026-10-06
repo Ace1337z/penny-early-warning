@@ -509,6 +509,14 @@ class CommandHandler:
             return
         try:
             from .alerts import build_ai_facts, format_alert2
+            started = time.monotonic()
+            stage = {"t": started}
+
+            def mark(name: str) -> None:
+                now = time.monotonic()
+                log.info("check %s: %s in %.1fs", symbol, name, now - stage["t"])
+                stage["t"] = now
+
             quote = self.engine._quotes_by_symbol.get(symbol)
             metrics = {m.symbol: m for m in (self.engine._last_metrics or [])}
             m = metrics.get(symbol)
@@ -519,9 +527,15 @@ class CommandHandler:
                             markup=MAIN_MENU)
                 return
             enr = self.engine.enricher.enrich(symbol, self.engine._quote_for(m), m)
-            market = self.engine.market.get(force=True)
+            mark("enrichment")
+            # Keep the hourly market data cached; only the 30s index quotes
+            # really need to be fresh, and forcing everything cost several
+            # rate-limited Finviz calls on every /check.
+            market = self.engine.market.get(force_quotes=True)
+            mark("market context")
             shariah = self.engine._shariah_status(symbol, enr.filings, True)
             shariah_lines = self.engine.shariah.detail_lines(shariah) if self.engine.shariah else []
+            mark("shariah")
             risk_usd = self.cfg.float("RISK_USD", 50)
             facts = build_ai_facts(m, enr, market, session=session_for(),
                                    time_to_horizon=self.engine._time_to_horizons())
@@ -536,6 +550,8 @@ class CommandHandler:
                 reaction = reaction_text(agg)
                 price_fc = price_forecast_text(agg, m.price)
                 validated = agg.validated
+            mark("ai panel")
+            log.info("check %s: total %.1fs", symbol, time.monotonic() - started)
             text = format_alert2(m, enr, market, shariah_lines=shariah_lines,
                                  reaction=reaction, price_forecast=price_fc, agg=agg,
                                  ai_running=False, validated=validated, risk_usd=risk_usd,

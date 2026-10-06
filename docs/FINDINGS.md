@@ -214,12 +214,31 @@ needs a live check.
 - **Question:** one in-session cycle issues ~7 mover calls plus 1 universe call (~16/min)
   on a shared 20/min limiter also used by market context, enrichment and `/check`. Under
   load the limiter queues and the 20-30 s cadence stretches. How much can be trimmed?
-- **Default adopted:** **not yet changed.** Candidate reductions: fewer `FINVIZ_SIGNALS`,
-  a longer `FINVIZ_MOVERS_TTL`, skipping snapshots for symbols already present in the
-  cycle's rows, and/or raising `FINVIZ_MAX_PER_MIN` if the Elite plan allows it.
-- **Status:** **OPEN** (not implemented; the user chose the build feed first).
+- **Default adopted:** **partly fixed.** The `/check` path no longer forces the hourly
+  market data (sectors/events/news) — it refreshes only the 30 s index quotes — and the two
+  Finviz verifications per symbol were collapsed into one shared row, so a manual check costs
+  fewer rate-limited calls. Remaining reductions are still open: fewer `FINVIZ_SIGNALS`, a
+  longer `FINVIZ_MOVERS_TTL`, skipping snapshots for symbols already present in the cycle's
+  rows, and/or raising `FINVIZ_MAX_PER_MIN` if the Elite plan allows it.
+- **Status:** **OPEN** (the `/check` share is reduced; the background-cycle share is not).
 - **Where:** `src/penny/sources/finviz.py` (`movers`, `SIGNALS`), `src/penny/engine.py`
-  (`_symbols_for_cycle`, `_fetch_quotes`).
+  (`_symbols_for_cycle`, `_fetch_quotes`), `src/penny/market_context.py` (`get`),
+  `src/penny/enrich.py` (`enrich`).
+
+## C22 — `/check` total latency
+- **Question:** why did a manual `/check` run for minutes, and how is it bounded now?
+- **Default adopted:** `/check` is four serial stages (enrich, market, Shariah, AI). Two
+  could blow up: the gateway replayed **5 body variants x 2 endpoints** against an
+  unreachable host (one hung 45 s request became many), and the runner had **no total
+  budget** and called fallbacks **sequentially**. Fixes: a dead endpoint is marked and
+  skipped instead of replayed; `AI_DEADLINE` (`AI_DEADLINE`, default 60 s) bounds the whole
+  panel + fallbacks and clamps each call's timeout to the remaining time; fallbacks run in
+  parallel; the hourly market data is no longer force-refreshed; and the double Finviz
+  verification is shared. Per-stage timings are logged (`check SYM: <stage> in Ns`).
+- **Status:** implemented and covered by `tests/test_check_latency.py`.
+- **Where:** `src/penny/ai/gateway.py` (`chat`), `src/penny/ai/runner.py` (`_call`,
+  `_call_many`, `analyze`), `src/penny/commands.py` (`_run_check`),
+  `src/penny/market_context.py` (`get`), `src/penny/enrich.py` (`enrich`, `_short`).
 
 ## C18 — Encryption tool on the VPS
 - **Question:** is `age` or GnuPG available?

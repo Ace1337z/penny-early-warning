@@ -74,16 +74,22 @@ class Enricher:
         enr.float_shares = quote.get("float_shares")
         enr.market_cap = quote.get("market_cap")
 
-        jobs = {
-            "candles": lambda: self._candles(symbol),
-            "news": lambda: self._news(symbol),
-            "filings": lambda: self._filings(symbol),
-            "short": lambda: self._short(symbol),
-            "insiders": lambda: self._insiders(symbol),
-            "finviz": lambda: self._verify(symbol, quote),
-        }
-        results: dict[str, object] = {}
-        with futures.ThreadPoolExecutor(max_workers=min(6, max(1, self.cfg.int("WORKERS", 8)))) as pool:
+        # One Finviz verification fetch, shared by the short-interest and the
+        # verification jobs. Fetching it twice (uncached) was two rate-limited
+        # requests for the same row on every check.
+        with futures.ThreadPoolExecutor(
+                max_workers=min(6, max(1, self.cfg.int("WORKERS", 8)))) as pool:
+            verify_fut = pool.submit(self._verify, symbol, quote)
+
+            jobs = {
+                "candles": lambda: self._candles(symbol),
+                "news": lambda: self._news(symbol),
+                "filings": lambda: self._filings(symbol),
+                "short": lambda: self._short(symbol, verify_fut),
+                "insiders": lambda: self._insiders(symbol),
+                "finviz": lambda: verify_fut.result(),
+            }
+            results: dict[str, object] = {}
             futs = {pool.submit(fn): name for name, fn in jobs.items()}
             for fut in futures.as_completed(futs):
                 name = futs[fut]
@@ -269,13 +275,18 @@ class Enricher:
             dedup[(str(f.get("form")), str(f.get("date")))] = f
         return sorted(dedup.values(), key=lambda f: str(f.get("date")), reverse=True)[:10]
 
-    def _short(self, symbol: str) -> dict:
+    def _short(self, symbol: str, verify_fut=None) -> dict:
         interest: list[dict] = []
         volume: Optional[dict] = None
 
         if self.finviz:
             try:
-                row = self.finviz.verify(symbol)
+                row = None
+                if verify_fut is not None:
+                    # Reuse the verification row instead of a second Finviz call.
+                    row = (verify_fut.result() or {}).get("row")
+                else:
+                    row = self.finviz.verify(symbol)
                 if row:
                     short_float = row_num(row, "Short Float", "ShortFloat")
                     if short_float is not None:

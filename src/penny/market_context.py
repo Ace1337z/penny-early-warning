@@ -91,12 +91,19 @@ class MarketContextProvider:
         return (s[-1][1] / base - 1.0) * 100.0
 
     # -- refresh ------------------------------------------------------------
-    def get(self, force: bool = False) -> MarketContext:
+    def get(self, force: bool = False, force_quotes: bool = False) -> MarketContext:
+        """Return the shared context.
+
+        `force` refreshes everything, including the hourly-TTL sectors, events
+        and news. `force_quotes` refreshes only the cheap 30s index quotes, which
+        is what an interactive `/check` wants: the slower data stays cached
+        instead of burning several rate-limited Finviz calls per command.
+        """
         now = time.time()
         ctx = self._context
         ctx.missing = []
 
-        if force or now - self._quotes_ts > QUOTE_TTL:
+        if force or force_quotes or now - self._quotes_ts > QUOTE_TTL:
             self._refresh_quotes(ctx)
             self._quotes_ts = now
         if force or now - self._sectors_ts > SECTOR_TTL:

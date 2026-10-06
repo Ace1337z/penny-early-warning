@@ -93,19 +93,31 @@ class AIRunner:
              result.tokens, scrub(result.error, self.secrets), 1 if cached else 0))
 
     def _call(self, model: str, messages: list[dict], kind: str,
-              timeout: Optional[float] = None) -> ModelForecast:
-        timeout = timeout or self.cfg.float("AI_TIMEOUT", 45.0)
+              timeout: Optional[float] = None,
+              deadline: Optional[float] = None) -> ModelForecast:
+        base_timeout = timeout or self.cfg.float("AI_TIMEOUT", 45.0)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return ModelForecast(model=model, valid=False, error="ai: deadline exceeded")
+            base_timeout = max(1.0, min(base_timeout, remaining))
+        timeout = base_timeout
         max_tokens = self.cfg.int("AI_MAX_TOKENS", 900)
         result = self.gateway.chat(model, messages, max_tokens=max_tokens, temperature=0.2,
-                                   timeout=timeout, json_mode=True, retries=0)
+                                   timeout=timeout, json_mode=True, retries=0,
+                                   deadline=deadline)
         fc = parse_forecast(model, result.text)
         if not fc.valid and result.ok:
             # At most one retry for a model that returned invalid output (rule 5).
             self._log_call(model, kind, result, invalid=True)
             self.record_tokens(model, kind, result.tokens, calls=1, invalid=True)
-            result = self.gateway.chat(model, messages, max_tokens=max_tokens, temperature=0.2,
-                                       timeout=timeout, json_mode=True, retries=0)
-            fc = parse_forecast(model, result.text)
+            if deadline is None or time.monotonic() < deadline:
+                result = self.gateway.chat(model, messages, max_tokens=max_tokens,
+                                           temperature=0.2, timeout=timeout, json_mode=True,
+                                           retries=0, deadline=deadline)
+                fc = parse_forecast(model, result.text)
+            else:
+                fc.error = fc.error or "ai: deadline exceeded"
         self._log_call(model, kind, result, invalid=not fc.valid)
         self.record_tokens(model, kind, result.tokens, calls=1, invalid=not fc.valid)
         fc.tokens = result.tokens
@@ -115,13 +127,15 @@ class AIRunner:
         return fc
 
     def _call_many(self, models: list[str], messages: list[dict], kind: str,
-                   timeout: Optional[float] = None) -> list[ModelForecast]:
+                   timeout: Optional[float] = None,
+                   deadline: Optional[float] = None) -> list[ModelForecast]:
         if not models:
             return []
         timeout = timeout or self.cfg.float("AI_TIMEOUT", 45.0)
         out: list[ModelForecast] = []
         with futures.ThreadPoolExecutor(max_workers=max(1, len(models))) as pool:
-            futs = {pool.submit(self._call, m, messages, kind, timeout): m for m in models}
+            futs = {pool.submit(self._call, m, messages, kind, timeout, deadline): m
+                    for m in models}
             for fut in futures.as_completed(futs):
                 model = futs[fut]
                 try:
@@ -154,19 +168,23 @@ class AIRunner:
 
         messages = build_messages(facts)
         panel = self.active_panel()
-        forecasts = self._call_many(panel, messages, kind)
+        # One wall-clock budget for the whole panel, so a slow or hung provider
+        # cannot turn a single /check into minutes of stacked 45s timeouts.
+        budget = self.cfg.float("AI_DEADLINE", 60.0)
+        deadline = time.monotonic() + budget if budget > 0 else None
+        forecasts = self._call_many(panel, messages, kind, deadline=deadline)
 
         valid = [f for f in forecasts if f.valid]
         if len(valid) < 2:
-            for model in self.fallbacks():
-                if len(valid) >= 2:
-                    break
-                if model in panel:
-                    continue
-                fc = self._call(model, messages, kind + ":fallback")
-                forecasts.append(fc)
-                if fc.valid:
-                    valid.append(fc)
+            pending = [m for m in self.fallbacks() if m not in panel]
+            if deadline is None or time.monotonic() < deadline:
+                fb = self._call_many(pending, messages, kind + ":fallback", deadline=deadline)
+                for fc in fb:
+                    forecasts.append(fc)
+                    if fc.valid:
+                        valid.append(fc)
+            else:
+                log.info("ai: deadline reached before fallbacks for %s", symbol)
 
         agg = aggregate(forecasts)
         if not any(self._is_eligible(m) for m in agg.models):

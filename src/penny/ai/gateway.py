@@ -217,7 +217,8 @@ class AIGateway:
 
     def chat(self, model: str, messages: list[dict], *, max_tokens: int = 900,
              temperature: float = 0.2, timeout: float = 45.0, json_mode: bool = True,
-             retries: int = 1, url: Optional[str] = None) -> ChatResult:
+             retries: int = 1, url: Optional[str] = None,
+             deadline: Optional[float] = None) -> ChatResult:
         if not self.configured:
             return ChatResult(model=model, ok=False, error="ai: not configured")
         import requests
@@ -237,8 +238,15 @@ class AIGateway:
             {"json_mode": False, "token_field": "max_tokens", "use_temperature": False},
         ]
         seen: list[str] = []
+        # Endpoints that failed at the transport level. A body variant cannot fix
+        # an unreachable host, so once every endpoint has failed that way we stop
+        # instead of replaying all five bodies against each of them (which used to
+        # turn one hung provider into minutes of 45s timeouts).
+        dead: set[str] = set()
         last_error = "ai: no endpoint accepted the request"
         for v in variants:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             sig = (v["json_mode"], v["token_field"], v["use_temperature"])
             if sig in seen:
                 continue
@@ -246,19 +254,29 @@ class AIGateway:
             body = self._build_body(model, messages, max_tokens=max_tokens,
                                     temperature=temperature, **v)
             for endpoint in endpoints:
+                if endpoint in dead:
+                    continue
                 for attempt in range(retries + 1):
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return ChatResult(model=model, ok=False, error=last_error)
+                    budget = timeout
+                    if deadline is not None:
+                        budget = max(1.0, min(timeout, deadline - time.monotonic()))
                     started = time.monotonic()
                     try:
                         resp = requests.post(endpoint, headers=self._headers(),
-                                             json=body, timeout=timeout)
+                                             json=body, timeout=budget)
                     except Exception as exc:  # noqa: BLE001
-                        result = ChatResult(
-                            model=model, ok=False,
-                            latency_ms=(time.monotonic() - started) * 1000,
-                            error=scrub(f"{exc} (at {endpoint})", self._secrets))
-                        if attempt >= retries:
-                            break
-                        continue
+                        last_error = scrub(f"{exc} (at {endpoint})", self._secrets)
+                        if attempt < retries:
+                            time.sleep(min(2 ** attempt, 4))
+                            continue
+                        # Transport error with retries exhausted: the endpoint is
+                        # unreachable. Mark it dead so the remaining body variants
+                        # skip it instead of replaying against a hung host (which is
+                        # what made /check take minutes).
+                        dead.add(endpoint)
+                        break
                     latency = (time.monotonic() - started) * 1000
 
                     if resp.status_code in (400, 404, 405, 415, 422):
@@ -382,7 +400,7 @@ class FakeGateway:
 
     def chat(self, model: str, messages: list[dict], *, max_tokens: int = 900,
              temperature: float = 0.2, timeout: float = 45.0, json_mode: bool = True,
-             retries: int = 1) -> ChatResult:
+             retries: int = 1, deadline=None) -> ChatResult:
         self.calls.append({"model": model, "max_tokens": max_tokens})
         if model in self._fail_models:
             return ChatResult(model=model, ok=False, error="fake: model unavailable")
