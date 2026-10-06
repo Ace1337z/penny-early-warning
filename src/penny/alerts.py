@@ -9,6 +9,7 @@ from typing import Optional
 from .enrich import Enricher, Enrichment
 from .scoring import (Metrics, PHASE_EXTENDED, PHASE_FADING, TIER_CONFIRMED, TIER_EARLY,
                       TIER_NONE, TIER_WATCH)
+from .ui import arrow_for, bar, divider
 from .util import compact, conviction_word, money, num, pct
 
 log = logging.getLogger(__name__)
@@ -126,6 +127,18 @@ def verdict_text(m: Metrics, enr: Enrichment, agg=None) -> str:
     return head + ("\n  " + " | ".join(parts) if parts else "")
 
 
+def _pulse(m: Metrics) -> str:
+    """The one-line numeric strip: move, volume multiple, VWAP side."""
+    parts = [f"{_pct(m.rise.get(15, 0))} 15m",
+             f"{_pct(m.rise.get(60, 0))} 60m",
+             f"vol {num(m.volx.get(15, 0), 1)}x"]
+    dv = m.dollar_vol.get(15)
+    if dv:
+        parts.append(f"${compact(dv)} 15m")
+    parts.append("above VWAP" if (m.vwap and m.price > m.vwap) else "below VWAP")
+    return "  |  ".join(parts)
+
+
 def _why_lines(m: Metrics, enr: Enrichment, agg=None) -> tuple[list[tuple[str, str]], set[str]]:
     """Why the stock moved, most important first. Also returns the headlines shown."""
     out: list[tuple[str, str]] = []
@@ -199,10 +212,13 @@ def format_alert2(m: Metrics, enr: Enrichment, market, *,
     """Alert 2: why it moved and what to do first, then the evidence. Max 3,900."""
     msg = _Msg(html)
     verdict = verdict or verdict_text(m, enr, agg)
+    pv = m.pct_vs_close * 100 if m.pct_vs_close is not None else None
 
     # -- headline -----------------------------------------------------------
-    msg.line(("b", f"DETAIL  {m.symbol}  {money(m.price)}  {_pct(m.pct_vs_close)} vs close"
-                   f"{phase_tag(m)}"))
+    msg.line(("b", f"DETAIL  {arrow_for(pv)} {m.symbol}  {money(m.price)}  "
+                   f"{_pct(m.pct_vs_close)} vs close{phase_tag(m)}"))
+    msg.line(_pulse(m))
+    msg.line("momentum ", ("b", f"{m.score:.0f}"), " ", bar((m.score or 0) / 100.0))
     setup = f"SETUP: {tier_name(m.tier)}"
     reason = _setup_reason(m)
     if reason:
@@ -215,6 +231,7 @@ def format_alert2(m: Metrics, enr: Enrichment, market, *,
     if verdict:
         first, _, rest = verdict.partition("\n")
         msg.blank()
+        msg.line(divider("VERDICT"))
         msg.line(("b", "VERDICT: "), first)
         if rest.strip():
             msg.line(rest)
@@ -223,19 +240,19 @@ def format_alert2(m: Metrics, enr: Enrichment, market, *,
     why, shown_titles = _why_lines(m, enr, agg)
     if why:
         msg.blank()
-        msg.line(("b", "WHY IT MOVED"))
+        msg.line(divider("WHY IT MOVED"))
         for label, value in why:
             msg.line(("b", f"{label}: "), value)
 
     # -- market backdrop (explains small-cap risk appetite) -----------------
     if market is not None:
         msg.blank()
-        msg.line(("b", "MARKET BACKDROP (drives small-cap appetite)"))
+        msg.line(divider("MARKET BACKDROP"))
         msg.line(market.headline())
 
     # -- evidence -----------------------------------------------------------
     msg.blank()
-    msg.line(("b", "EVIDENCE"))
+    msg.line(divider("EVIDENCE"))
     msg.line(Enricher.verification_line(enr))
 
     if enr.news:

@@ -32,9 +32,9 @@ SPLIT_ARTIFACT_PCT = 400.0
 def alert_menu(symbol: str) -> dict:
     """Inline buttons under an alert so a symbol is one tap away."""
     return inline([
-        [button(f"\U0001F504 Re-check {symbol}", cb("check", symbol)),
-         button("\U0001F54C Halal", cb("halal", symbol))],
-        [button("\U0001F4CA Market", cb("market")), button("\U0001F3E0 Menu", cb("menu"))],
+        [button(f"\U0001F504 Re-check", cb("check", symbol)),
+         button("\U0001F54C Halal", cb("halal", symbol)),
+         button("\U0001F3E0 Menu", cb("menu"))],
     ])
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from penny import ui
-from penny.commands import CommandHandler
+from penny.commands import MAIN_MENU, CommandHandler
 from penny.telegram import FakeTelegram
 from penny.scoring import Metrics
 
@@ -159,7 +159,9 @@ def test_alert_menu_is_tappable():
     datas = [b["callback_data"] for row in menu["inline_keyboard"] for b in row]
     assert "check:ABCD" in datas
     assert "halal:ABCD" in datas
-    assert "market" in datas
+    assert "menu" in datas
+    # The alert menu stays to a single row so alerts do not bury the message in buttons.
+    assert len(menu["inline_keyboard"]) == 1
     assert parse_cb("check:ABCD") == ("check", "ABCD")
 
 
@@ -179,6 +181,39 @@ def test_start_sends_reply_keyboard(cfg, tmp_path):
     assert first and "keyboard" in first
     labels = [b["text"] for row in first["keyboard"] for b in row]
     assert "/top" in labels and "/help" in labels
+
+
+def test_main_menu_stays_compact(cfg, tmp_path):
+    """A wall of buttons buries the message; the main menu is capped and tidy."""
+    rows = MAIN_MENU["inline_keyboard"]
+    labels = [b["text"] for row in rows for b in row]
+    assert len(rows) <= 2
+    assert len(labels) <= 6
+    datas = [b["callback_data"] for row in rows for b in row]
+    assert "more" in datas          # the overflow lives behind More
+    assert "top" in datas and "builds" in datas and "market" in datas
+
+
+def test_more_reveals_the_maintenance_actions(cfg, tmp_path):
+    handler, telegram = _handler(tmp_path, cfg)
+    cfg.set("TELEGRAM_CHAT_ID", "1")
+    handler._handle_callback({"id": "c1", "data": "more",
+                              "message": {"message_id": 3, "chat": {"id": "1"}}})
+    menu = telegram.keyboards[-1]
+    datas = [b["callback_data"] for row in menu["inline_keyboard"] for b in row]
+    for action in ("status", "keys", "backup", "help", "menu"):
+        assert action in datas
+
+
+def test_symbol_buttons_are_chunked_into_rows(cfg, tmp_path):
+    # The chunking helper packs several symbols into a single row.
+    rows = CommandHandler._symbol_rows(["A", "B", "C", "D", "E"], per_row=3)
+    assert [len(r) for r in rows] == [3, 2]
+    assert rows[0][0]["callback_data"] == "check:A"
+    # And /top does not emit one full-width row per symbol.
+    handler, telegram = _handler(tmp_path, cfg)
+    handler.cmd_top([])
+    assert len(telegram.keyboards[-1]["inline_keyboard"]) <= 4
 
 
 def test_unknown_command_offers_help(cfg, tmp_path):

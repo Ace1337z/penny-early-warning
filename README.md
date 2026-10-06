@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-155%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-160%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -58,21 +58,24 @@ moved*, then the evidence. The AI blocks are edited in as soon as the models
 answer:
 
 ```text
-DETAIL  ABCD  $1.42  +31.5% vs close
+DETAIL  🟢 ABCD  $1.42  +31.5% vs close
++6.8% 15m  |  +24.1% 60m  |  vol 12.4x  |  $1.1M 15m  |  above VWAP
+momentum 74 ████████░░
 SETUP: EARLY BUILD - qualifies for alerts
 
+── VERDICT ─────────
 VERDICT: EARLY - early build - size small, confirm with volume
   buy 1.4200-1.4600 | stop 1.3157 | T1 1.5972 | panel up (high)
 
-WHY IT MOVED
+── WHY IT MOVED ────
 CATALYST: $12M direct offering priced; volume 12x normal
 HEADLINE: ABCD announces pricing of $12.0 million registered direct offering (2h) - Benzinga
 MOVE: +31.5% vs prior close | +6.8% 15m | +24.1% 60m | still moving now
 
-MARKET BACKDROP (drives small-cap appetite)
+── MARKET BACKDROP ─
 MARKET SPY +0.42%, QQQ +0.61%, IWM +0.28% | RISK-ON
 
-EVIDENCE
+── EVIDENCE ────────
 Finviz feed verified
 MORE NEWS (2 more from 2 outlet(s))
 - ...
@@ -115,7 +118,7 @@ Reading it fast:
 
 The system **places no orders** - it tells you, you trade manually.
 
-Both alerts arrive with **inline buttons** (Re-check, Halal, Market, Menu) so
+Both alerts arrive with **inline buttons** (Re-check, Halal, Menu) so
 you can act on a symbol without typing anything.
 
 ---
@@ -403,9 +406,10 @@ buttons under every reply to drill in without typing.
 **Interactive replies.** Every alert and command reply carries inline
 buttons, so a symbol is always one tap away:
 
-- Alerts and `/check` - **Re-check**, **Halal**, **Market**, **Menu**.
-- `/top`, `/builds` - one button per listed symbol plus **Refresh**.
-- `/market`, `/status`, `/models` - **Refresh**, **Market**, **Menu**.
+- Alerts and `/check` - **Re-check**, **Halal**, **Menu** (a single row).
+- `/top` and `/builds` - up to six symbols packed three per row, plus **Refresh**.
+- `/market`, `/status`, `/models` - **Refresh**, **Menu**.
+- The main menu is two rows of three; **More** opens Status, Keys, Backup and Help.
 - Tapping a button edits the message in place instead of posting a new one.
 
 Alerts, `/check` and `/builds` are HTML-formatted (bold headers, monospace
@@ -458,7 +462,7 @@ fake Telegram, and asserts the documented acceptance results:
 - a model that does not beat the baselines is not activated
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **155 passed**.
+Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **160 passed**.
 
 ---
 

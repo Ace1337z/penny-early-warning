@@ -57,11 +57,16 @@ COMMANDS: list[tuple[str, str]] = [
 ]
 
 MAIN_MENU = inline([
-    [button("Top", cb("top")), button("Builds", cb("builds")),
-     button("Market", cb("market"))],
-    [button("Status", cb("status")), button("Models", cb("models")),
-     button("Watchlist", cb("watch"))],
-    [button("Keys", cb("keys")), button("Backup", cb("backup")), button("Help", cb("help"))],
+    [button("\U0001F4C8 Top", cb("top")), button("\U0001F331 Builds", cb("builds")),
+     button("\U0001F30E Market", cb("market"))],
+    [button("\U0001F440 Watchlist", cb("watch")), button("\U0001F916 Models", cb("models")),
+     button("\u22EF More", cb("more"))],
+])
+
+MORE_MENU = inline([
+    [button("Status", cb("status")), button("Keys", cb("keys")),
+     button("\U0001F4BE Backup", cb("backup"))],
+    [button("\u2753 Help", cb("help")), button("\U0001F3E0 Menu", cb("menu"))],
 ])
 
 MARKET_MENU = inline([
@@ -226,6 +231,10 @@ class CommandHandler:
     def _cb_help(self, arg: str, mid: Optional[int]) -> None:
         self._render(HELP, MAIN_MENU, mid)
 
+    def _cb_more(self, arg: str, mid: Optional[int]) -> None:
+        text = (f"{bold('MORE')}\nStatus, keys, backups and help.")
+        self._render(text, MORE_MENU, mid)
+
     def _cb_check(self, arg: str, mid: Optional[int]) -> None:
         symbol = (arg or "").strip().upper()
         if not symbol:
@@ -260,6 +269,7 @@ class CommandHandler:
         "watch": _cb_watch,
         "backup": _cb_backup,
         "help": _cb_help,
+        "more": _cb_more,
         "check": _cb_check,
         "halal": _cb_halal,
         "menu": _cb_help,
@@ -312,8 +322,7 @@ class CommandHandler:
             self.telegram.send(greeting, html=True,
                                markup=reply_keyboard([
                                    ["/top", "/builds", "/market"],
-                                   ["/status", "/watchlist", "/models"],
-                                   ["/keys", "/help"],
+                                   ["/watchlist", "/models", "/help"],
                                ]))
         except TypeError:
             # A client that does not accept markup yet.
@@ -330,11 +339,11 @@ class CommandHandler:
         ranked = self.engine.scorer.rank(metrics)
         lines = [bold("TOP MOVES")]
         if ranked["champions"]:
-            lines.append(bold("Champions"))
+            lines.append(divider("Champions"))
             for m in ranked["champions"]:
                 lines.append(self._stock_line(m))
         if ranked["hidden_gems"]:
-            lines.append(bold("Hidden gems"))
+            lines.append(divider("Hidden gems"))
             for m in ranked["hidden_gems"]:
                 lines.append(self._stock_line(m, with_tier=False))
         if len(lines) == 1:
@@ -354,6 +363,15 @@ class CommandHandler:
         return (f"{arrow_for(pv)} {code(m.symbol)} {money(m.price)} "
                 f"{pct(pv)}{tag} \u00b7 {bar((m.score or 0) / 100)} {m.score:.0f}")
 
+    @staticmethod
+    def _symbol_rows(symbols: list[str], per_row: int = 3) -> list[list[dict]]:
+        """Chunk symbols into compact rows so a long list stays few rows."""
+        rows: list[list[dict]] = []
+        for i in range(0, len(symbols), per_row):
+            rows.append([button(f"{s}", cb("check", s))
+                         for s in symbols[i:i + per_row]])
+        return rows
+
     def _top_menu(self) -> dict:
         """Buttons that open a full analysis for each ranked symbol."""
         metrics = getattr(self.engine, "_last_metrics", None) if self.engine else None
@@ -361,11 +379,10 @@ class CommandHandler:
         if metrics:
             ranked = self.engine.scorer.rank(metrics)
             picks = list(ranked.get("champions") or []) + list(ranked.get("hidden_gems") or [])
-            rows = [[button(f"\\U0001F50D {m.symbol}", cb("check", m.symbol))]
-                    for m in picks[:8]]
+            rows = self._symbol_rows([m.symbol for m in picks[:6]], per_row=3)
         return inline(rows + [
-            [button("\\U0001F504 Refresh", cb("top")), button("Market", cb("market")),
-             button("\\U0001F3E0 Menu", cb("menu"))],
+            [button("\U0001F504 Refresh", cb("top")), button("\U0001F331 Builds", cb("builds")),
+             button("\U0001F3E0 Menu", cb("menu"))],
         ]) or MAIN_MENU
 
     def cmd_top(self, args) -> None:
@@ -406,11 +423,11 @@ class CommandHandler:
     def _build_menu(self) -> dict:
         metrics = getattr(self.engine, "_last_metrics", None) if self.engine else None
         builds = getattr(self.engine, "_builds", None) or []
-        picks = [b.metrics.symbol for b in builds[:8]]
-        rows = [[button(f"\U0001F50D {s}", cb("check", s))] for s in picks]
+        picks = [b.metrics.symbol for b in builds[:6]]
+        rows = self._symbol_rows(picks, per_row=3)
         return inline(rows + [
-            [button("\U0001F504 Refresh", cb("builds")), button("Top", cb("top")),
-             button("Market", cb("market")), button("\U0001F3E0 Menu", cb("menu"))],
+            [button("\U0001F504 Refresh", cb("builds")), button("\U0001F4C8 Top", cb("top")),
+             button("\U0001F3E0 Menu", cb("menu"))],
         ]) or MAIN_MENU
 
     def cmd_builds(self, args) -> None:
@@ -531,10 +548,9 @@ class CommandHandler:
     @staticmethod
     def _check_menu(symbol: str) -> dict:
         return inline([
-            [button(f"\U0001F504 Re-check {symbol}", cb("check", symbol)),
+            [button("\U0001F504 Re-check", cb("check", symbol)),
              button("\U0001F54C Halal", cb("halal", symbol)),
-             button("\U0001F441 Watchlist", cb("watch"))],
-            [button("Market", cb("market")), button("\U0001F3E0 Menu", cb("menu"))],
+             button("\U0001F3E0 Menu", cb("menu"))],
         ])
 
     def _render_market_text(self) -> str:

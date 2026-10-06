@@ -166,6 +166,27 @@ def test_html_alert_uses_bold_and_code():
     assert "<b>" in text2 and "SETUP" in text2
 
 
+def test_check_layout_has_pulse_meter_and_sections():
+    """The /check body reads like /market: arrow, pulse strip, meter, sections."""
+    m = _metrics()
+    text = format_alert2(m, Enrichment(symbol="XYZ"), None, ai_running=False)
+    head = text.splitlines()[0]
+    assert "\U0001F7E2" in head                      # direction arrow
+    assert "vs close" in head
+    assert "15m" in text and "60m" in text and "vol 10.0x" in text   # pulse strip
+    assert "\u2588" in text                          # score meter
+    assert "above VWAP" in text and "below VWAP" not in text.split("SETUP")[0]
+    for section in ("VERDICT", "WHY IT MOVED", "EVIDENCE"):
+        assert f"\u2500\u2500 {section}" in text     # divider-labelled section
+
+
+def test_check_pulse_reflects_a_below_vwap_stock():
+    m = _metrics()
+    m.vwap = m.price + 0.10            # price under VWAP
+    text = format_alert2(m, Enrichment(symbol="XYZ"), None, ai_running=False)
+    assert "below VWAP" in text
+
+
 def test_plain_and_html_carry_the_same_facts():
     m = _metrics()
     enr = Enrichment(symbol="XYZ")
