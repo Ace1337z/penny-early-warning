@@ -206,3 +206,23 @@ def test_plain_and_html_carry_the_same_facts():
     html2 = format_alert2(m2, enr2, None, ai_running=False, html=True)
     for token in ("PLAN", "FIB swing"):
         assert token in plain2 and token in html2
+
+
+def test_evidence_groups_are_separated_by_blank_lines():
+    """Filings, short interest, Shariah and tech must not run together."""
+    from penny.fib import fib_levels
+    m = _metrics()
+    enr = Enrichment(symbol="XYZ")
+    enr.verification = {"status": "ok"}
+    enr.news = [{"title": "first", "source": "s", "age": "1h", "summary": ""},
+                {"title": "second", "source": "s", "age": "2h", "summary": ""}]
+    enr.filings = [{"form": "8-K", "date": "9/29/2026", "items": ""}]
+    enr.short_interest = [{"short_float_pct": 12.5, "date": "9/1", "source": "finviz"}]
+    enr.insiders = [{"date": "9/1", "owner": "DOE", "transaction": "Buy", "value": "$1"}]
+    enr.technicals = type("T", (), {"summary_text": lambda self: "RSI 60"})()
+    enr.fib = fib_levels(1.0, 1.5)
+    lines = format_alert2(m, enr, None, shariah_lines=["Shariah: COMPLIANT"],
+                          ai_running=False).split("\n")
+    for heading in ("FILINGS", "SHORT/FLOAT", "INSIDERS", "TECH", "FIB swing"):
+        idx = next(i for i, ln in enumerate(lines) if heading in ln)
+        assert lines[idx - 1] == "", f"{heading} should be preceded by a blank line"

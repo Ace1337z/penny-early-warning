@@ -255,10 +255,16 @@ def format_alert2(m: Metrics, enr: Enrichment, market, *,
     msg.line(divider("EVIDENCE"))
     msg.line(Enricher.verification_line(enr))
 
+    def group(label: str) -> None:
+        # Every evidence block gets a blank line before it, so filings, short
+        # interest, Shariah, technicals and the plan do not run together.
+        msg.blank()
+        msg.line(("b", label))
+
     if enr.news:
         rest = [n for n in enr.news if str(n.get("title", "")) not in shown_titles]
         if rest:
-            msg.line(("b", f"MORE NEWS ({len(rest)} more from {enr.outlets} outlet(s))"))
+            group(f"MORE NEWS ({len(rest)} more from {enr.outlets} outlet(s))")
             for item in rest[:5]:
                 age = f" ({item['age']})" if item.get("age") else ""
                 src = f" - {item.get('source')}" if item.get("source") else ""
@@ -267,25 +273,28 @@ def format_alert2(m: Metrics, enr: Enrichment, market, *,
                     msg.line("  ", str(item["summary"])[:180])
 
     if enr.filings:
-        msg.line(("b", "FILINGS (last 5 days)"))
+        group("FILINGS (last 5 days)")
         for f in enr.filings[:5]:
             extra = f" items {f['items']}" if f.get("items") else ""
             msg.line("- ", f"{f.get('form')} {f.get('date')}{extra}")
 
     short_text = Enricher.short_text(enr)
     if short_text:
+        msg.blank()
         msg.line(("b", "SHORT/FLOAT: "), short_text)
 
     if enr.insiders:
-        msg.line(("b", "INSIDERS"))
+        group("INSIDERS")
         for i in enr.insiders[:3]:
             msg.line("- ", f"{i.get('date')} {i.get('owner')} {i.get('transaction')} "
                            f"{i.get('value')}")
 
     if shariah_lines:
+        msg.blank()
         for line in shariah_lines:
             msg.line(line)
 
+    msg.blank()
     if enr.technicals:
         msg.line(("b", "TECH: "), enr.technicals.summary_text())
     else:
@@ -294,6 +303,7 @@ def format_alert2(m: Metrics, enr: Enrichment, market, *,
     if enr.fib:
         r = enr.fib.retracements
         e = enr.fib.extensions
+        msg.blank()
         msg.line(("b", f"FIB swing {enr.fib.swing_low:.4f} -> {enr.fib.swing_high:.4f}"))
         msg.line("  retrace 23.6% ", f"{r['23.6']:.4f}", " | 38.2% ", f"{r['38.2']:.4f}",
                  " | 50% ", f"{r['50.0']:.4f}", " | 61.8% ", f"{r['61.8']:.4f}",
@@ -302,6 +312,7 @@ def format_alert2(m: Metrics, enr: Enrichment, market, *,
                  f"{e['161.8']:.4f}")
 
     if enr.plan:
+        msg.blank()
         msg.line(("b", "PLAN: "), enr.plan.text(risk_usd))
 
     # -- AI -----------------------------------------------------------------
@@ -311,8 +322,11 @@ def format_alert2(m: Metrics, enr: Enrichment, market, *,
         for line in _ai_lines(reaction):
             msg.line(line)
         if price_forecast:
-            for line in _ai_lines(price_forecast.rstrip()
-                                  + ("" if validated else " (unvalidated)")):
+            msg.blank()
+            pf = price_forecast.rstrip().split("\n")
+            if not validated:
+                pf[0] = pf[0] + " (unvalidated)"
+            for line in _ai_lines("\n".join(pf)):
                 msg.line(line)
     elif ai_running:
         msg.blank()

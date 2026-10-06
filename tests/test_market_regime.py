@@ -102,3 +102,12 @@ def test_reaction_text_maps_down_direction_to_avoid():
 
 def test_reaction_text_says_so_when_no_model_answers():
     assert "no model answered" in reaction_text(aggregate([]))
+
+
+def test_reaction_text_separates_call_from_detail():
+    """The AI CALL, the reasons and the trailing fields get their own blocks."""
+    fc = parse_forecast("m", _payload(urgency="now", change_view="a reclaim"))
+    lines = reaction_text(aggregate([fc])).split("\n")
+    call = next(i for i, ln in enumerate(lines) if ln.startswith("AI CALL:"))
+    why = next(i for i, ln in enumerate(lines) if ln.startswith("why now:"))
+    assert lines[call + 1] == "" or lines[why - 1] == ""

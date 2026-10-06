@@ -371,18 +371,26 @@ def reaction_text(agg: AggregateForecast) -> str:
         lines.append(f"AI CALL: {call} | " + " | ".join(bits))
     else:
         lines.append(" | ".join(bits))
+    detail: list[str] = []
     if agg.why_now:
-        lines.append(f"why now: {agg.why_now}")
+        detail.append(f"why now: {agg.why_now}")
     elif agg.catalyst:
-        lines.append(f"catalyst: {agg.catalyst}")
+        detail.append(f"catalyst: {agg.catalyst}")
     if agg.reasons:
-        lines.append("reasons: " + "; ".join(agg.reasons))
+        detail.append("reasons: " + "; ".join(agg.reasons))
     if agg.flags:
-        lines.append("flags: " + ", ".join(agg.flags))
+        detail.append("flags: " + ", ".join(agg.flags))
+    if detail:
+        lines.append("")
+        lines.extend(detail)
+    tail: list[str] = []
     if agg.change_view:
-        lines.append(f"changes view: {agg.change_view}")
+        tail.append(f"changes view: {agg.change_view}")
     if agg.sentiment:
-        lines.append(f"sentiment {agg.sentiment:+.2f}")
+        tail.append(f"sentiment {agg.sentiment:+.2f}")
+    if tail:
+        lines.append("")
+        lines.extend(tail)
     return "\n".join(lines)
 
 
