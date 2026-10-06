@@ -138,6 +138,8 @@ class AIRunner:
                 news_key: str = "", kind: str = "alert",
                 force: bool = False) -> tuple[AggregateForecast, list[ModelForecast]]:
         """Run the active panel (with fallbacks). Returns (aggregate, all forecasts)."""
+        if not getattr(self.gateway, "configured", True):
+            return AggregateForecast(), []
         if self._limit_reached():
             log.warning("TOKEN_LIMIT_DAILY reached; skipping AI call for %s", symbol)
             return AggregateForecast(), []
@@ -180,6 +182,8 @@ class AIRunner:
     def shadow(self, *, symbol: str, facts: dict, exclude: Optional[set[str]] = None,
                kind: str = "shadow") -> list[ModelForecast]:
         """Run remaining candidates in shadow mode; forecasts are stored, never shown."""
+        if not getattr(self.gateway, "configured", True):
+            return []
         if self._limit_reached():
             return []
         exclude = set(exclude or set())

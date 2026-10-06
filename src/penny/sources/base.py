@@ -107,7 +107,7 @@ def fnum(value: Any) -> Optional[float]:
 
 
 def pct_to_fraction(value: Any) -> Optional[float]:
-    """Moomoo returns ratios as percentages (1.23 = 1.23%)."""
+    """Some sources return ratios as percentages (1.23 = 1.23%)."""
     v = fnum(value)
     return None if v is None else v / 100.0
 

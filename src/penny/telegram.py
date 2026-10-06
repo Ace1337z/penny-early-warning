@@ -70,6 +70,18 @@ class TelegramClient:
         raise TelegramError("telegram: send failed after retries")
 
     # -- sending ------------------------------------------------------------
+    def delete(self, msg_id: int, chat_id: Optional[str] = None) -> bool:
+        """Delete a message (used to remove secret values from the chat)."""
+        chat = chat_id or self.chat_id
+        if not chat or not msg_id:
+            return False
+        try:
+            self._call("deleteMessage", {"chat_id": chat, "message_id": msg_id})
+            return True
+        except TelegramError as exc:
+            log.debug("telegram delete failed: %s", exc)
+            return False
+
     def send(self, text: str, chat_id: Optional[str] = None, disable_preview: bool = True) -> Optional[int]:
         """Send a message, splitting long text. Returns the last message id."""
         chat = chat_id or self.chat_id
@@ -221,6 +233,10 @@ class FakeTelegram:
 
     def send_document(self, path, caption: str = "", chat_id: Optional[str] = None) -> bool:
         self.documents.append(str(path))
+        return True
+
+    def delete(self, msg_id: int, chat_id: Optional[str] = None) -> bool:
+        self.messages = [m for m in self.messages if m["id"] != msg_id]
         return True
 
     def get_updates(self, offset: int = 0, timeout: int = 25) -> list[dict]:

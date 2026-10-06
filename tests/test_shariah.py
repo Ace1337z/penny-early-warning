@@ -19,10 +19,8 @@ def test_combine_rules():
 def _service(cfg, state, mode="tag"):
     cfg.set("SHARIAH_MODE", mode)
     sources = [
-        FakeShariahSource("halal.sh", {"AAA": COMPLIANT, "BBB": DOUBTFUL,
-                                       "CCC": NON_COMPLIANT}),
-        FakeShariahSource("Musaffa", {"AAA": COMPLIANT, "BBB": DOUBTFUL},
-                          error_symbols={"DDD"}),
+        FakeShariahSource("halalterminal", {"AAA": COMPLIANT, "BBB": DOUBTFUL,
+                                            "CCC": NON_COMPLIANT}),
     ]
     return ShariahService(cfg, state, sources), sources
 
@@ -73,5 +71,5 @@ def test_display_lines(cfg, state):
     status = svc.status("AAA", fetch=True)
     assert "COMPLIANT" in svc.one_line(status)
     lines = svc.detail_lines(status)
-    assert any("halal.sh" in line for line in lines)
+    assert any("halalterminal" in line for line in lines)
     assert any("not a religious ruling" in line for line in lines)

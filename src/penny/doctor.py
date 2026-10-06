@@ -55,24 +55,29 @@ def run_doctor(runtime, *, test_models: bool = True) -> DoctorReport:
 
     # -- configuration ------------------------------------------------------
     required = {
-        "MOOMOO_API_KEY": "Moomoo AppKey",
         "FINVIZ_TOKEN": "Finviz Elite token",
         "TELEGRAM_TOKEN": "Telegram bot token",
         "TELEGRAM_CHAT_ID": "Telegram chat id",
-        "AI_BASE_URL": "AI gateway base URL",
-        "AI_KEY": "AI gateway key",
-        "SEC_USER_AGENT": "SEC contact (User-Agent)",
     }
     missing = [label for key, label in required.items() if not str(cfg.raw(key)).strip()]
+    note = ""
+    if missing:
+        note = " (set them from the bot with: /set KEY VALUE)"
     report.add("configuration", not missing,
                "all required values present" if not missing
-               else "missing: " + ", ".join(missing))
+               else "missing: " + ", ".join(missing) + note)
+
+    # Things that are convenient to have but can be added later from the bot.
+    for key, label in (("AI_BASE_URL", "AI gateway base URL"), ("AI_KEY", "AI gateway key"),
+                       ("SEC_USER_AGENT", "SEC contact (User-Agent)")):
+        report.add(f"configuration: {label}", bool(str(cfg.raw(key)).strip()),
+                   "set" if str(cfg.raw(key)).strip()
+                   else f"not set yet (send /set {key} VALUE)", optional=True)
 
     mode = str(cfg.raw("SHARIAH_MODE") or "tag")
     report.add("shariah mode", mode in ("tag", "only_compliant", "hide_noncompliant", "off"),
-               f"{mode}; sources configured: "
-               f"{'halal.sh' if cfg.raw('HALALSH_API_KEY') else '-'}, "
-               f"{'Musaffa' if cfg.raw('MUSAFFA_API_KEY') else '-'}")
+               f"{mode}; source configured: "
+               f"{'halalterminal.com' if cfg.raw('HALALTERMINAL_API_KEY') else '-'}")
 
     # -- databases ----------------------------------------------------------
     for name, db in (("state database", runtime.state), ("journal database", runtime.journal_db)):
@@ -83,15 +88,8 @@ def run_doctor(runtime, *, test_models: bool = True) -> DoctorReport:
         except Exception as exc:  # noqa: BLE001
             report.add(name, False, str(exc))
 
-    # -- clock --------------------------------------------------------------
-    if runtime.moomoo:
-        offset = runtime.moomoo.sync_clock()
-        report.add("clock sync (Moomoo)", abs(offset) <= 5000,
-                   f"offset {offset} ms (Moomoo rejects over 5000 ms)")
-
     # -- sources ------------------------------------------------------------
     source_specs = [
-        ("Moomoo", runtime.moomoo, False),
         ("Finviz", runtime.finviz, False),
         ("Alpaca (optional)", runtime.alpaca, True),
         ("Finnhub (optional)", runtime.finnhub, True),
@@ -124,8 +122,10 @@ def run_doctor(runtime, *, test_models: bool = True) -> DoctorReport:
             report.add(f"Shariah: {name}", ok, detail, optional=True)
 
     # -- AI models ----------------------------------------------------------
-    if runtime.gateway is None:
-        report.add("AI gateway", False, "not configured")
+    if not getattr(runtime.gateway, "configured", False):
+        report.add("AI gateway", False,
+                   "not configured yet (send /set AI_BASE_URL ... then /set AI_KEY ...)",
+                   optional=True)
     else:
         try:
             models = runtime.gateway.list_models()

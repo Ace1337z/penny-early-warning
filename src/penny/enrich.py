@@ -57,10 +57,9 @@ class Enrichment:
 class Enricher:
     """Runs the per-alert workers in parallel; each source fails soft (6.8)."""
 
-    def __init__(self, cfg, *, moomoo=None, finviz=None, alpaca=None, finnhub=None,
+    def __init__(self, cfg, *, finviz=None, alpaca=None, finnhub=None,
                  sec=None, finra=None, yahoo=None, market=None):
         self.cfg = cfg
-        self.moomoo = moomoo
         self.finviz = finviz
         self.alpaca = alpaca
         self.finnhub = finnhub
@@ -140,17 +139,14 @@ class Enricher:
 
     # -- workers ------------------------------------------------------------
     def _candles(self, symbol: str) -> list[dict]:
-        """1-minute bars including pre/post: Moomoo -> Alpaca -> Yahoo (6.8)."""
+        """1-minute bars including pre/post: Alpaca -> Yahoo (6.8).
+
+        Finviz is the live feed and has no intraday candle endpoint, so candles
+        rely on the optional Alpaca and Yahoo sources; the plan degrades softly
+        when neither is configured.
+        """
         now = datetime.now(tz=ET)
         start = now.replace(hour=4, minute=0, second=0, microsecond=0) - timedelta(days=1)
-        if self.moomoo:
-            try:
-                bars = self.moomoo.kline(symbol, int(start.timestamp() * 1000),
-                                         int(now.timestamp() * 1000), extended_time=1)
-                if bars:
-                    return bars
-            except Exception as exc:  # noqa: BLE001
-                log.debug("moomoo candles failed for %s: %s", symbol, exc)
         if self.alpaca and getattr(self.alpaca, "configured", False):
             try:
                 bars = self.alpaca.bars(symbol, start, now)
@@ -277,20 +273,6 @@ class Enricher:
         interest: list[dict] = []
         volume: Optional[dict] = None
 
-        if self.moomoo:
-            try:
-                si = self.moomoo.short_interest(symbol)
-                if si:
-                    interest.append(si)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                sv = self.moomoo.short_volume(symbol)
-                if sv:
-                    volume = sv
-            except Exception:  # noqa: BLE001
-                pass
-
         if self.finviz:
             try:
                 row = self.finviz.verify(symbol)
@@ -358,9 +340,9 @@ class Enricher:
         m_volume = quote.get("cum_volume")
         mismatch = []
         if f_price and m_price and abs(f_price / m_price - 1.0) > 0.03:
-            mismatch.append(f"price Moomoo {m_price} vs Finviz {f_price}")
+            mismatch.append(f"price feed {m_price} vs Finviz {f_price}")
         if f_volume and m_volume and abs(f_volume / m_volume - 1.0) > 0.25:
-            mismatch.append(f"volume Moomoo {m_volume:.0f} vs Finviz {f_volume:.0f}")
+            mismatch.append(f"volume feed {m_volume:.0f} vs Finviz {f_volume:.0f}")
         return {
             "row": row,
             "float_shares": row_num(row, "Float"),
@@ -369,7 +351,7 @@ class Enricher:
             "verification": {
                 "status": "mismatch" if mismatch else "ok",
                 "mismatch": mismatch,
-                "authoritative": "finviz" if mismatch else "moomoo",
+                "authoritative": "finviz",
                 "price": f_price,
                 "change_pct": f_change,
                 "volume": f_volume,
@@ -388,7 +370,7 @@ class Enricher:
         if status == "mismatch":
             return "DATA MISMATCH: " + "; ".join(v.get("mismatch") or []) + " (Finviz is authoritative)"
         if status == "ok":
-            return "Finviz verified"
+            return "Finviz feed verified"
         if status == "token_rejected":
             return "Finviz unverified (token rejected)"
         return "Finviz unverified"

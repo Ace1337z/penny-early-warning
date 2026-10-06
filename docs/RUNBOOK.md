@@ -216,9 +216,9 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 | Symptom | Check / fix |
 |---|---|
 | No alerts during a session | `$PENNY doctor`; is `DATA_PROVIDER` reachable? Is the session open? Check `/status` and the log for feed failures |
-| "Feed failing: 5 consecutive cycles returned no quotes" | Moomoo credentials/clock; the system falls back to the Finviz screener feed |
-| "Finviz token rejected" | `$PENNY set FINVIZ_TOKEN`; alerts continue meanwhile |
-| Moomoo error `-12006` (clock drift) | `sudo chronyc makestep`; verify NTP is running |
+| "Feed failing: 5 consecutive cycles returned no quotes" | check outbound HTTPS and the Finviz token; the universe screener *is* the quote feed for sub-$10 names, so a rejected token means no feed |
+| "Finviz token rejected" | `$PENNY set FINVIZ_TOKEN` or `/set FINVIZ_TOKEN <token>` from the bot; alerts continue meanwhile |
+| Finviz rate-limited (`429`) | lower `FINVIZ_MAX_PER_MIN` (default 20) and `UNIVERSE_POLL_SECONDS`; the client caches and back-fills |
 | Telegram commands ignored | the chat id must match `TELEGRAM_CHAT_ID`; re-run `$PENNY detect-chat` |
 | No AI text on alerts | `$PENNY doctor --no-models` then without `--no-models`; check `AI_BASE_URL`/`AI_KEY`; models that fail are skipped |
 | Provider cannot list models | enter them: `/models set id:multiplier,id:multiplier` or `$PENNY models add ID MULT` |
@@ -229,7 +229,7 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 Useful log greps:
 
 ```bash
-journalctl -u penny | grep -i "finviz\|moomoo\|backup\|alert"
+journalctl -u penny | grep -i "finviz\|alpaca\|halalterminal\|backup\|alert"
 ```
 
 ---

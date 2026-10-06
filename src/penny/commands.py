@@ -25,6 +25,9 @@ HELP = """penny commands
 /models add ID MULTIPLIER - confirm a new model
 /models remove ID - drop a model
 /setmodels A,B,C - set the panel manually
+/set KEY VALUE - set any setting (e.g. /set FINVIZ_TOKEN abc123)
+/setkey - same as /set, for secrets
+/keys - what is configured and what is still missing
 /halal SYM - Shariah status now
 /backup now - run a backup
 /backups - recent backups and destination health
@@ -45,6 +48,7 @@ class CommandHandler:
         self.shariah = shariah
         self.backup = backup
         self._offset = 0
+        self._last_message_id = 0
         self._stop = threading.Event()
         self._lock = threading.Lock()
 
@@ -62,6 +66,7 @@ class CommandHandler:
             if not self._authorized(chat_id):
                 log.warning("ignoring command from unauthorized chat %s", chat_id)
                 continue
+            self._last_message_id = int(msg.get("message_id") or 0)
             self.handle(text)
             handled += 1
         return handled
@@ -102,6 +107,9 @@ class CommandHandler:
                 "/market": self.cmd_market,
                 "/models": self.cmd_models,
                 "/setmodels": self.cmd_setmodels,
+                "/set": self.cmd_set,
+                "/setkey": self.cmd_set,
+                "/keys": self.cmd_keys,
                 "/halal": self.cmd_halal,
                 "/backup": self.cmd_backup,
                 "/backups": self.cmd_backups,
@@ -327,6 +335,60 @@ class CommandHandler:
         self._reply("active panel set to: " + ", ".join(models))
         if self.backup:
             self.backup.run("panel-change")
+
+    def cmd_set(self, args) -> None:
+        """Set any configuration value from the bot. Secrets are saved, not echoed."""
+        from .config import DEFAULTS, SECRET_KEYS, RESTART_KEYS
+        if len(args) < 2:
+            self._reply("usage: /set KEY VALUE   (e.g. /set FINVIZ_TOKEN abc123)")
+            return
+        key = args[0].upper()
+        value = " ".join(args[1:]).strip()
+        if key not in DEFAULTS:
+            known = ", ".join(sorted(k for k in DEFAULTS if k in SECRET_KEYS))
+            self._reply(f"unknown key {key}.\nSettable secrets: {known}")
+            return
+        was_secret = key in SECRET_KEYS
+        self.cfg.set(key, value)
+        try:
+            self.cfg.save()
+        except Exception as exc:  # noqa: BLE001
+            self._reply(f"could not save {key}: {exc}")
+            return
+        try:
+            from .logging_setup import update_secrets
+            update_secrets(self.cfg.secrets())
+        except Exception:  # noqa: BLE001
+            pass
+        # Remove the message that carried the secret so it does not linger in history.
+        if was_secret:
+            try:
+                self.telegram.delete(getattr(self, "_last_message_id", 0))
+            except Exception:  # noqa: BLE001
+                pass
+            shown = self.cfg.display(key)
+            self._reply(f"{key} saved (now {shown}).")
+        else:
+            self._reply(f"{key} = {value}")
+        if key in RESTART_KEYS:
+            self._reply(f"note: {key} takes effect after the next restart "
+                        f"(sudo systemctl restart penny).")
+
+    def cmd_keys(self, args) -> None:
+        """Show which settings are configured, masking every secret."""
+        from .config import DEFAULTS, GROUPS
+        important = [
+            "FINVIZ_TOKEN", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "AI_BASE_URL", "AI_KEY",
+            "HALALTERMINAL_API_KEY", "SEC_USER_AGENT", "BACKUP_PASSPHRASE", "BACKUP_REMOTE",
+        ]
+        lines = ["KEYS"]
+        for key in important:
+            value = str(self.cfg.raw(key))
+            mark = "set" if value.strip() else "MISSING"
+            lines.append(f"  {key} = {self.cfg.display(key) if value.strip() else '-'} [{mark}]")
+        extra = [k for k in DEFAULTS if k not in important and k in GROUPS.get("Feed", [])]
+        lines.append("send /set KEY VALUE to change any of the above")
+        self._reply("\n".join(lines))
 
     def cmd_halal(self, args) -> None:
         if not args:

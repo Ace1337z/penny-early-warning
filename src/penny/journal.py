@@ -82,12 +82,11 @@ class RuleResult:
 
 
 class Journal:
-    def __init__(self, cfg, db, *, alpaca=None, yahoo=None, moomoo=None):
+    def __init__(self, cfg, db, *, alpaca=None, yahoo=None):
         self.cfg = cfg
         self.db = db
         self.alpaca = alpaca
         self.yahoo = yahoo
-        self.moomoo = moomoo
 
     # -- events -------------------------------------------------------------
     def add_event(self, symbol: str, day: str, label: str, *, pattern: str = "",
@@ -200,14 +199,6 @@ class Journal:
     def _fetch_day(self, symbol: str, d: date) -> list[dict]:
         start = datetime(d.year, d.month, d.day, 4, 0, tzinfo=ET)
         end = start + timedelta(hours=16)
-        if self.moomoo:
-            try:
-                bars = self.moomoo.kline(symbol, int(start.timestamp() * 1000),
-                                         int(end.timestamp() * 1000), extended_time=1)
-                if bars:
-                    return bars
-            except Exception as exc:  # noqa: BLE001
-                log.debug("moomoo bars failed for %s %s: %s", symbol, d, exc)
         if self.alpaca and getattr(self.alpaca, "configured", False):
             try:
                 return self.alpaca.bars(symbol, start, end)

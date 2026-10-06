@@ -53,9 +53,8 @@ class MarketContext:
 class MarketContextProvider:
     """Shared, cached market context used by every AI request and message."""
 
-    def __init__(self, cfg, moomoo=None, finviz=None, yahoo=None):
+    def __init__(self, cfg, finviz=None, yahoo=None):
         self.cfg = cfg
-        self.moomoo = moomoo
         self.finviz = finviz
         self.yahoo = yahoo
         self._context = MarketContext()
@@ -115,9 +114,9 @@ class MarketContextProvider:
     def _refresh_quotes(self, ctx: MarketContext) -> None:
         symbols = self.cfg.list("MARKET_SYMBOLS") or ["SPY", "QQQ", "IWM"]
         ctx.quotes = {}
-        if self.moomoo:
+        if self.finviz:
             try:
-                quotes = self.moomoo.snapshot(symbols)
+                quotes = self.finviz.snapshot(symbols)
                 for q in quotes:
                     sym = q.get("symbol")
                     if not sym or not q.get("price"):
@@ -134,7 +133,7 @@ class MarketContextProvider:
                     }
             except Exception as exc:  # noqa: BLE001
                 log.debug("market index snapshot failed: %s", exc)
-                ctx.missing.append("index quotes (moomoo)")
+                ctx.missing.append("index quotes (finviz)")
         if not ctx.quotes and self.yahoo:
             try:
                 levels = self.yahoo.index_levels(("^GSPC", "^IXIC", "^VIX"))

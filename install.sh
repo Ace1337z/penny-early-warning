@@ -15,11 +15,15 @@
 #   PENNY_INSTALL_DIR=/opt/penny
 #   PENNY_VERSION=main            # or a tag such as v1.0.0
 #   PENNY_URL=https://github.com/Ace1337z/penny-early-warning
-#   MOOMOO_API_KEY=... MOOMOO_PRIVATE_KEY_PATH=... FINVIZ_TOKEN=...
-#   TELEGRAM_TOKEN=... TELEGRAM_CHAT_ID=... AI_BASE_URL=... AI_KEY=... AI_MODELS=...
-#   SEC_USER_AGENT="Name email" ...
+#   TELEGRAM_TOKEN=... TELEGRAM_CHAT_ID=...   # required to reach the bot
+#   FINVIZ_TOKEN=...              # optional here; /set FINVIZ_TOKEN works later
+#   AI_BASE_URL=... AI_KEY=... AI_MODELS=... SEC_USER_AGENT="Name email" ...
 #   GITHUB_TOKEN=...              # only for a private repository
 #   PENNY_RESTORE_FROM=... PENNY_BACKUP_PASSPHRASE=...   # optional restore
+#
+# Only the Telegram bot token and chat id are required up front, so the bot can
+# then receive every other key. Anything left empty can be set from the chat with
+#   /set FINVIZ_TOKEN <token>        /keys        /help
 #
 set -euo pipefail
 
@@ -81,43 +85,39 @@ info "install directory: $INSTALL_DIR"
 echo
 info "Step 1/9: credentials (asked before anything is downloaded)"
 echo "Secrets are read with hidden input and are never echoed."
+echo "Only Telegram is required here; everything else can be set later with /set KEY VALUE."
 
 if [[ "${PENNY_NONINTERACTIVE:-0}" == "1" || ! -t 0 ]]; then
     info "non-interactive mode: reading values from the environment"
-    MOOMOO_API_KEY="${MOOMOO_API_KEY:-}"
-    MOOMOO_PRIVATE_KEY_PATH="${MOOMOO_PRIVATE_KEY_PATH:-}"
-    FINVIZ_TOKEN="${FINVIZ_TOKEN:-}"
     TELEGRAM_TOKEN="${TELEGRAM_TOKEN:-}"
     TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+    FINVIZ_TOKEN="${FINVIZ_TOKEN:-}"
     AI_BASE_URL="${AI_BASE_URL:-}"
     AI_KEY="${AI_KEY:-}"
     AI_MODELS="${AI_MODELS:-}"
     SEC_USER_AGENT="${SEC_USER_AGENT:-}"
     ALPACA_KEY="${ALPACA_KEY:-}"; ALPACA_SECRET="${ALPACA_SECRET:-}"
     FINNHUB_KEY="${FINNHUB_KEY:-}"
-    HALALSH_API_KEY="${HALALSH_API_KEY:-}"; MUSAFFA_API_KEY="${MUSAFFA_API_KEY:-}"
+    HALALTERMINAL_API_KEY="${HALALTERMINAL_API_KEY:-}"
     BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE:-}"; BACKUP_REMOTE="${BACKUP_REMOTE:-}"
     GITHUB_TOKEN="${GITHUB_TOKEN:-}"
     PENNY_RESTORE_FROM="${PENNY_RESTORE_FROM:-}"
 else
-    ask "Moomoo AppKey (mover discovery, snapshots, short data; open.moomoo.com/dashboard)" \
-        MOOMOO_API_KEY 1 1
-    ask "Moomoo private key file path (leave empty to generate a new pair)" \
-        MOOMOO_PRIVATE_KEY_PATH 0 0
-    ask "Finviz Elite API token (universe, verification, news, filings)" FINVIZ_TOKEN 1 1
     ask "Telegram bot token (@BotFather)" TELEGRAM_TOKEN 1 1
     TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
-    ask "AI gateway base URL" AI_BASE_URL 0 1
-    ask "AI gateway key" AI_KEY 1 1
+    echo
+    info "the bot can set these later with /set KEY VALUE; fill them in now if you have them"
+    ask "Finviz Elite API token (all market data: universe and movers)" FINVIZ_TOKEN 1 0
+    ask "AI gateway base URL" AI_BASE_URL 0 0
+    ask "AI gateway key" AI_KEY 1 0
     ask "Active AI panel model ids (comma separated, e.g. a,b,c)" AI_MODELS 0 0
-    ask "SEC contact as 'Name email' (required for SEC EDGAR)" SEC_USER_AGENT 0 1
+    ask "SEC contact as 'Name email' (required for SEC EDGAR)" SEC_USER_AGENT 0 0
     echo
     info "optional sources (press Enter to skip)"
     ask "Alpaca key id (candles fallback, news)" ALPACA_KEY 1 0
     ask "Alpaca secret" ALPACA_SECRET 1 0
     ask "Finnhub key (news)" FINNHUB_KEY 1 0
-    ask "halal.sh API key (Shariah status)" HALALSH_API_KEY 1 0
-    ask "Musaffa API key (Shariah status)" MUSAFFA_API_KEY 1 0
+    ask "halalterminal.com API key (Shariah status)" HALALTERMINAL_API_KEY 1 0
     echo
     ask "Backup passphrase (required for off-server backups)" BACKUP_PASSPHRASE 1 0
     ask "Off-server backup destination (rclone remote or a directory)" BACKUP_REMOTE 0 0
@@ -187,25 +187,23 @@ CONFIG_FILE="$INSTALL_DIR/config.env"
 if [[ -f "$CONFIG_FILE" ]]; then
     info "existing configuration found; values are kept unless you overwrite them"
 fi
-export MOOMOO_API_KEY FINVIZ_TOKEN TELEGRAM_TOKEN TELEGRAM_CHAT_ID AI_BASE_URL AI_KEY
-export AI_MODELS SEC_USER_AGENT ALPACA_KEY ALPACA_SECRET FINNHUB_KEY HALALSH_API_KEY
-export MUSAFFA_API_KEY BACKUP_PASSPHRASE BACKUP_REMOTE MOOMOO_PRIVATE_KEY_PATH
+export TELEGRAM_TOKEN TELEGRAM_CHAT_ID FINVIZ_TOKEN AI_BASE_URL AI_KEY
+export AI_MODELS SEC_USER_AGENT ALPACA_KEY ALPACA_SECRET FINNHUB_KEY HALALTERMINAL_API_KEY
+export BACKUP_PASSPHRASE BACKUP_REMOTE
 "$PENNY" --config "$CONFIG_FILE" setup --non-interactive --skip-doctor
 chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 
-# --- 6. helpers: key pair and chat id --------------------------------------
-info "Step 6/9: Moomoo key pair and Telegram chat id"
-if [[ -z "${MOOMOO_PRIVATE_KEY_PATH:-}" || ! -f "${MOOMOO_PRIVATE_KEY_PATH:-/nonexistent}" ]]; then
-    KEY_PATH="$INSTALL_DIR/moomoo_private_key.pem"
-    "$PENNY" --config "$CONFIG_FILE" keygen --algo ED25519 --out "$KEY_PATH" --set-config
-    echo
-    warn "Upload the public key printed above on open.moomoo.com/dashboard, then press Enter."
-    read -r -p "" </dev/tty || true
-fi
+# --- 6. Telegram chat id ---------------------------------------------------
+info "Step 6/9: Telegram chat id (so the bot can receive your settings)"
 if [[ -z "${TELEGRAM_CHAT_ID:-}" && -t 0 ]]; then
     "$PENNY" --config "$CONFIG_FILE" detect-chat || \
         warn "set the chat id later with: penny set TELEGRAM_CHAT_ID <id>"
 fi
+echo
+info "From the chat you can set anything else at any time, e.g.:"
+echo "  /keys                     show what is set and what is missing"
+echo "  /set FINVIZ_TOKEN <token> set a key (secrets are saved, not echoed)"
+echo "  /help                     all commands"
 
 # --- 7. systemd unit -------------------------------------------------------
 info "Step 7/9: systemd service"

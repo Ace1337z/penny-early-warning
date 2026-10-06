@@ -30,14 +30,13 @@ SPLIT_ARTIFACT_PCT = 400.0
 class Engine:
     """Discover movers, sweep the universe, score, alert, enrich, forecast."""
 
-    def __init__(self, cfg, db, journal, telegram, *, moomoo=None, finviz=None,
+    def __init__(self, cfg, db, journal, telegram, *, finviz=None,
                  alpaca=None, finnhub=None, sec=None, finra=None, yahoo=None,
                  gateway=None, catalog=None, shariah=None, backup=None, clock=None):
         self.cfg = cfg
         self.db = db
         self.journal = journal
         self.telegram = telegram
-        self.moomoo = moomoo
         self.finviz = finviz
         self.alpaca = alpaca
         self.finnhub = finnhub
@@ -51,8 +50,8 @@ class Engine:
         self.clock = clock or time.time
 
         self.scorer = Scorer(cfg, clock=self.clock)
-        self.market = MarketContextProvider(cfg, moomoo=moomoo, finviz=finviz, yahoo=yahoo)
-        self.enricher = Enricher(cfg, moomoo=moomoo, finviz=finviz, alpaca=alpaca,
+        self.market = MarketContextProvider(cfg, finviz=finviz, yahoo=yahoo)
+        self.enricher = Enricher(cfg, finviz=finviz, alpaca=alpaca,
                                  finnhub=finnhub, sec=sec, finra=finra, yahoo=yahoo,
                                  market=self.market)
         self.runner = None
@@ -64,6 +63,8 @@ class Engine:
         self.universe: list[str] = []
         self.avg_volume: dict[str, float] = {}
         self._universe_ts = 0.0
+        self._universe_rows: dict[str, dict] = {}
+        self._mover_rows: dict[str, dict] = {}
         self._movers: list[str] = []
         self._movers_ts = 0.0
         self._quotes_by_symbol: dict[str, dict] = {}
@@ -99,12 +100,15 @@ class Engine:
         return float(max(5, self.cfg.int("UNIVERSE_POLL_SECONDS", 30)))
 
     def _in_session(self) -> bool:
-        return session_for() != SESSION_CLOSED
+        return (self.forced_session or session_for()) != SESSION_CLOSED
 
     # -- universe -----------------------------------------------------------
     def build_universe(self, force: bool = False) -> list[str]:
+        """Refresh the sub-price universe. The same screener call returns the
+        price/volume columns, so its rows double as the quote feed each cycle."""
         now = self.clock()
-        interval = 15 * 60 if self._in_session() else 3600
+        interval = (self.cfg.int("UNIVERSE_POLL_SECONDS", 30)
+                    if self._in_session() else 3600)
         if not force and self.universe and now - self._universe_ts < interval:
             return self.universe
         symbols: list[str] = []
@@ -113,6 +117,7 @@ class Engine:
                 rows = self.finviz.universe(ttl=0)
                 min_p = self.cfg.float("MIN_PRICE", 0.1)
                 max_p = self.cfg.float("MAX_PRICE", 10.0)
+                fresh: dict[str, dict] = {}
                 for row in rows:
                     ticker = (row_get(row, "Ticker") or "").upper().strip()
                     if not ticker or not ticker.isalpha() or len(ticker) > 5:
@@ -123,9 +128,12 @@ class Engine:
                     if price is not None and not (min_p <= price <= max_p):
                         continue
                     symbols.append(ticker)
+                    fresh[ticker] = row
                     avg = row_num(row, "Avg Volume")
                     if avg:
                         self.avg_volume[ticker] = avg
+                if fresh:
+                    self._universe_rows = fresh
                 self._finviz_notified = False
             except FinvizTokenRejected:
                 self._notify_finviz_rejected()
@@ -213,12 +221,21 @@ class Engine:
         symbols: list[str] = list(self.universe)
         now = self.clock()
         interval = self.cfg.int("MOVERS_POLL_SECONDS", 20)
-        if self.moomoo and (not self._movers_ts or now - self._movers_ts >= interval):
+        if self.finviz and (not self._movers_ts or now - self._movers_ts >= interval):
             try:
-                self._movers = self.moomoo.movers(
-                    session, top_n=self.cfg.int("MOVERS_TOP_N", 200),
-                    plate=self.cfg.raw("MOVERS_PLATE"))
+                rows = self.finviz.movers(
+                    session, top_n=self.cfg.int("MOVERS_TOP_N", 200))
+                self._mover_rows = {}
+                self._movers = []
+                for row in rows:
+                    ticker = (row_get(row, "Ticker") or "").upper().strip()
+                    if not ticker:
+                        continue
+                    self._mover_rows[ticker] = row
+                    self._movers.append(ticker)
                 self._movers_ts = now
+            except FinvizTokenRejected:
+                self._notify_finviz_rejected()
             except Exception as exc:  # noqa: BLE001
                 log.debug("movers fetch failed: %s", exc)
         for sym in self._movers:
@@ -227,14 +244,34 @@ class Engine:
         return symbols
 
     def _fetch_quotes(self, symbols: list[str], session: str) -> list[dict]:
-        if not self.moomoo:
+        """Build quotes from the rows already fetched this cycle (universe + movers),
+        and only call Finviz again for symbols neither screen returned."""
+        if not self.finviz:
             return []
+        rows: dict[str, dict] = {}
+        rows.update(self._universe_rows)
+        rows.update(self._mover_rows)
         quotes: list[dict] = []
-        batch = self.cfg.int("UNIVERSE_BATCH", 400)
-        for i in range(0, len(symbols), batch):
-            chunk = symbols[i:i + batch]
+        missing: list[str] = []
+        for symbol in symbols:
+            row = rows.get(symbol)
+            if row is None:
+                missing.append(symbol)
+                continue
             try:
-                quotes.extend(self.moomoo.snapshot(chunk, session))
+                quote = self.finviz.normalize_row(row, session)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("quote normalize failed for %s: %s", symbol, exc)
+                quote = None
+            if quote:
+                quotes.append(quote)
+        batch = max(1, self.cfg.int("FINVIZ_QUOTE_BATCH", 40))
+        for i in range(0, len(missing), batch):
+            chunk = missing[i:i + batch]
+            try:
+                quotes.extend(self.finviz.snapshot(chunk, session))
+            except FinvizTokenRejected:
+                self._notify_finviz_rejected()
             except Exception as exc:  # noqa: BLE001
                 log.warning("snapshot failed for %d symbols: %s", len(chunk), exc)
         out = []
@@ -244,7 +281,7 @@ class Engine:
             price = q.get("price")
             if not price or not (min_p <= price <= max_p):
                 continue
-            avg = self.avg_volume.get(q["symbol"])
+            avg = self.avg_volume.get(q["symbol"]) or q.get("avg_volume")
             if avg:
                 self.scorer.set_avg_volume(q["symbol"], avg)
             out.append(q)
@@ -604,7 +641,7 @@ class Engine:
         self._write_sizing(stats, rss, api_calls)
 
     def _sources(self) -> list:
-        return [s for s in (self.moomoo, self.finviz, self.alpaca, self.finnhub, self.sec,
+        return [s for s in (self.finviz, self.alpaca, self.finnhub, self.sec,
                             self.finra, self.yahoo) if s is not None]
 
     def _write_sizing(self, stats: dict, rss: float, api_calls: int) -> None:
@@ -689,7 +726,7 @@ class Engine:
     def run_forever(self, poll: Optional[float] = None) -> None:
         self.running = True
         self._safe_send("penny early-warning online.")
-        if self.runner:
+        if self.runner and getattr(self.gateway, "configured", True):
             try:
                 self.runner.discovery(self.telegram)
             except Exception as exc:  # noqa: BLE001

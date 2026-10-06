@@ -24,7 +24,7 @@ def _metrics():
 
 
 def test_alert1_shape():
-    text = format_alert1(_metrics(), shariah_line="Shariah: COMPLIANT (halal.sh, Musaffa)",
+    text = format_alert1(_metrics(), shariah_line="Shariah: COMPLIANT (halalterminal)",
                          pct_rank=1)
     assert text.startswith("ALERT: EARLY BUILD  XYZ  $1.23")
     assert "+22.7% vs close" in text

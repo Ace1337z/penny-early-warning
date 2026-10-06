@@ -247,7 +247,7 @@ def _message_checks(report) -> None:
     m.score = 60
     m.tier = 2
     m.pct_vs_close = 0.227
-    text1 = format_alert1(m, shariah_line="Shariah: COMPLIANT (halal.sh, Musaffa)", pct_rank=1)
+    text1 = format_alert1(m, shariah_line="Shariah: COMPLIANT (halalterminal)", pct_rank=1)
     report.add("Alert 1 has the documented shape",
                "EARLY BUILD" in text1 and "+22.7% vs close" in text1
                and "vol 10.0x normal" in text1 and "#1 gainer" in text1

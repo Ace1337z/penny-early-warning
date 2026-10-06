@@ -50,7 +50,7 @@ ALERT: EARLY BUILD  ABCD  $1.42
 +31.5% vs close | +6.8% 15m | +24.1% 60m
 vol 12.4x normal | day 8.9M | above VWAP
 low 38m ago | score 74 | #1 gainer
-Shariah: COMPLIANT (halal.sh, Musaffa)
+Shariah: COMPLIANT (halalterminal)
 ```
 
 A few seconds later an **Alert 2** follows with the facts first, then the AI blocks
@@ -60,13 +60,13 @@ A few seconds later an **Alert 2** follows with the facts first, then the AI blo
 DETAIL EARLY BUILD ABCD $1.42 +31.5% vs close
 
 market: SPY +0.42%, QQQ +0.61%, IWM +0.28% | regime risk-on
-Finviz verified
+Finviz feed verified
 NEWS (3 items from 2 outlet(s)):
 - ABCD announces pricing of $12.0 million registered direct offering (2h) - Benzinga
 FILINGS (last 5 days):
 - 8-K 2026-10-05 items 1.01,9.01
 SHORT/FLOAT: short float 8.4% (finviz 2026-10-05) | float 18,500,000
-Shariah: COMPLIANT (halal.sh, Musaffa)
+Shariah: COMPLIANT (halalterminal)
 TECH: 15m up RSI 71 | 5m up RSI 68 | 1m up RSI 74 | VWAP 1.2900 | vol spike 11.2x
 FIB swing 1.0500 -> 1.4800
   retrace 23.6% 1.3785 | 38.2% 1.3157 | 50% 1.2650 | 61.8% 1.2143 | 78.6% 1.1420
@@ -89,7 +89,10 @@ The system **places no orders** - it tells you, you trade manually.
 ## How it works
 
 ```text
- Moomoo OpenAPI ---> mover discovery (ranked list + full universe sweep)
+ Finviz Elite ------> the single market feed: universe rows are the whole
+                     sub-$10 quote feed, plus market movers (top gainers,
+                     new high, unusual volume, overbought, oversold,
+                     most active, insider buying)
                             |
                             v
                     quote normalization
@@ -99,7 +102,7 @@ The system **places no orders** - it tells you, you trade manually.
                             v
         ALERT 1 (Telegram, instant, no AI)
                             v
-   parallel enrichment: Finviz verification - candles - news -
+   parallel enrichment: Finviz verification - candles (Alpaca/Yahoo) - news -
    filings (SEC, Finviz) - short interest/volume - market context
                             v
             technicals + Fibonacci + trade plan
@@ -133,15 +136,16 @@ activated.
 
 ## Features
 
-- **Whole-universe watching** - mover lists plus a full sweep of sub-$10 US stocks, in all
-  three sessions, so nothing depends on a single screener's ranking.
+- **Whole-universe watching** - market-mover screens (top gainers, new highs, unusual
+  volume, overbought, oversold, most active, insider buying) plus a full sweep of sub-$10
+  US stocks, in all three sessions, so nothing depends on a single screener's ranking.
 - **Two-stage alerts** - instant Alert 1, then a fact-rich Alert 2 enriched in parallel.
 - **AI panel with a leaderboard** - parallel model calls, shadow candidates, stored
   forecasts, horizon evaluation, automatic selection of the best three, and a cost
   multiplier so unknown models are never used before you confirm them.
 - **Catalyst research** - news, SEC filings, short interest/volume, float, insiders.
 - **Fibonacci entry plan** - retracements, extensions, stop, targets and position sizing.
-- **Shariah screening** - halal.sh + Musaffa, cached, shown on every alert, with
+- **Shariah screening** - halalterminal.com, cached, shown on every alert, with
   `tag` / `only_compliant` / `hide_noncompliant` / `off` modes.
 - **Self-learning journal** - log historical winners and losers, download their bars,
   compute metrics and search rule thresholds, with trust levels
@@ -158,20 +162,18 @@ activated.
 
 - A Linux VPS (Ubuntu 24.04 LTS tested), 2 vCPU / 2 GB RAM / 25 GB SSD, public IPv4,
   outbound HTTPS.
-- **Time sync is mandatory.** Moomoo rejects requests when the clock is off by more than
-  5 seconds. The installer sets up chrony.
 - Python 3.10+ (3.12 recommended).
-- Accounts and keys:
+- Accounts and keys. **Only Telegram is required at install time**; every other key can be
+  added later from the chat with `/set KEY VALUE` (see `/keys`).
 
 | Credential | Required | Used for |
 |---|---|---|
-| Moomoo OpenAPI AppKey + key pair | yes | mover discovery, snapshots, short data |
-| Finviz Elite token | yes | universe, verification, news, filings, sector, calendar |
-| Telegram bot token + chat id | yes | alerts and commands |
-| AI gateway base URL, key, model ids | yes | reaction and price forecasts |
-| SEC contact (`Name email`) | yes | SEC EDGAR requests |
+| Telegram bot token + chat id | yes (to reach the bot) | alerts and commands |
+| Finviz Elite token | yes | the entire market feed: universe, movers, quotes, news, filings, sector, calendar |
+| AI gateway base URL, key, model ids | recommended | reaction and price forecasts |
+| SEC contact (`Name email`) | recommended | SEC EDGAR requests |
+| halalterminal.com API key | optional | Shariah screening |
 | Alpaca / Finnhub | optional | candle fallback, extra news |
-| halal.sh / Musaffa | optional | Shariah screening |
 | Backup passphrase + destination | optional | encrypted off-server backups |
 
 ---
@@ -189,17 +191,27 @@ bash install.sh
 ```
 
 The installer installs system packages, downloads the source, creates a virtual
-environment, writes `config.env` (mode 600), generates a Moomoo key pair, detects the
-Telegram chat id, installs the systemd unit, runs the offline self-test and the live
-`doctor`, and offers to start the service.
+environment, writes `config.env` (mode 600), detects the Telegram chat id, installs the
+systemd unit, runs the offline self-test and the live `doctor`, and offers to start the
+service. Only the **Telegram bot token and chat id** are required at install time - every
+other credential (Finviz, Alpaca, Finnhub, SEC, halalterminal, AI, backup) is optional and
+can be added later straight from the Telegram bot with `/set`.
 
 **Non-interactive:**
 
 ```bash
 PENNY_NONINTERACTIVE=1 \
-MOOMOO_API_KEY=... FINVIZ_TOKEN=... TELEGRAM_TOKEN=... AI_BASE_URL=... AI_KEY=... \
-SEC_USER_AGENT="Your Name you@example.com" \
+TELEGRAM_TOKEN=... TELEGRAM_CHAT_ID=... \
 bash install.sh
+```
+
+Add the optional keys later (from the configured Telegram chat):
+
+```text
+/set FINVIZ_TOKEN <token>
+/setkey AI_KEY <key>
+/set AI_BASE_URL https://your-gateway/v1
+/keys
 ```
 
 **Manual install:**
@@ -210,7 +222,7 @@ cd penny-early-warning
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp config.env.example config.env && chmod 600 config.env
-.venv/bin/penny setup        # interactive wizard (asks for all keys first)
+.venv/bin/penny setup        # wizard: Telegram first, other keys optional
 .venv/bin/penny doctor       # live checker: PASS/FAIL per service
 .venv/bin/penny selftest     # offline self-test
 .venv/bin/penny simulate     # offline simulation (no network, no credentials)
@@ -226,7 +238,7 @@ time changes - most changes apply from the next cycle without a restart. See
 
 | Group | Highlights |
 |---|---|
-| **Feed** | `DATA_PROVIDER`, Moomoo key/path, mover method, poll intervals, extra symbols |
+| **Feed** | `DATA_PROVIDER` (Finviz), mover signals/filters, poll intervals, extra symbols |
 | **Finviz** | token, base URL, view, filters, columns |
 | **Other sources** | Alpaca, Finnhub, SEC contact |
 | **Telegram** | bot token and chat id |
@@ -265,6 +277,8 @@ Accepted **only from the configured chat id**.
 /models add ID MULT
 /models remove ID
 /setmodels A,B,C         set the panel manually
+/set KEY VALUE           change any setting at runtime (alias /setkey)
+/keys                    list settable keys (secrets masked)
 /halal SYM               Shariah status now
 /backup now
 /backups                 recent backups and destination health
@@ -291,7 +305,6 @@ Accepted **only from the configured chat id**.
 | `penny backup now\|list\|drill` | create, list and verify backups |
 | `penny restore SOURCE --scope full\|learning\|journal` | restore a backup (destructive) |
 | `penny update` / `penny rollback` | install a new version / restore the previous one |
-| `penny keygen` | generate a Moomoo key pair and print the public key |
 | `penny detect-chat` | read the Telegram chat id from the next message to the bot |
 
 `--config <path>` selects a configuration file (default `$PENNY_HOME/config.env`).
@@ -348,9 +361,9 @@ src/penny/
   runtime.py               builds every component from configuration
   engine.py                poll loop, alert rules, digests, tracking, end of day
   scoring.py               rolling state, Rise/Volx/Accel/VWAP, tiers, score, phase
-  sources/                 moomoo, finviz, alpaca, finnhub, sec, finra, yahoo
+  sources/                 finviz, alpaca, finnhub, sec, finra, yahoo
   ai/                      catalog, gateway, panel, evaluate, leaderboard, runner
-  shariah.py               halal.sh + Musaffa, combine rules, modes, cache
+  shariah.py               halalterminal.com, screening rules, modes, cache
   enrich.py                parallel enrichment, technicals, Fibonacci, plan
   alerts.py                Alert 1 / Alert 2 formatting and the AI fact bundle
   telegram.py              Telegram client + offline fake

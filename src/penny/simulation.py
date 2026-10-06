@@ -147,114 +147,18 @@ class _Rng:
         return self.state / (2 ** 31)
 
 
-class FakeMoomoo:
-    """A synthetic Moomoo feed. Serves quotes, movers, candles and short data."""
-
-    name = "moomoo"
-    api_calls = 0
-
-    def __init__(self, market: SyntheticMarket, day_start: float, session: str = "regular"):
-        self.market = market
-        self.day_start = day_start
-        self.session = session
-        self.minute = 0
-
-    def set_minute(self, minute: int) -> None:
-        self.minute = minute
-
-    @staticmethod
-    def code(symbol: str) -> str:
-        return f"US.{symbol.upper()}"
-
-    @staticmethod
-    def ticker(code: str) -> str:
-        return code.split(".")[-1].upper()
-
-    def reset_calls(self) -> None:
-        self.api_calls = 0
-
-    def sync_clock(self) -> int:
-        return 0
-
-    def _quote(self, symbol: str) -> Optional[dict]:
-        stock = self.market.stocks.get(symbol)
-        if stock is None:
-            return None
-        price = stock.price(self.minute)
-        highs = [stock.price(i) for i in range(0, self.minute + 1)]
-        lows = highs
-        return {
-            "symbol": symbol,
-            "code": self.code(symbol),
-            "ts": self.day_start + self.minute * 60,
-            "price": price,
-            "prev_close": stock.prev_close,
-            "cum_volume": stock.cum_volume(self.minute),
-            "open_price": stock.price(0),
-            "high_price": max(highs) if highs else price,
-            "low_price": min(lows) if lows else price,
-            "bid": round(price * 0.999, 4),
-            "ask": round(price * 1.001, 4),
-            "bid_vol": 1000, "ask_vol": 1000,
-            "market_cap": price * 20_000_000,
-            "float_shares": 20_000_000,
-            "issued_shares": 25_000_000,
-            "halted": False,
-            "session": self.session,
-            "source": "fake",
-        }
-
-    def snapshot(self, symbols, session: Optional[str] = None) -> list[dict]:
-        self.api_calls += 1
-        out = []
-        for symbol in symbols:
-            q = self._quote(str(symbol).upper())
-            if q:
-                out.append(q)
-        return out
-
-    def movers(self, session: Optional[str] = None, top_n: int = 200, plate: str = "") -> list[str]:
-        self.api_calls += 1
-        return self.market.top_gainers(self.minute, top_n)
-
-    def kline(self, symbol: str, start_ms: int, end_ms: int, ktype: str = "K_1M",
-              extended_time: int = 1, max_count: int = 1000) -> list[dict]:
-        stock = self.market.stocks.get(symbol.upper())
-        if stock is None:
-            return []
-        bars = []
-        for i in range(0, self.minute + 1):
-            close = stock.price(i)
-            open_ = stock.price(i - 1) if i > 0 else close
-            bars.append({
-                "time": int(self.day_start + i * 60),
-                "open": open_,
-                "high": round(max(open_, close) * 1.002, 5),
-                "low": round(min(open_, close) * 0.998, 5),
-                "close": close,
-                "volume": stock.volumes[min(i, len(stock.volumes) - 1)],
-            })
-        return bars
-
-    def short_interest(self, symbol: str) -> Optional[dict]:
-        return {"shares_short": 1_500_000, "date": "2026-01-02", "ratio": 0.075,
-                "source": "moomoo"}
-
-    def short_volume(self, symbol: str) -> Optional[dict]:
-        return {"short_volume": 400_000, "total_volume": 900_000, "date": "2026-01-02",
-                "source": "moomoo"}
-
-    def health(self) -> tuple[bool, str]:
-        return True, "synthetic feed"
-
-
 class FakeFinviz:
+    """Synthetic Finviz feed. It is the only market data source: it serves the
+    universe rows (which double as the per-cycle quote feed), the market-mover
+    screens, snapshots, verification and every other Finviz link."""
     name = "finviz"
     token_rejected = False
     api_calls = 0
 
-    def __init__(self, market: SyntheticMarket, mismatch: Optional[str] = None):
+    def __init__(self, market: SyntheticMarket, day_start: float = 0.0,
+                 mismatch: Optional[str] = None):
         self.market = market
+        self.day_start = day_start
         self.mismatch = mismatch
         self.minute = 0
 
@@ -264,32 +168,99 @@ class FakeFinviz:
     def reset_calls(self) -> None:
         self.api_calls = 0
 
+    def _row(self, symbol: str) -> Optional[dict]:
+        stock = self.market.stocks.get(symbol)
+        if stock is None:
+            return None
+        price = stock.price(self.minute)
+        return {
+            "Ticker": symbol,
+            "Company": f"{symbol} Inc",
+            "Price": f"{price:.4f}",
+            "Change": f"{(price / stock.prev_close - 1) * 100:.2f}%",
+            "Volume": f"{stock.cum_volume(self.minute):,.0f}",
+            "Avg Volume": f"{stock.avg_volume:,.0f}",
+            "Rel Volume": "6.5",
+            "Float": "20.00M",
+            "Short Float": "7.50%",
+            "Market Cap": "40.00M",
+            "Sector": "Technology",
+            "Earnings": "-",
+        }
+
     def universe(self, ttl: float = 300.0) -> list[dict]:
         self.api_calls += 1
         rows = []
         for symbol, stock in self.market.stocks.items():
             if stock.kind == "index":
                 continue
-            rows.append({"Ticker": symbol, "Price": f"{stock.price(self.minute):.4f}",
-                         "Avg Volume": f"{stock.avg_volume:,.0f}", "Company": f"{symbol} Inc"})
+            row = self._row(symbol)
+            if row:
+                rows.append(row)
         return rows
+
+    def movers(self, session: Optional[str] = None, top_n: int = 200,
+               signals=None) -> list[dict]:
+        self.api_calls += 1
+        rows = []
+        for symbol in self.market.top_gainers(self.minute, top_n):
+            if symbol in ("SPY", "QQQ", "IWM"):
+                continue
+            row = self._row(symbol)
+            if row:
+                rows.append(row)
+        return rows
+
+    def snapshot(self, symbols, session: Optional[str] = None,
+                 ttl: float = 0.0) -> list[dict]:
+        self.api_calls += 1
+        out = []
+        for symbol in symbols:
+            quote = self.normalize_row(self._row(str(symbol).upper()), session or "regular")
+            if quote:
+                out.append(quote)
+        return out
+
+    def normalize_row(self, row: Optional[dict], session: str) -> Optional[dict]:
+        if not row:
+            return None
+        symbol = str(row.get("Ticker") or "").upper()
+        stock = self.market.stocks.get(symbol)
+        if stock is None:
+            return None
+        price = stock.price(self.minute)
+        highs = [stock.price(i) for i in range(0, self.minute + 1)] or [price]
+        return {
+            "symbol": symbol,
+            "code": symbol,
+            "ts": self.day_start + self.minute * 60,
+            "price": price,
+            "prev_close": stock.prev_close,
+            "cum_volume": stock.cum_volume(self.minute),
+            "open_price": stock.price(0),
+            "high_price": max(highs),
+            "low_price": min(highs),
+            "bid": None,
+            "ask": None,
+            "market_cap": price * 20_000_000,
+            "float_shares": 20_000_000,
+            "avg_volume": stock.avg_volume,
+            "sector": row.get("Sector") or "",
+            "halted": False,
+            "session": session,
+            "source": "finviz",
+        }
 
     def verify(self, ticker: str) -> Optional[dict]:
         self.api_calls += 1
         stock = self.market.stocks.get(ticker.upper())
         if stock is None:
             return None
-        price = stock.price(self.minute)
-        if self.mismatch and self.mismatch.upper() == ticker.upper():
-            price = price * 1.08     # force a >3% mismatch
-        return {
-            "Ticker": ticker.upper(), "Price": f"{price:.4f}",
-            "Change": f"{(price / stock.prev_close - 1) * 100:.2f}%",
-            "Volume": f"{stock.cum_volume(self.minute):,.0f}",
-            "Avg Volume": f"{stock.avg_volume:,.0f}", "Rel Volume": "6.5",
-            "Float": "20.00M", "Short Float": "7.50%", "Market Cap": "40.00M",
-            "Sector": "Technology", "Earnings": "-",
-        }
+        row = self._row(ticker.upper())
+        if row and self.mismatch and self.mismatch.upper() == ticker.upper():
+            price = stock.price(self.minute) * 1.08     # force a >3% mismatch
+            row["Price"] = f"{price:.4f}"
+        return row
 
     def groups(self, group: str = "sector", view: str = "152") -> list[dict]:
         self.api_calls += 1
@@ -373,6 +344,51 @@ class FakeSec:
         return True, "synthetic sec"
 
 
+class FakeAlpaca:
+    """Synthetic Alpaca: the candle fallback now that Finviz has no intraday bars."""
+    name = "alpaca"
+    api_calls = 0
+    configured = True
+
+    def __init__(self, market: SyntheticMarket, day_start: float, session: str = "regular"):
+        self.market = market
+        self.day_start = day_start
+        self.session = session
+        self.minute = 0
+
+    def set_minute(self, minute: int) -> None:
+        self.minute = minute
+
+    def reset_calls(self) -> None:
+        self.api_calls = 0
+
+    def bars(self, symbol: str, start=None, end=None) -> list[dict]:
+        self.api_calls += 1
+        stock = self.market.stocks.get(str(symbol).upper())
+        if stock is None:
+            return []
+        out = []
+        for i in range(0, self.minute + 1):
+            close = stock.price(i)
+            open_ = stock.price(i - 1) if i > 0 else close
+            out.append({
+                "time": int(self.day_start + i * 60),
+                "open": open_,
+                "high": round(max(open_, close) * 1.002, 5),
+                "low": round(min(open_, close) * 0.998, 5),
+                "close": close,
+                "volume": stock.volumes[min(i, len(stock.volumes) - 1)],
+            })
+        return out
+
+    def news(self, symbols) -> list[dict]:
+        self.api_calls += 1
+        return []
+
+    def health(self) -> tuple[bool, str]:
+        return True, "synthetic alpaca"
+
+
 @dataclass
 class SimulationReport:
     checks: list[tuple[str, bool, str]] = field(default_factory=list)
@@ -410,10 +426,9 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
 
     cfg = Config(home / "config.env")
     cfg.set("PENNY_HOME", str(home))
-    cfg.set("DATA_PROVIDER", "moomoo")
+    cfg.set("DATA_PROVIDER", "finviz")
     cfg.set("TELEGRAM_TOKEN", "fake")
     cfg.set("TELEGRAM_CHAT_ID", "1")
-    cfg.set("MOOMOO_API_KEY", "fake")
     cfg.set("FINVIZ_TOKEN", "fake")
     cfg.set("SEC_USER_AGENT", "simulation test@example.com")
     cfg.set("AI_BASE_URL", "http://fake")
@@ -423,6 +438,7 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     cfg.set("MIN_EVALUATED", "4")
     cfg.set("SHADOW_SAMPLE_RATE", "1.0")
     cfg.set("SHARIAH_MODE", "tag")
+    cfg.set("HALALTERMINAL_API_KEY", "fake")
     cfg.set("WARMUP_CYCLES", "2")
     cfg.set("ALERT_MIN_TIER", "2")
     cfg.set("RISK_USD", "50")
@@ -434,18 +450,16 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     market = SyntheticMarket(minutes=minutes)
     day_start = datetime.now(tz=ET).replace(hour=9, minute=30, second=0,
                                             microsecond=0).timestamp()
-    moomoo = FakeMoomoo(market, day_start)
-    finviz = FakeFinviz(market, mismatch=mismatch_symbol)
+    finviz = FakeFinviz(market, day_start=day_start, mismatch=mismatch_symbol)
     yahoo = FakeYahoo(market)
+    alpaca = FakeAlpaca(market, day_start)
     sec = FakeSec()
     telegram = FakeTelegram(cfg)
     gateway = FakeGateway(cfg)
 
     shariah = ShariahService(cfg, state, [
-        FakeShariahSource("halal.sh", {"GRND": COMPLIANT, "BRST": DOUBTFUL,
-                                       "FADE": NON_COMPLIANT}),
-        FakeShariahSource("Musaffa", {"GRND": COMPLIANT, "BRST": DOUBTFUL},
-                          error_symbols={"FADE"}),
+        FakeShariahSource("halalterminal", {"GRND": COMPLIANT, "BRST": DOUBTFUL,
+                                            "FADE": NON_COMPLIANT}),
     ], telegram)
 
     catalog = ModelCatalog(home / "models_catalog.json")
@@ -454,11 +468,11 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
             catalog.add(model, 1.0)
 
     report = SimulationReport()
-    journal = Journal(cfg, journal_db, alpaca=None, yahoo=yahoo, moomoo=moomoo)
+    journal = Journal(cfg, journal_db, alpaca=alpaca, yahoo=yahoo)
 
     sim_clock = {"t": day_start}
-    engine = Engine(cfg, state, journal_db, telegram, moomoo=moomoo, finviz=finviz,
-                    alpaca=None, finnhub=None, sec=sec, finra=None, yahoo=yahoo,
+    engine = Engine(cfg, state, journal_db, telegram, finviz=finviz,
+                    alpaca=alpaca, finnhub=None, sec=sec, finra=None, yahoo=yahoo,
                     gateway=gateway, catalog=catalog, shariah=shariah, backup=None,
                     clock=lambda: sim_clock["t"])
     engine.forced_session = "regular"
@@ -472,9 +486,9 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     for step in range(steps):
         minute = int(step * cycle_seconds / 60)
         sim_clock["t"] = day_start + step * cycle_seconds
-        moomoo.set_minute(minute)
         finviz.set_minute(minute)
         yahoo.set_minute(minute)
+        alpaca.set_minute(minute)
         stats = engine.cycle()
         report.cycle_ms.append(stats.get("ms", 0.0))
         # The detail worker runs on a thread; give it a moment to finish.

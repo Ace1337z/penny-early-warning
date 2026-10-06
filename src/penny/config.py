@@ -33,32 +33,23 @@ def restrict_permissions(path: Path) -> None:
 
 # Keys whose values are secrets (never shown, scrubbed from logs).
 SECRET_KEYS = {
-    "MOOMOO_API_KEY",
     "FINVIZ_TOKEN",
     "TELEGRAM_TOKEN",
     "AI_KEY",
     "ALPACA_KEY",
     "ALPACA_SECRET",
     "FINNHUB_KEY",
-    "HALALSH_API_KEY",
-    "MUSAFFA_API_KEY",
+    "HALALTERMINAL_API_KEY",
     "BACKUP_PASSPHRASE",
     "GITHUB_TOKEN",
-    "MUSAFFA_BASE_URL",
 }
 
 # Structural settings that need a restart when changed.
 RESTART_KEYS = {"DATA_PROVIDER", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"}
 
 DEFAULTS: dict[str, str] = {
-    # --- Feed (Moomoo) ---
-    "DATA_PROVIDER": "moomoo",
-    "MOOMOO_API_KEY": "",
-    "MOOMOO_PRIVATE_KEY_PATH": "",
-    "MOOMOO_BASE_URL": "https://webapi.moomoo.com",
-    "MOOMOO_ALGO": "ED25519",
-    "MOVERS_METHOD": "plate-stock",
-    "MOVERS_PLATE": "US",
+    # --- Feed (Finviz) ---
+    "DATA_PROVIDER": "finviz",
     "MOVERS_POLL_SECONDS": "20",
     "UNIVERSE_POLL_SECONDS": "30",
     "EXTRA_SYMBOLS": "",
@@ -67,7 +58,10 @@ DEFAULTS: dict[str, str] = {
     "FINVIZ_BASE": "https://elite.finviz.com",
     "FINVIZ_VIEW": "111",
     "FINVIZ_FILTERS": "sh_price_u10,ind_stocksonly",
-    "FINVIZ_COLUMNS": "",
+    "FINVIZ_COLUMNS": "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66",
+    "FINVIZ_SIGNALS": "top_gainers,new_high,most_active,unusual_volume,overbought,oversold,insider_buying",
+    "FINVIZ_MOVERS_TTL": "15",
+    "FINVIZ_QUOTE_BATCH": "40",
     # --- Other sources ---
     "ALPACA_KEY": "",
     "ALPACA_SECRET": "",
@@ -78,10 +72,8 @@ DEFAULTS: dict[str, str] = {
     "TELEGRAM_TOKEN": "",
     "TELEGRAM_CHAT_ID": "",
     # --- Shariah ---
-    "HALALSH_API_KEY": "",
-    "HALALSH_BASE_URL": "https://halal.sh",
-    "MUSAFFA_API_KEY": "",
-    "MUSAFFA_BASE_URL": "https://musaffa.com",
+    "HALALTERMINAL_API_KEY": "",
+    "HALALTERMINAL_BASE_URL": "https://api.halalterminal.com",
     "SHARIAH_MODE": "tag",
     "SHARIAH_TTL_DAYS": "7",
     "SHARIAH_MAX_CALLS_MONTH": "0",
@@ -171,13 +163,13 @@ DEFAULTS: dict[str, str] = {
 }
 
 GROUPS: dict[str, list[str]] = {
-    "Feed": ["DATA_PROVIDER", "MOOMOO_API_KEY", "MOOMOO_PRIVATE_KEY_PATH", "MOOMOO_ALGO",
-             "MOVERS_METHOD", "MOVERS_PLATE", "MOVERS_POLL_SECONDS", "UNIVERSE_POLL_SECONDS",
+    "Feed": ["DATA_PROVIDER", "MOVERS_POLL_SECONDS", "UNIVERSE_POLL_SECONDS",
              "EXTRA_SYMBOLS"],
-    "Finviz": ["FINVIZ_TOKEN", "FINVIZ_BASE", "FINVIZ_VIEW", "FINVIZ_FILTERS", "FINVIZ_COLUMNS"],
+    "Finviz": ["FINVIZ_TOKEN", "FINVIZ_BASE", "FINVIZ_VIEW", "FINVIZ_FILTERS", "FINVIZ_COLUMNS",
+               "FINVIZ_SIGNALS", "FINVIZ_MOVERS_TTL", "FINVIZ_QUOTE_BATCH"],
     "Other sources": ["ALPACA_KEY", "ALPACA_SECRET", "ALPACA_FEED", "FINNHUB_KEY", "SEC_USER_AGENT"],
     "Telegram": ["TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"],
-    "Shariah": ["HALALSH_API_KEY", "HALALSH_BASE_URL", "MUSAFFA_API_KEY", "MUSAFFA_BASE_URL",
+    "Shariah": ["HALALTERMINAL_API_KEY", "HALALTERMINAL_BASE_URL",
                 "SHARIAH_MODE", "SHARIAH_TTL_DAYS", "SHARIAH_MAX_CALLS_MONTH"],
     "Backup": ["BACKUP_LOCAL_DIR", "BACKUP_REMOTE", "BACKUP_PASSPHRASE", "BACKUP_HOURLY",
                "BACKUP_TELEGRAM", "BACKUP_KEEP_HOURLY", "BACKUP_KEEP_DAILY",

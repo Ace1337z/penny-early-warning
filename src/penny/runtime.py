@@ -14,12 +14,11 @@ from .config import Config
 from .engine import Engine
 from .journal import Journal
 from .logging_setup import setup_logging, update_secrets
-from .shariah import HalalShSource, MusaffaSource, ShariahService
+from .shariah import HalalTerminalSource, ShariahService
 from .sources.alpaca import AlpacaClient
 from .sources.finra import FinraClient
 from .sources.finnhub import FinnhubClient
 from .sources.finviz import FinvizClient
-from .sources.moomoo import MoomooClient
 from .sources.sec import SecClient
 from .sources.yahoo import YahooClient
 from .store import open_journal, open_state
@@ -34,7 +33,6 @@ class Runtime:
     state: object
     journal_db: object
     telegram: object
-    moomoo: Optional[object] = None
     finviz: Optional[object] = None
     alpaca: Optional[object] = None
     finnhub: Optional[object] = None
@@ -71,35 +69,35 @@ def build(cfg: Config, *, with_engine: bool = True, fake: Optional[dict] = None,
 
     secrets = cfg.secrets()
     telegram = fake.get("telegram") or TelegramClient(cfg, secrets)
-    moomoo = fake.get("moomoo") or (MoomooClient(cfg, secrets) if cfg.raw("MOOMOO_API_KEY") else None)
-    finviz = fake.get("finviz") or (FinvizClient(cfg, secrets) if cfg.raw("FINVIZ_TOKEN") else None)
+    # Finviz and the AI gateway are always constructed: their keys can be set
+    # through the Telegram bot after installation, without a restart.
+    finviz = fake.get("finviz") or FinvizClient(cfg, secrets)
     alpaca = fake.get("alpaca") or AlpacaClient(cfg, secrets)
     finnhub = fake.get("finnhub") or FinnhubClient(cfg, secrets)
     sec = fake.get("sec") or SecClient(cfg, secrets)
     finra = fake.get("finra") or FinraClient(cfg, secrets)
     yahoo = fake.get("yahoo") or YahooClient(cfg, secrets)
-    gateway = fake.get("gateway") or (AIGateway(cfg, secrets) if cfg.raw("AI_BASE_URL") else None)
+    gateway = fake.get("gateway") or AIGateway(cfg, secrets)
 
     catalog = ModelCatalog(cfg.catalog_path)
 
     shariah = fake.get("shariah")
     if shariah is None:
-        sources = [HalalShSource(cfg, secrets), MusaffaSource(cfg, secrets)]
-        if any(getattr(s, "configured", False) for s in sources):
-            shariah = ShariahService(cfg, state, sources, telegram)
+        sources = [HalalTerminalSource(cfg, secrets)]
+        shariah = ShariahService(cfg, state, sources, telegram)
 
-    journal = Journal(cfg, journal_db, alpaca=alpaca, yahoo=yahoo, moomoo=moomoo)
+    journal = Journal(cfg, journal_db, alpaca=alpaca, yahoo=yahoo)
     backup = BackupManager(cfg, state, journal_db, telegram, secrets)
 
     runtime = Runtime(cfg=cfg, state=state, journal_db=journal_db, telegram=telegram,
-                      moomoo=moomoo, finviz=finviz, alpaca=alpaca, finnhub=finnhub,
+                      finviz=finviz, alpaca=alpaca, finnhub=finnhub,
                       sec=sec, finra=finra, yahoo=yahoo, gateway=gateway, catalog=catalog,
                       shariah=shariah, journal=journal, backup=backup)
-    runtime.components = [c for c in (moomoo, finviz, alpaca, finnhub, sec, finra, yahoo)
+    runtime.components = [c for c in (finviz, alpaca, finnhub, sec, finra, yahoo)
                           if c is not None]
 
     if with_engine:
-        engine = Engine(cfg, state, journal_db, telegram, moomoo=moomoo, finviz=finviz,
+        engine = Engine(cfg, state, journal_db, telegram, finviz=finviz,
                         alpaca=alpaca, finnhub=finnhub, sec=sec, finra=finra, yahoo=yahoo,
                         gateway=gateway, catalog=catalog, shariah=shariah, backup=backup)
         if engine.runner is not None:

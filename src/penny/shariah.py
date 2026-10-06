@@ -1,4 +1,4 @@
-"""Shariah compliance screening: halal.sh + Musaffa, cached, shown on every alert (6.17)."""
+"""Shariah compliance screening: halalterminal.com, cached, shown on every alert (6.17)."""
 
 from __future__ import annotations
 
@@ -88,102 +88,82 @@ class ShariahSource:
         return False, "not configured"
 
 
-class HalalShSource(BaseClient, ShariahSource):
-    name = "halal.sh"
+class HalalTerminalSource(BaseClient, ShariahSource):
+    name = "halalterminal"
 
     @property
     def configured(self) -> bool:
-        return bool(self.cfg.raw("HALALSH_API_KEY"))
+        return bool(str(self.cfg.raw("HALALTERMINAL_API_KEY")).strip())
+
+    def _base(self) -> str:
+        return str(self.cfg.raw("HALALTERMINAL_BASE_URL")
+                   or "https://api.halalterminal.com").rstrip("/")
 
     def lookup(self, symbol: str) -> SourceResult:
         if not self.configured:
             return SourceResult(self.name, NOT_SCREENED)
-        base = str(self.cfg.raw("HALALSH_BASE_URL") or "https://halal.sh").rstrip("/")
-        url = f"{base}/api/v1/screen/{symbol.upper()}"
+        symbol = symbol.upper().strip()
+        key = str(self.cfg.raw("HALALTERMINAL_API_KEY")).strip()
+        headers = {"X-API-Key": key, "Accept": "application/json"}
+        base = self._base()
+        data: Any = None
         try:
-            data = self.get_json(url, headers={"Authorization": f"Bearer {self.cfg.raw('HALALSH_API_KEY')}"},
-                                 params={"symbol": symbol.upper()})
+            # The documented route is POST /api/screen/{symbol}; GET ?symbol= is the
+            # documented fallback. Either may be enabled on a given plan.
+            data = self.post_json(f"{base}/api/screen/{symbol}", {}, headers=headers)
         except Exception as exc:  # noqa: BLE001
-            log.debug("halal.sh failed for %s: %s", symbol, self.error_text(exc))
-            return SourceResult(self.name, ERROR, detail={"error": self.error_text(exc)})
+            log.debug("halalterminal POST failed for %s: %s", symbol, self.error_text(exc))
+            try:
+                data = self.get_json(f"{base}/api/screen", headers=headers,
+                                     params={"symbol": symbol})
+            except Exception as exc2:  # noqa: BLE001
+                log.debug("halalterminal GET failed for %s: %s", symbol, self.error_text(exc2))
+                return SourceResult(self.name, ERROR,
+                                    detail={"error": self.error_text(exc2)})
         return self._parse(symbol, data)
 
     def _parse(self, symbol: str, data: Any) -> SourceResult:
-        if not isinstance(data, dict):
-            return SourceResult(self.name, ERROR, detail={"error": "unexpected response"})
-        raw = str(data.get("status") or data.get("ruling") or data.get("result") or "").lower()
-        status = NOT_SCREENED
-        if any(k in raw for k in ("non-compliant", "noncompliant", "not compliant", "haram")):
-            status = NON_COMPLIANT
-        elif "doubt" in raw or "questionable" in raw:
-            status = DOUBTFUL
-        elif "compliant" in raw or raw in ("halal", "pass"):
-            status = COMPLIANT
-        detail = {
-            "business_activity": data.get("business_activity") or data.get("activity"),
-            "debt_ratio": data.get("debt_ratio") or data.get("debt_to_assets"),
-            "interest_income_ratio": data.get("interest_income_ratio"),
-            "purification": data.get("purification") or data.get("purification_percent"),
-            "reasons": data.get("reasons") or data.get("citations"),
-            "standard": data.get("standard") or "AAOIFI 21",
-        }
-        return SourceResult(self.name, status, as_of=str(data.get("as_of") or data.get("date") or ""),
-                            detail={k: v for k, v in detail.items() if v not in (None, "")})
-
-    def health(self) -> tuple[bool, str]:
-        if not self.configured:
-            return False, "not configured (optional)"
-        result = self.lookup("AAPL")
-        if result.status == ERROR:
-            return False, result.detail.get("error", "error")
-        return True, f"reachable (AAPL: {result.status})"
-
-
-class MusaffaSource(BaseClient, ShariahSource):
-    name = "Musaffa"
-
-    @property
-    def configured(self) -> bool:
-        return bool(self.cfg.raw("MUSAFFA_API_KEY"))
-
-    def lookup(self, symbol: str) -> SourceResult:
-        if not self.configured:
-            return SourceResult(self.name, NOT_SCREENED)
-        base = str(self.cfg.raw("MUSAFFA_BASE_URL") or "https://musaffa.com").rstrip("/")
-        url = f"{base}/api/v1/screening"
-        try:
-            data = self.get_json(url, headers={"X-API-KEY": self.cfg.raw("MUSAFFA_API_KEY"),
-                                               "Authorization": f"Bearer {self.cfg.raw('MUSAFFA_API_KEY')}"},
-                                 params={"symbol": symbol.upper()})
-        except Exception as exc:  # noqa: BLE001
-            log.debug("musaffa failed for %s: %s", symbol, self.error_text(exc))
-            return SourceResult(self.name, ERROR, detail={"error": self.error_text(exc)})
-        return self._parse(data)
-
-    def _parse(self, data: Any) -> SourceResult:
         if isinstance(data, list):
             data = data[0] if data else {}
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = data["data"]
         if not isinstance(data, dict):
             return SourceResult(self.name, ERROR, detail={"error": "unexpected response"})
-        raw = str(data.get("status") or data.get("compliance") or data.get("result") or "").lower()
+
+        raw = str(data.get("shariah_compliance_status")
+                  or data.get("status") or data.get("compliance") or "").lower()
+        compliant = data.get("is_compliant")
         status = NOT_SCREENED
-        if any(k in raw for k in ("not halal", "non-compliant", "noncompliant", "haram")):
+        if compliant is False or any(k in raw for k in
+                                     ("non_compliant", "non-compliant", "noncompliant",
+                                      "not_compliant", "haram")):
             status = NON_COMPLIANT
-        elif "doubt" in raw:
+        elif any(k in raw for k in ("questionable", "doubt", "doubtful", "mixed")):
             status = DOUBTFUL
-        elif "halal" in raw or "compliant" in raw:
+        elif compliant is True or "compliant" in raw or raw in ("halal", "pass", "compliant"):
             status = COMPLIANT
+
+        business = data.get("business_screen_pass")
+        financial = data.get("financial_screen_pass")
         detail = {
-            "rating": data.get("rating"),
-            "business_activity": data.get("business_activity") or data.get("activity"),
+            "business_activity": ("pass" if business is True else
+                                  "fail" if business is False else None),
+            "financial_screen": ("pass" if financial is True else
+                                 "fail" if financial is False else None),
+            "purification": (data.get("purification_rate")
+                             or data.get("purification")),
             "debt_ratio": data.get("debt_ratio"),
             "interest_income_ratio": data.get("interest_income_ratio"),
-            "purification": data.get("purification"),
-            "reasons": data.get("reasons"),
+            "reasons": (data.get("compliance_explanation")
+                        or data.get("reasons") or data.get("reason")),
+            "standard": data.get("methodology") or data.get("standard") or "AAOIFI",
+            "raw": data.get("shariah_compliance_status") or data.get("status"),
         }
-        return SourceResult(self.name, status,
-                            as_of=str(data.get("as_of") or data.get("screening_date") or ""),
-                            detail={k: v for k, v in detail.items() if v not in (None, "")})
+        return SourceResult(
+            self.name, status,
+            as_of=str(data.get("as_of") or data.get("screened_at")
+                      or data.get("updated_at") or data.get("date") or ""),
+            detail={k: v for k, v in detail.items() if v not in (None, "")})
 
     def health(self) -> tuple[bool, str]:
         if not self.configured:

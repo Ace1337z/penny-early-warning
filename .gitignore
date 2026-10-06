@@ -7,7 +7,6 @@ secrets/
 *.key
 *.pem
 private_key*
-moomoo_private_key*
 
 # Databases and learning state
 *.db
