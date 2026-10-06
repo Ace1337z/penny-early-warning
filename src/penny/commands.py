@@ -614,6 +614,7 @@ class CommandHandler:
         except Exception as exc:  # noqa: BLE001
             self._reply(f"Could not save {code(key)}: {h(exc)}")
             return
+        self._sync_ai_panel(key)
         try:
             from .logging_setup import update_secrets
             update_secrets(self.cfg.secrets())
@@ -632,6 +633,24 @@ class CommandHandler:
         if key in RESTART_KEYS:
             self._reply(f"\u26A0\uFE0F {code(key)} takes effect after the next restart "
                         f"(<code>sudo systemctl restart penny</code>).")
+
+    def _sync_ai_panel(self, key: str) -> None:
+        """Keep the stored panel in step with an edited model list.
+
+        `active_panel`/`fallbacks` are DB copies the auto-selector can change, so
+        without this a `/set AI_MODELS ...` fix would be shadowed until a restart.
+        """
+        if key not in ("AI_MODELS", "AI_FALLBACK_MODELS"):
+            return
+        try:
+            models = self.cfg.list(key)
+            if not models:
+                return
+            is_panel = key == "AI_MODELS"
+            self.db.kv_set("active_panel" if is_panel else "fallbacks", models)
+            self.db.kv_set("active_panel_source" if is_panel else "fallbacks_source", models)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not sync panel from %s: %s", key, exc)
 
     def _render_keys_text(self) -> str:
         """Show which settings are configured, masking every secret."""

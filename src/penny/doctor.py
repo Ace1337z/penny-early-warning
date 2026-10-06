@@ -145,6 +145,15 @@ def run_doctor(runtime, *, test_models: bool = True) -> DoctorReport:
             if not targets:
                 targets = models[:3]
             available = set(models)
+            # If the provider advertises its models and NONE of the configured ids
+            # are among them, the panel can never answer: that is a real failure,
+            # not an optional one. (Example ids shipped in the default config are
+            # the usual cause.)
+            if models and not (available & set(targets)):
+                report.add("AI models configured", False,
+                           "none of " + ", ".join(targets[:4])
+                           + " are offered by the provider; set real ids, e.g. "
+                           + ", ".join(models[:4]), optional=False)
             for model in targets:
                 if models and model not in available:
                     report.add(f"AI model {model}", False,

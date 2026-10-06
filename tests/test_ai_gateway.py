@@ -165,3 +165,45 @@ def test_401_is_reported_as_key_problem(cfg, patched):
     with pytest.raises(RuntimeError) as exc:
         gw.list_models()
     assert "AI_KEY" in str(exc.value)
+
+
+# --- response shapes -------------------------------------------------------
+
+def _chat_with(payload, cfg, patched):
+    def post(url, body):
+        return _Response(200, payload)
+
+    patched(_FakeRequests(post_handler=post))
+    gw = AIGateway(_cfg(cfg, "https://gw.example.com/v1"))
+    return gw.chat("m", [{"role": "user", "content": "hi"}], max_tokens=32, retries=0)
+
+
+def test_content_as_string(cfg, patched):
+    result = _chat_with({"choices": [{"message": {"content": "OK"}}]}, cfg, patched)
+    assert result.ok and result.text == "OK"
+
+
+def test_content_as_list_of_parts(cfg, patched):
+    payload = {"choices": [{"message": {"content": [
+        {"type": "text", "text": "{\"a\":"}, {"type": "text", "text": "1}"}]}}]}
+    result = _chat_with(payload, cfg, patched)
+    assert result.ok and result.text == '{"a":1}'
+
+
+def test_reasoning_content_when_content_is_null(cfg, patched):
+    payload = {"choices": [{"message": {"content": None,
+                                        "reasoning_content": '{"ok":true}'}}]}
+    result = _chat_with(payload, cfg, patched)
+    assert result.ok and result.text == '{"ok":true}'
+
+
+def test_empty_completion_is_an_error_not_a_silent_success(cfg, patched):
+    result = _chat_with({"choices": [{"message": {"content": ""}}]}, cfg, patched)
+    assert not result.ok
+    assert "empty completion" in result.error
+
+
+def test_missing_choices_is_reported(cfg, patched):
+    result = _chat_with({"error": "boom"}, cfg, patched)
+    assert not result.ok
+    assert "unexpected response shape" in result.error

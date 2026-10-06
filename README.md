@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-100%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-113%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -221,6 +221,38 @@ Add the optional keys later (from the configured Telegram chat):
 /keys
 ```
 
+### Using any OpenAI-compatible provider
+
+The AI panel talks to any OpenAI-compatible `/chat/completions` endpoint
+(the same shape OpenCode's `openai-compatible` provider uses). Base URL and key
+are enough; model ids are whatever your provider advertises.
+
+```text
+/set AI_BASE_URL https://your-provider.example/api/v1
+/setkey AI_KEY sk-...
+/models refresh          # list the provider's models and test them
+```
+
+`AI_BASE_URL` may be written **with or without** `/v1`, and a pasted
+`/chat/completions` suffix is stripped. Both `{base}/v1` and `{base}` are tried.
+A missing `GET /models` is normal and never fatal.
+
+If `AI_MODELS` still holds the shipped example ids, `/models refresh` detects
+that none of them exist on your provider, adopts the provider's own working
+models, and tells you. You can also set them by hand:
+
+```text
+/set AI_MODELS model-a,model-b,model-c
+```
+
+Changes apply from the next cycle - no restart. `/set AI_MODELS` also updates
+the stored panel, so a corrected list is never shadowed.
+
+Response handling covers the shapes providers really return: `content` as a
+string, `content` as a list of parts, and reasoning models that leave `content`
+null while answering in `reasoning_content`. An empty or unusable completion is
+reported as an error, not a silent success.
+
 **Manual install:**
 
 ```bash
@@ -354,7 +386,7 @@ fake Telegram, and asserts the documented acceptance results:
 - a model that does not beat the baselines is not activated
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **100 passed**.
+Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **113 passed**.
 
 ---
 

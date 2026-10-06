@@ -110,6 +110,10 @@ Or from Telegram: `/models`, `/models refresh`, `/models add ID MULT`, `/models 
 `/setmodels A,B,C`. A listed model that is not in your catalogue is **not used** until you
 confirm it, which prevents unknown cost.
 
+`/models refresh` also self-heals the shipped example ids: if none of the configured
+models exist on your provider, it adopts the provider's own working models and reports
+what it changed. `/set AI_MODELS a,b,c` applies from the next cycle without a restart.
+
 ---
 
 ## 4. Update and roll back
@@ -220,8 +224,11 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 | "Finviz token rejected" | `$PENNY set FINVIZ_TOKEN` or `/set FINVIZ_TOKEN <token>` from the bot; alerts continue meanwhile |
 | Finviz rate-limited (`429`) | lower `FINVIZ_MAX_PER_MIN` (default 20) and `UNIVERSE_POLL_SECONDS`; the client caches and back-fills |
 | Telegram commands ignored | the chat id must match `TELEGRAM_CHAT_ID`; re-run `$PENNY detect-chat` |
-| No AI text on alerts | `$PENNY doctor --no-models` then without `--no-models`; check `AI_BASE_URL`/`AI_KEY`; models that fail are skipped |
-| Provider cannot list models | enter them: `/models set id:multiplier,id:multiplier` or `$PENNY models add ID MULT` |
+| No AI text on alerts | `$PENNY doctor`; check `AI_BASE_URL`/`AI_KEY`; the usual cause is `AI_MODELS` still holding the shipped example ids, which your provider does not offer |
+| Example model ids still configured | `/models refresh` detects it, adopts the provider's working models and reports them; or set them: `/set AI_MODELS a,b,c` (no restart needed) |
+| Provider cannot list models | that is normal for many OpenAI-compatible gateways; set ids by hand: `/set AI_MODELS a,b,c` or `$PENNY models add ID MULT` |
+| `/set AI_MODELS` had no effect | fixed: `/set` now updates the stored panel too. On an older build, restart the service |
+| Provider returns `content: null` | reasoning models put the answer in `reasoning_content`; the gateway reads that. An empty completion is now a reported error |
 | "BACKUP OVERDUE" | `$PENNY backup now`; check `BACKUP_REMOTE` and the passphrase |
 | High memory | lower `WORKERS`; check `sizing.log` and the `cycles` table |
 | Service keeps restarting | `journalctl -u penny -n 100`; run `$PENNY selftest` |

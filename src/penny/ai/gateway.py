@@ -28,6 +28,66 @@ class ChatResult:
                 "latency_ms": round(self.latency_ms, 1), "error": self.error}
 
 
+def _text_from_content(content: Any) -> str:
+    """Normalize the `content` field, which is a string on some providers and a
+    list of parts (`[{"type": "text", "text": "..."}]`) on others."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                value = part.get("text")
+                if isinstance(value, str):
+                    parts.append(value)
+                elif isinstance(value, dict) and isinstance(value.get("value"), str):
+                    parts.append(value["value"])
+        return "".join(parts)
+    if isinstance(content, dict):
+        value = content.get("text") or content.get("value")
+        return value if isinstance(value, str) else ""
+    return ""
+
+
+def _extract_text(data: Any) -> Optional[str]:
+    """Pull the assistant text out of an OpenAI-compatible chat response.
+
+    Handles the shapes seen across OpenCode-style providers: a plain string
+    `content`, a list of text parts, and reasoning models that leave `content`
+    null while putting the answer in `reasoning_content` or `reasoning`.
+    Returns None only when the envelope itself is unusable.
+    """
+    if not isinstance(data, dict):
+        return None
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        # Some gateways answer a bare {message: ...} or {output_text: ...}.
+        fallback = data.get("message")
+        if isinstance(fallback, dict):
+            for key in ("content", "reasoning_content", "reasoning", "text"):
+                text = _text_from_content(fallback.get(key))
+                if text.strip():
+                    return text
+        for key in ("output_text", "text"):
+            value = data.get(key)
+            if isinstance(value, str):
+                return value
+        return None
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    message = first.get("message") if isinstance(first.get("message"), dict) else first
+    for key in ("content", "reasoning_content", "reasoning", "text"):
+        text = _text_from_content(message.get(key))
+        if text.strip():
+            return text
+    # A choice-level text (some gateways flatten the message away).
+    text = _text_from_content(first.get("text"))
+    return text if text.strip() or "content" in message else None
+
+
 class AIGateway:
     """OpenAI-compatible chat client (the style OpenCode's `openai-compatible` uses).
 
@@ -226,17 +286,22 @@ class AIGateway:
                     except ValueError:
                         return ChatResult(model=model, ok=False, latency_ms=latency,
                                           error=f"invalid JSON envelope at {endpoint}")
-                    try:
-                        text = data["choices"][0]["message"]["content"]
-                    except (KeyError, IndexError, TypeError):
+                    text = _extract_text(data)
+                    if text is None:
                         return ChatResult(model=model, ok=False, latency_ms=latency,
                                           error=f"unexpected response shape at {endpoint}")
+                    if not text.strip():
+                        # Reachable, non-empty envelope but no usable text (e.g. a
+                        # reasoning model that only emitted its scratchpad). Report
+                        # it as an error instead of a silent empty success.
+                        return ChatResult(model=model, ok=False, latency_ms=latency,
+                                          error=f"empty completion at {endpoint}")
                     tokens = int((data.get("usage") or {}).get("total_tokens") or 0)
                     # Remember the endpoint that worked so later calls skip discovery.
                     marker = "/chat/completions"
                     if endpoint.endswith(marker):
                         self._base = endpoint[: -len(marker)]
-                    return ChatResult(model=model, text=text or "", tokens=tokens,
+                    return ChatResult(model=model, text=text, tokens=tokens,
                                       latency_ms=latency, ok=True)
         return ChatResult(model=model, ok=False, error=last_error)
 
@@ -292,6 +357,11 @@ class FakeGateway:
         self.calls: list[dict] = []
         self._fail_models: set[str] = set()
         self._invalid_models: set[str] = set()
+
+    @property
+    def configured(self) -> bool:
+        """The fake is always usable; it never needs a base URL or key."""
+        return True
 
     # -- test doubles -------------------------------------------------------
     def fail(self, model: str) -> None:

@@ -204,11 +204,39 @@ class AIRunner:
             return []
         return self._call_many(selected, build_messages(facts), kind)
 
+    def _adopt_panel(self, listed: list[str]) -> list[str]:
+        """Pick a working panel from the provider's own list.
+
+        Prefers models already known to the catalogue, then any that answer a
+        minimal test call, so a fresh install with example ids self-heals.
+        """
+        ordered = [m for m in listed if self.catalog.get(m) or self.catalog.is_alias(m)]
+        ordered += [m for m in listed if m not in ordered]
+        chosen: list[str] = []
+        for model in ordered:
+            if len(chosen) >= 3:
+                break
+            if model in chosen:
+                continue
+            try:
+                if self.gateway.test_model(model).ok:
+                    chosen.append(model)
+                    if not self.catalog.get(model):
+                        self.catalog.add(model, 1.0)
+            except Exception:  # noqa: BLE001
+                continue
+        if chosen:
+            self.db.kv_set("active_panel", chosen)
+            self.db.kv_set("active_panel_source", chosen)
+            self.catalog.save()
+        return chosen
+
     # -- discovery ----------------------------------------------------------
     def discovery(self, telegram=None) -> dict:
         """Compare the provider's model list with the catalogue (6.19)."""
         result = {"listed": [], "missing_from_provider": [], "unknown_to_user": [],
-                  "failed_tests": [], "unavailable_list": False, "message": ""}
+                  "failed_tests": [], "unavailable_list": False, "message": "",
+                  "adopted_panel": []}
         try:
             listed = self.gateway.list_models()
             result["listed"] = listed
@@ -225,6 +253,17 @@ class AIRunner:
             result["unknown_to_user"] = [
                 m for m in listed if self.catalog.get(m) is None
                 and not self.catalog.is_alias(m)]
+            # Self-correct the shipped example ids: if the active panel shares no
+            # model with the provider, adopt the provider's own list so alerts get
+            # AI text without the operator hunting for ids.
+            panel = self.active_panel()
+            if panel and not (listed_set & set(panel)):
+                adopted = self._adopt_panel(listed)
+                result["adopted_panel"] = adopted
+                if adopted and telegram:
+                    telegram.send("None of the configured models are offered by the "
+                                  "provider. Switched the panel to:\n"
+                                  + "\n".join(adopted))
 
         for model in self.candidates():
             test = self.gateway.test_model(model)

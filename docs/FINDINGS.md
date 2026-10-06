@@ -155,7 +155,20 @@ needs a live check.
   aliases such as `auto`; exclude models above `AI_MAX_MULTIPLIER` (4) unless listed in
   `AI_PREMIUM_MODELS`. If the list cannot be read, tell the user to enter models manually
   (`/models set id:multiplier,...`). Colour groups are recorded as notes only.
-- **Status:** **TO CONFIRM.**
+- **Resolved for any OpenAI-compatible provider:** the base URL may be entered with or
+  without `/v1`, a pasted `/chat/completions` suffix is stripped, and both `{base}/v1`
+  and `{base}` are tried. A missing `/models` is **optional, never fatal**. The request
+  body is adapted when a provider rejects JSON mode, `max_tokens`, or `temperature`.
+  Response text is read from a string `content`, a list of content parts, or
+  `reasoning_content` when `content` is null; an empty completion is an error, not a
+  silent success. If none of the configured model ids are offered by the provider (the
+  usual cause of "no AI text"), `doctor` fails loudly and `/models refresh` adopts the
+  provider's own working models. `/set AI_MODELS ...` also updates the stored panel, so
+  the fix applies from the next cycle without a restart.
+- **Where:** `src/penny/ai/gateway.py`, `src/penny/ai/runner.py`, `src/penny/doctor.py`,
+  `src/penny/commands.py`, `src/penny/runtime.py`.
+- **Status:** implemented and covered by tests; confirm against the live provider with
+  `penny doctor` and `/models refresh`.
 
 ## C17 — Off-server backup destination and Telegram document size
 - **Question:** the off-server destination and its credentials; does the critical archive
