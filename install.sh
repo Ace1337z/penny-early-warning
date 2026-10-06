@@ -4,8 +4,11 @@
 #
 # Usage (run directly, NOT piped into bash, so it can read your answers):
 #
-#   wget https://raw.githubusercontent.com/Ace1337z/penny-early-warning/main/install.sh
+#   wget -O install.sh https://raw.githubusercontent.com/Ace1337z/penny-early-warning/main/install.sh
 #   bash install.sh
+#
+# Keep the exact filename with `wget -O install.sh`; otherwise a repeat download
+# becomes install.sh.1 and `bash install.sh` keeps running the stale first copy.
 #
 # It is idempotent: running it again keeps existing values (shown masked;
 # pressing Enter keeps them).

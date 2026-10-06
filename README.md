@@ -186,9 +186,13 @@ downloaded, and it is idempotent - running it again keeps existing values (shown
 pressing Enter keeps them).
 
 ```bash
-wget https://raw.githubusercontent.com/Ace1337z/penny-early-warning/main/install.sh
+wget -O install.sh https://raw.githubusercontent.com/Ace1337z/penny-early-warning/main/install.sh
 bash install.sh
 ```
+
+`wget -O install.sh` forces the exact filename. Without `-O`, a second download is saved
+as `install.sh.1`, `install.sh.2`, ... and `bash install.sh` would keep running the stale
+first copy.
 
 The installer installs system packages, downloads the source, creates a virtual
 environment, writes `config.env` (mode 600), detects the Telegram chat id, installs the
