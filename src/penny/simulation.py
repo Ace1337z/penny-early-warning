@@ -545,7 +545,7 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
                (preds[0]["c"] if preds else 0) >= len(alerts_by_symbol),
                f"{preds[0]['c'] if preds else 0} alerts with predictions")
 
-    alert2 = [m for m in telegram.outbox if m.startswith("DETAIL")]
+    alert2 = [m for m in telegram.outbox if "DETAIL" in m]
     report.add("every alert received enrichment (Alert 2 sent)",
                len(alert2) >= len(alerts_by_symbol),
                f"{len(alert2)} detail messages for {len(alerts_by_symbol)} alerts")

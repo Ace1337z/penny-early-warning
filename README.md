@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-113%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-135%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -53,17 +53,30 @@ low 38m ago | score 74 | #1 gainer
 Shariah: COMPLIANT (halalterminal)
 ```
 
-A few seconds later an **Alert 2** follows with the facts first, then the AI blocks
-(which are edited in as soon as the models answer):
+A few seconds later an **Alert 2** leads with the decision and *why the stock
+moved*, then the evidence. The AI blocks are edited in as soon as the models
+answer:
 
 ```text
-DETAIL EARLY BUILD ABCD $1.42 +31.5% vs close
+DETAIL  ABCD  $1.42  +31.5% vs close
+SETUP: EARLY BUILD - qualifies for alerts
 
-market: SPY +0.42%, QQQ +0.61%, IWM +0.28% | regime risk-on
+VERDICT: EARLY - early build - size small, confirm with volume
+  buy 1.4200-1.4600 | stop 1.3157 | T1 1.5972 | panel up (high)
+
+WHY IT MOVED
+CATALYST: $12M direct offering priced; volume 12x normal
+HEADLINE: ABCD announces pricing of $12.0 million registered direct offering (2h) - Benzinga
+MOVE: +31.5% vs prior close | +6.8% 15m | +24.1% 60m | still moving now
+
+MARKET BACKDROP (drives small-cap appetite)
+MARKET SPY +0.42%, QQQ +0.61%, IWM +0.28% | RISK-ON
+
+EVIDENCE
 Finviz feed verified
-NEWS (3 items from 2 outlet(s)):
-- ABCD announces pricing of $12.0 million registered direct offering (2h) - Benzinga
-FILINGS (last 5 days):
+MORE NEWS (2 more from 2 outlet(s))
+- ...
+FILINGS (last 5 days)
 - 8-K 2026-10-05 items 1.01,9.01
 SHORT/FLOAT: short float 8.4% (finviz 2026-10-05) | float 18,500,000
 Shariah: COMPLIANT (halalterminal)
@@ -73,14 +86,32 @@ FIB swing 1.0500 -> 1.4800
   extensions 127.2% 1.5972 | 161.8% 1.7457
 PLAN: BREAKOUT plan | entry 1.4200-1.4600 | stop 1.3157 | T1 1.5972 | T2 1.7457
       | R:R 2.4:1 | 172 shares for $50 risk
-REACTION: strong/up/grinder/sustained | confidence 0.71 | agreement 0.83 across 3 model(s)
-catalyst: $12M offering priced, volume 12x
-reasons: offering removes funding overhang; float still tight; above VWAP all session
-PRICE FORECAST: +15m 1.4700 (+3.5%) | +60m 1.5900 (+12.0%) | session end 1.7800 (+25.4%)
-expected peak 1.8200 | expected low 1.3600
+
+AI PANEL
+  REACTION: strong/up/grinder/sustained
+  AI CALL: ENTER NOW | confidence 0.71 (high) | agreement 0.83 across 3 model(s) | panel up
+  why now: offering removes the funding overhang and float is still tight
+  reasons: offering removes funding overhang; float still tight; above VWAP all session
+  flags: dilution, low_float
+  changes view: a close back below VWAP 1.2900
+  PRICE FORECAST: +15m 1.4700 (+3.5%) | +60m 1.5900 (+12.0%) | session end 1.7800 (+25.4%) | expected peak 1.8200 | expected low 1.3600
 
 High-risk penny stock. Automated screening and forecasts are estimates, not financial advice.
 ```
+
+Reading it fast:
+
+- **VERDICT** is the one line that matters: `ENTER` / `EARLY` / `WAIT` / `AVOID`,
+  with buy/stop/T1 levels and the panel's own call.
+- **WHY IT MOVED** puts the catalyst first, then one headline, then the shape of
+  the move (still moving / cooling / off the high).
+- **SETUP** tells you why this is an alert - or, when the tier is `NONE`, exactly
+  which rule is not met yet (e.g. *"volume 1.6x is under 3x"*).
+- **MARKET BACKDROP** shows index direction and the risk-on/off regime, because
+  small caps follow it.
+- A `NONE` tier is no longer a mystery: it means the alert came from a manual
+  `/check`, a resumed halt, or a signal override, and the message says which
+  threshold is unmet.
 
 The system **places no orders** - it tells you, you trade manually.
 
@@ -129,6 +160,20 @@ The engine ranks stocks by **momentum quality**, not the % level:
 | **Accel** | is the move speeding up or flattening? |
 | **VWAP** | is price holding above the session's volume-weighted average? |
 | **Tier** | WATCH -> EARLY BUILD -> CONFIRMED, with a 0-100 score and a phase (BUILDING / EXTENDED / FADING) |
+
+### Reading an alert fast
+
+| Line | What it tells you |
+|---|---|
+| `VERDICT` | The action: `ENTER`, `EARLY`, `WAIT` or `AVOID`, with buy/stop/T1 and the panel's call |
+| `WHY IT MOVED` | The catalyst, one headline, and whether the move is still going |
+| `SETUP` | Why this is an alert - or, for a `NONE` tier, which threshold is not met |
+| `MARKET BACKDROP` | Index direction and risk-on/off, which drives small-cap appetite |
+| `AI CALL` | The models' own action, with confidence in words (low/medium/high) |
+
+A **`NONE` tier** is not an error. The alert bar is `WATCH` and above; `NONE` means
+the message came from a manual `/check`, a resumed halt, or a signal override, and
+the `SETUP` line names the rule that is not met yet.
 
 The AI panel does not just answer once. Every candidate is forecast, and each forecast is
 **evaluated at its horizon** against what actually happened. The three models with the best
@@ -386,7 +431,7 @@ fake Telegram, and asserts the documented acceptance results:
 - a model that does not beat the baselines is not activated
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **113 passed**.
+Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **135 passed**.
 
 ---
 

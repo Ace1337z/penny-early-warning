@@ -47,7 +47,9 @@ class MarketContext:
         for sym, lv in self.index_levels.items():
             if lv.get("change_pct") is not None and sym not in self.quotes:
                 bits.append(f"{sym} {lv['change_pct']:+.2f}%")
-        return "market: " + (", ".join(bits) if bits else "no data") + f" | regime {self.regime}"
+        regime = self.regime.upper() if self.regime else "UNKNOWN"
+        body = ", ".join(bits) if bits else "no data"
+        return f"MARKET {body} | {regime}"
 
 
 class MarketContextProvider:
@@ -217,9 +219,19 @@ class MarketContextProvider:
             q = ctx.quotes.get(sym)
             if q and q.get("change_pct") is not None:
                 return q["change_pct"]
+            lv = ctx.index_levels.get(sym)
+            if lv and lv.get("change_pct") is not None:
+                return lv["change_pct"]
             return None
 
         spy, qqq, iwm = chg("SPY"), chg("QQQ"), chg("IWM")
+        # The index signals may be Yahoo tickers instead of the ETF proxies.
+        if spy is None:
+            spy = chg("^GSPC")
+        if qqq is None:
+            qqq = chg("^IXIC")
+        if iwm is None:
+            iwm = chg("^RUT")
         if spy is None or qqq is None:
             return "unknown"
         if spy > 0 and qqq > 0 and (iwm is None or iwm > 0):

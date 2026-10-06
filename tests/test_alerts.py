@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import time
 
-from penny.alerts import MAX_ALERT2, build_ai_facts, format_alert1, format_alert2
+from penny.alerts import (MAX_ALERT2, build_ai_facts, format_alert1, format_alert2,
+                          verdict_text)
+from penny.ai.panel import AggregateForecast, ModelForecast, aggregate
 from penny.enrich import Enrichment
-from penny.scoring import Metrics
+from penny.scoring import TIER_CONFIRMED, TIER_EARLY, TIER_NONE, TIER_WATCH, Metrics
 
 
 def _metrics():
@@ -73,3 +75,113 @@ def test_build_ai_facts_has_core_fields():
         assert key in facts
     assert facts["symbol"] == "XYZ"
     assert facts["news"][0]["title"] == "t"
+
+
+# --- the fast-read alert: NONE explained, verdict first, evidence split -----
+
+def test_tier_none_is_explained_in_setup():
+    m = _metrics()
+    m.tier = TIER_NONE
+    m.rise = {15: 0.01, 60: 0.02}
+    m.volx = {15: 1.6}
+    text = format_alert2(m, Enrichment(symbol="XYZ"), None, ai_running=False)
+    assert "SETUP:" in text
+    assert "below the alert bar" in text
+    assert "under 3x" in text
+
+
+def test_verdict_is_early_for_a_building_stock():
+    m = _metrics()
+    m.tier = TIER_EARLY
+    enr = Enrichment(symbol="XYZ")
+    assert verdict_text(m, enr).startswith("EARLY")
+
+
+def test_verdict_avoids_a_fading_stock():
+    m = _metrics()
+    m.tier = TIER_CONFIRMED
+    m.phase = "FADING"
+    assert verdict_text(m, Enrichment(symbol="XYZ")).startswith("AVOID")
+
+
+def test_verdict_waits_when_extended():
+    m = _metrics()
+    m.tier = TIER_CONFIRMED
+    m.phase = "EXTENDED"
+    assert verdict_text(m, Enrichment(symbol="XYZ")).startswith("WAIT")
+
+
+def test_verdict_includes_plan_levels():
+    from penny.fib import fib_levels, trade_plan
+    m = _metrics()
+    m.tier = TIER_EARLY
+    enr = Enrichment(symbol="XYZ")
+    lv = fib_levels(1.0, 1.5)
+    enr.plan = trade_plan(1.05, lv, 50)
+    text = verdict_text(m, enr)
+    assert "buy " in text and "stop " in text and "T1 " in text
+
+
+def test_market_backdrop_is_labelled_and_explained():
+    class _Market:
+        def headline(self):
+            return "MARKET SPY +0.4%, QQQ +0.6% | RISK-ON"
+
+    m = _metrics()
+    text = format_alert2(m, Enrichment(symbol="XYZ"), _Market(), ai_running=False)
+    assert "MARKET BACKDROP" in text
+    assert "RISK-ON" in text
+
+
+def test_catalyst_leads_why_it_moved():
+    m = _metrics()
+    enr = Enrichment(symbol="XYZ")
+    enr.news = [{"title": "Buyback announced", "source": "wire", "age": "2m", "summary": ""}]
+    agg = aggregate([ModelForecast(model="m", valid=True, direction="up", strength="strong",
+                                   shape="burst", durability="sustained", confidence=0.7,
+                                   catalyst="1M share buyback",
+                                   forecast={"15m": 1.3, "60m": 1.4, "session_end": 1.5})])
+    text = format_alert2(m, enr, None, agg=agg, reaction="REACTION: x", ai_running=False)
+    assert "WHY IT MOVED" in text
+    assert "CATALYST: 1M share buyback" in text
+    # The headline shown under WHY is not repeated under the evidence list.
+    assert text.count("Buyback announced") == 1
+
+
+def test_html_alert_escapes_dynamic_text():
+    m = _metrics()
+    enr = Enrichment(symbol="XYZ")
+    enr.news = [{"title": "A & B <script>", "source": "s", "age": "1h", "summary": ""}]
+    text = format_alert2(m, enr, None, ai_running=False, html=True)
+    assert "<script>" not in text
+    assert "&lt;script&gt;" in text
+    assert "&amp;" in text
+
+
+def test_html_alert_uses_bold_and_code():
+    m = _metrics()
+    text = format_alert1(m, html=True)
+    assert "<b>" in text
+    text2 = format_alert2(m, Enrichment(symbol="XYZ"), None, ai_running=False, html=True)
+    assert "<b>" in text2 and "SETUP" in text2
+
+
+def test_plain_and_html_carry_the_same_facts():
+    m = _metrics()
+    enr = Enrichment(symbol="XYZ")
+    enr.news = [{"title": "headline", "source": "s", "age": "1h", "summary": ""}]
+    plain = format_alert2(m, enr, None, ai_running=False)
+    html = format_alert2(m, enr, None, ai_running=False, html=True)
+    for token in ("VERDICT", "WHY IT MOVED", "SETUP", "EVIDENCE"):
+        assert token in plain and token in html
+    # The plan and Fibonacci blocks appear in both forms when the data exists.
+    from penny.fib import fib_levels, trade_plan
+    m2 = _metrics()
+    enr2 = Enrichment(symbol="XYZ")
+    lv = fib_levels(1.0, 1.5)
+    enr2.fib = lv
+    enr2.plan = trade_plan(1.05, lv, 50)
+    plain2 = format_alert2(m2, enr2, None, ai_running=False)
+    html2 = format_alert2(m2, enr2, None, ai_running=False, html=True)
+    for token in ("PLAN", "FIB swing"):
+        assert token in plain2 and token in html2

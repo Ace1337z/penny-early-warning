@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from ..util import clamp, parse_json_lenient
+from ..util import clamp, conviction_word, parse_json_lenient
 
 log = logging.getLogger(__name__)
 
@@ -28,16 +28,22 @@ FLAG_VALUES = ("dilution", "reverse_split", "halt_risk", "wide_spread", "pump_pa
 MAX_PROMPT_CHARS = 7000
 
 SYSTEM_PROMPT = (
-    "You are a trading analyst for US penny stocks (under $10). You receive one JSON object "
-    "of facts about a stock that is building a move. Predict (a) how the market will react to "
-    "the move and its catalyst and (b) the price at three horizons.\n"
-    "Rules: use only the supplied facts; if the news does not explain the move, say so and "
-    "lower confidence; never invent news or price levels unrelated to the data; give numeric "
-    "prices for all three horizons; do not output a risk level.\n"
+    "You are a decisive trading analyst for US penny stocks (under $10). You receive one JSON "
+    "object of facts about a stock that is building a move. Decide (a) how the market will "
+    "react to the move and its catalyst, and (b) the price at three horizons.\n"
+    "Be decisive, not hedged. A trader is reading this in seconds to decide whether to enter "
+    "now. Commit to a direction and a strength; do not answer 'uncertain' unless the facts "
+    "genuinely contradict each other. Lead with what matters: the single biggest reason the "
+    "stock is moving right now and whether the move has room left or is already priced in.\n"
+    "Rules: use only the supplied facts; if the news does not explain the move, say so in "
+    "'catalyst' and lower confidence; never invent news or price levels unrelated to the data; "
+    "give numeric prices for all three horizons; do not output a risk level.\n"
     "Reply with ONE JSON object and nothing else, with exactly these keys:\n"
     '{"strength": "strong|moderate|weak", "direction": "up|down|mixed", '
     '"shape": "burst|grinder|fade", "durability": "fade-prone|uncertain|sustained", '
-    '"confidence": 0.0-1.0, "catalyst": "<=160 chars", "sentiment": -1.0-1.0, '
+    '"confidence": 0.0-1.0, "catalyst": "<=160 chars, the ONE reason it is moving", '
+    '"why_now": "<=200 chars, why it is moving at this moment and whether it has room left", '
+    '"urgency": "now|wait|avoid", "sentiment": -1.0-1.0, '
     '"forecast": {"15m": {"price": number}, "60m": {"price": number}, '
     '"session_end": {"price": number}}, "expected_peak": number, "expected_low": number, '
     '"market_effect": "<=120 chars", "reasons": ["<=3 short items"], '
@@ -57,6 +63,8 @@ class ModelForecast:
     durability: str = "unclear"
     confidence: float = 0.0
     catalyst: str = ""
+    why_now: str = ""
+    urgency: str = ""
     sentiment: float = 0.0
     forecast: dict[str, float] = field(default_factory=dict)
     expected_peak: Optional[float] = None
@@ -73,6 +81,7 @@ class ModelForecast:
             "model": self.model, "valid": self.valid, "strength": self.strength,
             "direction": self.direction, "shape": self.shape, "durability": self.durability,
             "confidence": round(self.confidence, 2), "catalyst": self.catalyst,
+            "why_now": self.why_now, "urgency": self.urgency,
             "sentiment": round(self.sentiment, 2), "forecast": self.forecast,
             "expected_peak": self.expected_peak, "expected_low": self.expected_low,
             "market_effect": self.market_effect, "reasons": self.reasons, "flags": self.flags,
@@ -91,6 +100,8 @@ class AggregateForecast:
     durability: str = "unclear"
     confidence: float = 0.0
     catalyst: str = ""
+    why_now: str = ""
+    urgency: str = ""
     sentiment: float = 0.0
     forecast: dict[str, float] = field(default_factory=dict)
     expected_peak: Optional[float] = None
@@ -107,6 +118,7 @@ class AggregateForecast:
             "agreement": round(self.agreement, 2), "strength": self.strength,
             "direction": self.direction, "shape": self.shape, "durability": self.durability,
             "confidence": round(self.confidence, 2), "catalyst": self.catalyst,
+            "why_now": self.why_now, "urgency": self.urgency,
             "sentiment": round(self.sentiment, 2), "forecast": self.forecast,
             "expected_peak": self.expected_peak, "expected_low": self.expected_low,
             "market_effect": self.market_effect, "reasons": self.reasons, "flags": self.flags,
@@ -205,6 +217,9 @@ def parse_forecast(model: str, text: str) -> ModelForecast:
     fc.catalyst = str(data.get("catalyst") or "")[:160]
     fc.market_effect = str(data.get("market_effect") or "")[:120]
     fc.change_view = str(data.get("change_view") or "")[:200]
+    fc.why_now = str(data.get("why_now") or "")[:200]
+    urgency = str(data.get("urgency") or "").strip().lower()
+    fc.urgency = urgency if urgency in ("now", "wait", "avoid") else ""
 
     raw_forecast = data.get("forecast") or {}
     prices: dict[str, float] = {}
@@ -312,28 +327,62 @@ def aggregate(forecasts: list[ModelForecast]) -> AggregateForecast:
     agg.catalyst = first.catalyst
     agg.market_effect = first.market_effect
     agg.change_view = first.change_view
+    agg.why_now = first.why_now
+    # Urgency is a majority vote, defaulting to the most cautious of the answers.
+    urgencies = [f.urgency for f in valid if f.urgency]
+    if urgencies:
+        order = {"now": 0, "wait": 1, "avoid": 2}
+        agg.urgency = max(urgencies, key=lambda u: (urgencies.count(u), -order.get(u, 1)))
     return agg
+
+
+def urgency_label(agg: AggregateForecast) -> str:
+    """The AI's own call, mapped to the same words as the rule-based verdict."""
+    if agg.urgency == "now":
+        return "ENTER NOW"
+    if agg.urgency == "avoid":
+        return "AVOID"
+    if agg.urgency == "wait":
+        return "WAIT"
+    # Fall back to the direction/strength the panel agreed on.
+    if agg.direction == "down":
+        return "AVOID"
+    if agg.direction == "up" and agg.strength == "strong":
+        return "ENTER NOW"
+    if agg.direction == "up":
+        return "WATCH"
+    return ""
 
 
 def reaction_text(agg: AggregateForecast) -> str:
     if agg.n_models == 0:
-        return "AI unavailable"
-    bits = [
-        f"{agg.strength}/{agg.direction}/{agg.shape}/{agg.durability}",
-        f"confidence {agg.confidence:.2f}",
-        f"agreement {agg.agreement:.2f} across {agg.n_models} model(s)",
-    ]
-    lines = ["REACTION: " + " | ".join(bits)]
-    if agg.catalyst:
+        return "AI PANEL: no model answered (check /models and /status)"
+    lines: list[str] = []
+    call = urgency_label(agg)
+    conviction = conviction_word(agg.confidence)
+    bits = [f"confidence {agg.confidence:.2f} ({conviction})",
+            f"agreement {agg.agreement:.2f} across {agg.n_models} model(s)"]
+    if agg.direction != "unclear":
+        bits.append(f"panel {agg.direction}")
+    head = f"REACTION: {agg.strength}/{agg.direction}/{agg.shape}/{agg.durability}"
+    lines.append(head)
+    # The bottom line first: what to do and why, then the supporting detail.
+    if call:
+        lines.append(f"AI CALL: {call} | " + " | ".join(bits))
+    else:
+        lines.append(" | ".join(bits))
+    if agg.why_now:
+        lines.append(f"why now: {agg.why_now}")
+    elif agg.catalyst:
         lines.append(f"catalyst: {agg.catalyst}")
     if agg.reasons:
         lines.append("reasons: " + "; ".join(agg.reasons))
-    if agg.sentiment:
-        lines.append(f"sentiment {agg.sentiment:+.2f}")
     if agg.flags:
         lines.append("flags: " + ", ".join(agg.flags))
     if agg.change_view:
         lines.append(f"changes view: {agg.change_view}")
+    if agg.sentiment:
+        lines.append(f"sentiment {agg.sentiment:+.2f}")
     return "\n".join(lines)
 
 

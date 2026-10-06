@@ -354,10 +354,11 @@ class Engine:
         if self.shariah and self.shariah.enabled and shariah_status.get("combined") != "UNKNOWN":
             shariah_line = self.shariah.one_line(shariah_status)
 
-        text1 = format_alert1(m, shariah_line=shariah_line, pct_rank=rank, resumed=resumed)
+        text1 = format_alert1(m, shariah_line=shariah_line, pct_rank=rank, resumed=resumed,
+                              html=True)
         msg_id = None
         try:
-            msg_id = self.telegram.send(text1, markup=alert_menu(m.symbol))
+            msg_id = self.telegram.send(text1, markup=alert_menu(m.symbol), html=True)
         except Exception as exc:  # noqa: BLE001
             log.error("alert 1 send failed: %s", exc)
 
@@ -399,8 +400,8 @@ class Engine:
         if msg_id and self.shariah and shariah.get("combined") != "UNKNOWN":
             try:
                 self.telegram.edit(msg_id, format_alert1(
-                    m, shariah_line=self.shariah.one_line(shariah), pct_rank=rank),
-                    markup=alert_menu(m.symbol))
+                    m, shariah_line=self.shariah.one_line(shariah), pct_rank=rank,
+                    html=True), markup=alert_menu(m.symbol), html=True)
             except Exception:  # noqa: BLE001
                 pass
         if alert_id and shariah.get("combined"):
@@ -413,7 +414,7 @@ class Engine:
         try:
             detail_id = self.telegram.send(format_alert2(
                 m, enr, market, shariah_lines=shariah_lines, ai_running=True,
-                risk_usd=risk_usd), markup=alert_menu(m.symbol))
+                risk_usd=risk_usd, html=True), markup=alert_menu(m.symbol), html=True)
         except Exception as exc:  # noqa: BLE001
             log.error("alert 2 send failed: %s", exc)
 
@@ -433,11 +434,11 @@ class Engine:
         reaction = reaction_text(agg)
         price_fc = price_forecast_text(agg, m.price)
         text2 = format_alert2(m, enr, market, shariah_lines=shariah_lines, reaction=reaction,
-                              price_forecast=price_fc, ai_running=False,
-                              validated=agg.validated, risk_usd=risk_usd)
+                              price_forecast=price_fc, ai_running=False, agg=agg,
+                              validated=agg.validated, risk_usd=risk_usd, html=True)
         if detail_id:
             try:
-                self.telegram.edit(detail_id, text2, markup=alert_menu(m.symbol))
+                self.telegram.edit(detail_id, text2, markup=alert_menu(m.symbol), html=True)
             except Exception as exc:  # noqa: BLE001
                 log.debug("alert 2 edit failed: %s", exc)
         else:

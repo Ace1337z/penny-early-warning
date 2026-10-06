@@ -214,6 +214,18 @@ def num(x: Optional[float], digits: int = 2) -> str:
     return f"{x:.{digits}f}"
 
 
+def conviction_word(confidence: Optional[float]) -> str:
+    """Turn an AI confidence number into a word a reader can scan."""
+    c = confidence or 0.0
+    if c >= 0.7:
+        return "high"
+    if c >= 0.5:
+        return "medium"
+    if c >= 0.35:
+        return "low"
+    return "very low"
+
+
 def age_str(seconds: float) -> str:
     seconds = max(0.0, seconds)
     if seconds < 90:

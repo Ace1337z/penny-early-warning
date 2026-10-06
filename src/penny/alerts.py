@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+from html import escape as _escape
 from typing import Optional
 
 from .enrich import Enricher, Enrichment
-from .scoring import (Metrics, PHASE_EXTENDED, PHASE_FADING, TIER_CONFIRMED,
-                      TIER_EARLY, TIER_WATCH)
-from .util import compact, money, num, pct
+from .scoring import (Metrics, PHASE_EXTENDED, PHASE_FADING, TIER_CONFIRMED, TIER_EARLY,
+                      TIER_NONE, TIER_WATCH)
+from .util import compact, conviction_word, money, num, pct
 
 log = logging.getLogger(__name__)
 
@@ -31,120 +32,282 @@ def phase_tag(m: Metrics) -> str:
     return ""
 
 
+# --- message builder: one structure, rendered plain or as Telegram HTML -------
+
+class _Msg:
+    """Accumulates lines whose dynamic parts are escaped only for HTML."""
+
+    def __init__(self, html: bool = False):
+        self.html = html
+        self.lines: list[str] = []
+
+    def line(self, *segs) -> None:
+        parts: list[str] = []
+        for seg in segs:
+            if isinstance(seg, tuple):
+                role, value = seg
+                value = "" if value is None else str(value)
+                if not self.html:
+                    parts.append(value)
+                elif role == "b":
+                    parts.append(f"<b>{_escape(value, quote=False)}</b>")
+                elif role in ("code", "mono"):
+                    parts.append(f"<code>{_escape(value, quote=False)}</code>")
+                elif role == "i":
+                    parts.append(f"<i>{_escape(value, quote=False)}</i>")
+                else:
+                    parts.append(_escape(value, quote=False))
+            elif seg is not None:
+                value = str(seg)
+                parts.append(_escape(value, quote=False) if self.html else value)
+        self.lines.append("".join(parts))
+
+    def blank(self) -> None:
+        self.lines.append("")
+
+    def text(self) -> str:
+        return "\n".join(self.lines)
+
+
+def _pct(x: Optional[float]) -> str:
+    """`x` is a fraction (0.315) -> '+31.5%'."""
+    return pct(x * 100 if x is not None else None)
+
+
+def _setup_reason(m: Metrics) -> str:
+    """Why this symbol did or did not reach an alert tier."""
+    if m.tier != TIER_NONE:
+        return ""
+    rise15 = (m.rise.get(15, 0.0) or 0.0) * 100
+    volx15 = m.volx.get(15, 0.0) or 0.0
+    dv15 = m.dollar_vol.get(15, 0.0) or 0.0
+    above = m.vwap is not None and m.price > m.vwap
+    fails: list[str] = []
+    if rise15 < 3:
+        fails.append(f"15m move {rise15:+.1f}% is under +3%")
+    if volx15 < 3:
+        fails.append(f"volume {volx15:.1f}x is under 3x")
+    if dv15 < 3000:
+        fails.append(f"only {compact(dv15)} traded in 15m")
+    if m.vwap is not None and not above:
+        fails.append("price is below VWAP")
+    return "; ".join(fails) if fails else "below every alert threshold"
+
+
+def verdict_text(m: Metrics, enr: Enrichment, agg=None) -> str:
+    """One fast-read action line: ENTER / EARLY / WAIT / AVOID, with levels."""
+    direction = str(getattr(agg, "direction", "") or "")
+    confidence = getattr(agg, "confidence", 0.0) or 0.0
+    plan = enr.plan
+
+    if direction == "down" and confidence >= 0.6:
+        action, note = "AVOID", "the panel leans down with conviction"
+    elif m.phase == PHASE_FADING:
+        action, note = "AVOID", "momentum is fading off the high; wait for a reclaim"
+    elif m.phase == PHASE_EXTENDED:
+        action, note = "WAIT", "the move is already extended - do not chase"
+    elif m.tier >= TIER_CONFIRMED:
+        action, note = "ENTER", "momentum confirmed on volume above VWAP"
+    elif m.tier == TIER_EARLY:
+        action, note = "EARLY", "early build - size small, confirm with volume"
+    elif m.tier == TIER_WATCH:
+        action, note = "WATCH", "watch for the volume that confirms the move"
+    else:
+        action, note = "WAIT", "below the alert bar (see SETUP above)"
+
+    parts: list[str] = []
+    if plan and action in ("ENTER", "EARLY", "WAIT"):
+        parts.append(f"buy {plan.entry_low:.4f}-{plan.entry_high:.4f}")
+        parts.append(f"stop {plan.stop:.4f}")
+        parts.append(f"T1 {plan.target1:.4f}")
+    if direction in ("up", "down"):
+        parts.append(f"panel {direction} ({conviction_word(confidence)})")
+    head = f"{action} - {note}"
+    return head + ("\n  " + " | ".join(parts) if parts else "")
+
+
+def _why_lines(m: Metrics, enr: Enrichment, agg=None) -> tuple[list[tuple[str, str]], set[str]]:
+    """Why the stock moved, most important first. Also returns the headlines shown."""
+    out: list[tuple[str, str]] = []
+    shown: set[str] = set()
+    catalyst = str(getattr(agg, "catalyst", "") or "").strip()
+    if catalyst:
+        out.append(("CATALYST", catalyst))
+    fresh = enr.news[:1]
+    for item in fresh:
+        title = str(item.get("title", ""))
+        shown.add(title)
+        age = f" ({item.get('age')})" if item.get("age") else ""
+        src = f" - {item.get('source')}" if item.get("source") else ""
+        out.append(("HEADLINE", f"{title[:160]}{age}{src}"))
+    if not catalyst and not fresh:
+        out.append(("NO CATALYST", "no fresh news found - this move may be purely technical"))
+    # The shape of the move tells you whether it is early or already done.
+    vs_close = m.pct_vs_close
+    r15 = m.rise.get(15, 0.0) or 0.0
+    r60 = m.rise.get(60, 0.0) or 0.0
+    if r15 >= 0.03:
+        hot = "still moving now"
+    elif from_high := getattr(m, "from_high", None):
+        hot = "off the high" if from_high < -0.02 else "holding near the high"
+    else:
+        hot = "cooling" if r60 > r15 else "flat in the last hour"
+    out.append(("MOVE", f"{_pct(vs_close)} vs prior close | {_pct(r15)} 15m | "
+                        f"{_pct(r60)} 60m | {hot}"))
+    return out, shown
+
+
+def _ai_lines(text: str) -> list[str]:
+    """Indent a multi-line AI block for readability."""
+    return [("  " + line) if line else "" for line in text.splitlines()]
+
+
 def format_alert1(m: Metrics, *, shariah_line: str = "Shariah: checking...",
-                  pct_rank: Optional[int] = None, resumed: bool = False) -> str:
+                  pct_rank: Optional[int] = None, resumed: bool = False,
+                  html: bool = False) -> str:
     """Instant Alert 1: no AI, no enrichment (6.12)."""
-    header = f"{tier_name(m.tier)}  {m.symbol}  {money(m.price)}{phase_tag(m)}"
+    msg = _Msg(html)
+    head = f"{tier_name(m.tier)}  {m.symbol}  {money(m.price)}{phase_tag(m)}"
     if resumed:
-        header += "  RESUMED FROM HALT"
+        head += "  RESUMED FROM HALT"
+    msg.line(("b", f"ALERT: {head}"))
+    msg.line(("b", _pct(m.pct_vs_close)), " vs close | ",
+             _pct(m.rise.get(15, 0)), " 15m | ", _pct(m.rise.get(60, 0)), " 60m")
+    vol = f"vol {num(m.volx.get(15, 0), 1)}x normal | day {compact(m.cum_volume)}"
+    vol += " | above VWAP" if m.vwap and m.price > m.vwap else " | below VWAP"
+    msg.line(vol)
     low_line = (f"low {int(m.minutes_since_low)}m ago"
                 if m.minutes_since_low is not None else "low n/a")
     low_line += f" | score {m.score:.0f}"
     if pct_rank:
         low_line += f" | #{pct_rank} gainer"
-    lines = [
-        f"ALERT: {header}",
-        f"{pct(m.pct_vs_close * 100 if m.pct_vs_close is not None else None)} vs close"
-        f" | {pct(m.rise.get(15, 0) * 100)} 15m | {pct(m.rise.get(60, 0) * 100)} 60m",
-        f"vol {num(m.volx.get(15, 0), 1)}x normal | day {compact(m.cum_volume)}"
-        + (" | above VWAP" if m.vwap and m.price > m.vwap else " | below VWAP"),
-        low_line,
-        shariah_line,
-    ]
-    return "\n".join(lines)
+    msg.line(low_line)
+    msg.line(shariah_line)
+    return msg.text()
 
 
 def format_alert2(m: Metrics, enr: Enrichment, market, *,
                   shariah_lines: Optional[list[str]] = None,
                   reaction: str = "",
                   price_forecast: str = "",
+                  verdict: str = "",
+                  agg=None,
                   ai_running: bool = True,
                   validated: bool = True,
-                  risk_usd: float = 50.0) -> str:
-    """Alert 2: facts first, then the AI blocks (edited in later). Max 3,900 chars."""
-    blocks: list[str] = []
-    head = (f"{tier_name(m.tier)} {m.symbol} {money(m.price)} "
-            f"{pct(m.pct_vs_close * 100 if m.pct_vs_close is not None else None)} vs close"
-            f"{phase_tag(m)}")
-    blocks.append(f"DETAIL {head}")
+                  risk_usd: float = 50.0,
+                  html: bool = False) -> str:
+    """Alert 2: why it moved and what to do first, then the evidence. Max 3,900."""
+    msg = _Msg(html)
+    verdict = verdict or verdict_text(m, enr, agg)
 
-    # Market context line.
+    # -- headline -----------------------------------------------------------
+    msg.line(("b", f"DETAIL  {m.symbol}  {money(m.price)}  {_pct(m.pct_vs_close)} vs close"
+                   f"{phase_tag(m)}"))
+    setup = f"SETUP: {tier_name(m.tier)}"
+    reason = _setup_reason(m)
+    if reason:
+        setup += f" - below the alert bar ({reason})"
+    elif m.tier >= TIER_EARLY:
+        setup += " - qualifies for alerts"
+    msg.line(("b", "SETUP: "), setup.split("SETUP: ", 1)[1])
+
+    # -- the decision -------------------------------------------------------
+    if verdict:
+        first, _, rest = verdict.partition("\n")
+        msg.blank()
+        msg.line(("b", "VERDICT: "), first)
+        if rest.strip():
+            msg.line(rest)
+
+    # -- why it moved -------------------------------------------------------
+    why, shown_titles = _why_lines(m, enr, agg)
+    if why:
+        msg.blank()
+        msg.line(("b", "WHY IT MOVED"))
+        for label, value in why:
+            msg.line(("b", f"{label}: "), value)
+
+    # -- market backdrop (explains small-cap risk appetite) -----------------
     if market is not None:
-        blocks.append(market.headline())
+        msg.blank()
+        msg.line(("b", "MARKET BACKDROP (drives small-cap appetite)"))
+        msg.line(market.headline())
 
-    # Verification.
-    blocks.append(Enricher.verification_line(enr))
+    # -- evidence -----------------------------------------------------------
+    msg.blank()
+    msg.line(("b", "EVIDENCE"))
+    msg.line(Enricher.verification_line(enr))
 
-    # News.
     if enr.news:
-        lines = [f"NEWS ({len(enr.news)} items from {enr.outlets} outlet(s)):"]
-        for item in enr.news[:6]:
-            age = f" ({item['age']})" if item.get("age") else ""
-            src = f" - {item.get('source')}" if item.get("source") else ""
-            lines.append(f"- {item.get('title', '')[:150]}{age}{src}")
-            if item.get("summary"):
-                lines.append(f"  {item['summary'][:180]}")
-        blocks.append("\n".join(lines))
+        rest = [n for n in enr.news if str(n.get("title", "")) not in shown_titles]
+        if rest:
+            msg.line(("b", f"MORE NEWS ({len(rest)} more from {enr.outlets} outlet(s))"))
+            for item in rest[:5]:
+                age = f" ({item['age']})" if item.get("age") else ""
+                src = f" - {item.get('source')}" if item.get("source") else ""
+                msg.line("- ", f"{str(item.get('title', ''))[:150]}{age}{src}")
+                if item.get("summary"):
+                    msg.line("  ", str(item["summary"])[:180])
 
-    # Filings.
     if enr.filings:
-        lines = ["FILINGS (last 5 days):"]
+        msg.line(("b", "FILINGS (last 5 days)"))
         for f in enr.filings[:5]:
             extra = f" items {f['items']}" if f.get("items") else ""
-            lines.append(f"- {f.get('form')} {f.get('date')}{extra}")
-        blocks.append("\n".join(lines))
+            msg.line("- ", f"{f.get('form')} {f.get('date')}{extra}")
 
-    # Short data / float.
     short_text = Enricher.short_text(enr)
     if short_text:
-        blocks.append("SHORT/FLOAT: " + short_text)
+        msg.line(("b", "SHORT/FLOAT: "), short_text)
 
-    # Insiders.
     if enr.insiders:
-        lines = ["INSIDERS:"]
+        msg.line(("b", "INSIDERS"))
         for i in enr.insiders[:3]:
-            lines.append(f"- {i.get('date')} {i.get('owner')} {i.get('transaction')} "
-                         f"{i.get('value')}")
-        blocks.append("\n".join(lines))
+            msg.line("- ", f"{i.get('date')} {i.get('owner')} {i.get('transaction')} "
+                           f"{i.get('value')}")
 
-    # Shariah detail.
     if shariah_lines:
-        blocks.append("\n".join(shariah_lines))
+        for line in shariah_lines:
+            msg.line(line)
 
-    # Technicals.
     if enr.technicals:
-        blocks.append("TECH: " + enr.technicals.summary_text())
+        msg.line(("b", "TECH: "), enr.technicals.summary_text())
     else:
-        blocks.append("TECH: no candle data")
+        msg.line(("b", "TECH: "), "no candle data")
 
-    # Fibonacci.
     if enr.fib:
         r = enr.fib.retracements
         e = enr.fib.extensions
-        blocks.append(
-            f"FIB swing {enr.fib.swing_low:.4f} -> {enr.fib.swing_high:.4f}\n"
-            f"  retrace 23.6% {r['23.6']:.4f} | 38.2% {r['38.2']:.4f} | 50% {r['50.0']:.4f} | "
-            f"61.8% {r['61.8']:.4f} | 78.6% {r['78.6']:.4f}\n"
-            f"  extensions 127.2% {e['127.2']:.4f} | 161.8% {e['161.8']:.4f}")
+        msg.line(("b", f"FIB swing {enr.fib.swing_low:.4f} -> {enr.fib.swing_high:.4f}"))
+        msg.line("  retrace 23.6% ", f"{r['23.6']:.4f}", " | 38.2% ", f"{r['38.2']:.4f}",
+                 " | 50% ", f"{r['50.0']:.4f}", " | 61.8% ", f"{r['61.8']:.4f}",
+                 " | 78.6% ", f"{r['78.6']:.4f}")
+        msg.line("  extensions 127.2% ", f"{e['127.2']:.4f}", " | 161.8% ",
+                 f"{e['161.8']:.4f}")
 
-    # Trade plan.
     if enr.plan:
-        blocks.append("PLAN: " + enr.plan.text(risk_usd))
+        msg.line(("b", "PLAN: "), enr.plan.text(risk_usd))
 
-    # AI blocks.
-    if reaction:
-        blocks.append(reaction)
-    if price_forecast:
-        blocks.append(price_forecast + ("" if validated else " (unvalidated)"))
+    # -- AI -----------------------------------------------------------------
+    if reaction or price_forecast:
+        msg.blank()
+        msg.line(("b", "AI PANEL"))
+        for line in _ai_lines(reaction):
+            msg.line(line)
+        if price_forecast:
+            for line in _ai_lines(price_forecast.rstrip()
+                                  + ("" if validated else " (unvalidated)")):
+                msg.line(line)
     elif ai_running:
-        blocks.append("AI: running...")
+        msg.blank()
+        msg.line(("b", "AI PANEL"), " - running...")
 
-    # Missing sources.
     if enr.missing:
-        blocks.append("missing: " + ", ".join(enr.missing))
+        msg.blank()
+        msg.line(("b", "MISSING: "), ", ".join(enr.missing))
 
-    blocks.append(DISCLAIMER)
-    text = "\n\n".join(b for b in blocks if b)
+    msg.blank()
+    msg.line(("i", DISCLAIMER))
+    text = msg.text()
     if len(text) > MAX_ALERT2:
         text = _truncate(text, MAX_ALERT2)
     return text

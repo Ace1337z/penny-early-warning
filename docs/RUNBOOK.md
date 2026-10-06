@@ -223,6 +223,9 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 | "Feed failing: 5 consecutive cycles returned no quotes" | check outbound HTTPS and the Finviz token; the universe screener *is* the quote feed for sub-$10 names, so a rejected token means no feed |
 | "Finviz token rejected" | `$PENNY set FINVIZ_TOKEN` or `/set FINVIZ_TOKEN <token>` from the bot; alerts continue meanwhile |
 | Finviz rate-limited (`429`) | lower `FINVIZ_MAX_PER_MIN` (default 20) and `UNIVERSE_POLL_SECONDS`; the client caches and back-fills |
+| `SETUP: NONE` on a `/check` | not an error: the alert bar is `WATCH` and above. The `SETUP` line names the unmet rule (move, volume, dollars, VWAP). `/check` reports any symbol on demand |
+| `regime unknown` in the market line | the regime needs S&P and Nasdaq risk appetite. It now also reads Yahoo index levels (`^GSPC`/`^IXIC`), so it resolves even when the ETF quotes are missing |
+| `AI PANEL: no model answered` | every configured model failed; run `penny doctor` and `/models refresh` |
 | Telegram commands ignored | the chat id must match `TELEGRAM_CHAT_ID`; re-run `$PENNY detect-chat` |
 | No AI text on alerts | `$PENNY doctor`; check `AI_BASE_URL`/`AI_KEY`; the usual cause is `AI_MODELS` still holding the shipped example ids, which your provider does not offer |
 | Example model ids still configured | `/models refresh` detects it, adopts the provider's working models and reports them; or set them: `/set AI_MODELS a,b,c` (no restart needed) |

@@ -408,7 +408,8 @@ class FakeGateway:
         payload = {
             "strength": "moderate", "direction": "up", "shape": "grinder",
             "durability": "uncertain", "confidence": 0.6,
-            "catalyst": "fake catalyst", "sentiment": 0.4,
+            "catalyst": "fake catalyst", "why_now": "fake reason it is moving now",
+            "urgency": "now", "sentiment": 0.4,
             "forecast": {"15m": {"price": round(f15, 4)},
                          "60m": {"price": round(f60, 4)},
                          "session_end": {"price": round(send, 4)}},
