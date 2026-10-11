@@ -58,7 +58,7 @@ class Enricher:
     """Runs the per-alert workers in parallel; each source fails soft (6.8)."""
 
     def __init__(self, cfg, *, finviz=None, alpaca=None, finnhub=None,
-                 sec=None, finra=None, yahoo=None, market=None):
+                 sec=None, finra=None, yahoo=None, twelvedata=None, market=None):
         self.cfg = cfg
         self.finviz = finviz
         self.alpaca = alpaca
@@ -66,6 +66,7 @@ class Enricher:
         self.sec = sec
         self.finra = finra
         self.yahoo = yahoo
+        self.twelvedata = twelvedata
         self.market = market
 
     # -- public -------------------------------------------------------------
@@ -137,35 +138,78 @@ class Enricher:
         # Technicals, Fibonacci and the trade plan from the candles.
         if enr.bars_1m:
             price = quote.get("price")
+            enr.bars_1m = self._live_tail(enr.bars_1m, quote)
             enr.technicals = analyze(enr.bars_1m, price)
             if enr.technicals.swing_low and enr.technicals.swing_high and price:
                 enr.fib = fib_levels(enr.technicals.swing_low, enr.technicals.swing_high)
-                enr.plan = trade_plan(price, enr.fib, self.cfg.float("RISK_USD", 50))
+                enr.plan = trade_plan(price, enr.fib, self.cfg.float("RISK_USD", 50),
+                                      min_rr=self.cfg.float("MIN_RR", 2.0))
         return enr
+
+    @staticmethod
+    def _live_tail(bars: list[dict], quote: dict) -> list[dict]:
+        """Fold the live quote into the newest bar so the read is of *now*.
+
+        Candles lag the quote by up to a whole minute and, when a source only
+        has yesterday's session, by a whole day. Without this the EMA/RSI, the
+        Fibonacci swing and the entry/stop were computed from a price the ticker
+        had already left, which is what made the plan look like it came from the
+        wrong data. The synthetic bar carries the recent median volume so it
+        neither zeroes nor inflates the volume-spike test.
+        """
+        price = quote.get("price")
+        ts = float(quote.get("ts") or 0)
+        if not price or not bars or not ts:
+            return bars
+        last = bars[-1]
+        if float(last.get("time") or 0) >= ts - 60:
+            return bars  # candles already cover the quote
+        vols = sorted(v for v in (float(b.get("volume") or 0) for b in bars[-60:]) if v > 0)
+        volume = vols[len(vols) // 2] if vols else 0.0
+        prev_close = float(last.get("close") or price)
+        return list(bars) + [{"time": ts, "open": prev_close,
+                              "high": max(prev_close, price),
+                              "low": min(prev_close, price),
+                              "close": price, "volume": volume}]
 
     # -- workers ------------------------------------------------------------
     def _candles(self, symbol: str) -> list[dict]:
-        """1-minute bars including pre/post: Alpaca -> Yahoo (6.8).
+        """1-minute bars: TwelveData -> Alpaca -> Yahoo (6.8), freshest wins.
 
-        Finviz is the live feed and has no intraday candle endpoint, so candles
-        rely on the optional Alpaca and Yahoo sources; the plan degrades softly
-        when neither is configured.
+        Finviz is the live feed and has no intraday candle endpoint. Each source
+        is scored on how recent its last bar is rather than trusted blindly --
+        a source that still answers happily returns its own stale history, and
+        taking the first non-empty answer is what fed the plan old prices.
+        `age <= 90s` is "a bar that just closed", so the best available source
+        usually wins without a second request.
         """
         now = datetime.now(tz=ET)
         start = now.replace(hour=4, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        attempts = []
+        if self.twelvedata and getattr(self.twelvedata, "configured", False):
+            attempts.append(("twelvedata", lambda: self.twelvedata.bars(symbol, "1min", 390)))
         if self.alpaca and getattr(self.alpaca, "configured", False):
-            try:
-                bars = self.alpaca.bars(symbol, start, now)
-                if bars:
-                    return bars
-            except Exception as exc:  # noqa: BLE001
-                log.debug("alpaca candles failed for %s: %s", symbol, exc)
+            attempts.append(("alpaca", lambda: self.alpaca.bars(symbol, start, now)))
         if self.yahoo:
+            attempts.append(("yahoo", lambda: self.yahoo.bars(symbol, days=2)))
+
+        best: list[dict] = []
+        best_age = float("inf")
+        now_epoch = time.time()
+        for name, fetch in attempts:
             try:
-                return self.yahoo.bars(symbol, days=2)
+                bars = fetch()
             except Exception as exc:  # noqa: BLE001
-                log.debug("yahoo candles failed for %s: %s", symbol, exc)
-        return []
+                log.debug("%s candles failed for %s: %s", name, symbol, exc)
+                continue
+            if not bars:
+                continue
+            age = now_epoch - float(bars[-1].get("time") or 0)
+            if age <= 90:
+                return bars
+            if age < best_age:
+                best, best_age = bars, age
+        return best
 
     def _news(self, symbol: str) -> tuple[list[dict], int]:
         """Merge several sources, de-duplicate, newest first, up to 8 items (6.8)."""

@@ -8,6 +8,7 @@ and is never cached in code, logged or placed in messages (6.5/5.2).
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Iterable, Optional
 from urllib.parse import urlencode
@@ -36,6 +37,7 @@ SIGNALS: dict[str, str] = {
     # Intraday top gainers/losers (Elite). These catch a stock that is being
     # bought *right now*, before it reaches the daily top-gainers screen.
     "top_gainers_1m": "ta_topgainers_1m",
+    "top_gainers_3m": "ta_topgainers_3m",
     "top_gainers_5m": "ta_topgainers_5m",
     "top_gainers_15m": "ta_topgainers_15m",
     "top_gainers_30m": "ta_topgainers_30m",
@@ -52,8 +54,13 @@ DEFAULT_SIGNALS = ("top_gainers", "new_high", "most_active", "unusual_volume",
 # Only the top gainers/losers bases honour an intraday timeframe suffix on the
 # Elite export endpoint. Every other base silently ignores the suffix and
 # returns the whole universe instead (thousands of rows), so those are refused.
-INTRADAY_TIMEFRAMES = ("1m", "5m", "15m", "30m", "1h")
+INTRADAY_TIMEFRAMES = ("1m", "2m", "3m", "5m", "15m", "30m", "1h")
 INTRADAY_BASES = ("ta_topgainers", "ta_toplosers")
+# Any suffix that *looks* like a timeframe but is not known-good is refused, not
+# silently accepted. Finviz silently ignores an unsupported suffix and returns the
+# whole universe (2000+ rows) instead: `ta_topgainers_4m` was measured live at
+# 2317 rows versus 7 rows for the supported `ta_topgainers_3m`.
+_TIMEFRAME_RE = re.compile(r"_(\d+)([mh])$")
 
 # Views that render a fixed column set and ignore `c=` (Overview 111, Valuation
 # 121, Ownership 131, Performance 141, Financial 161, Technical 171). Requesting
@@ -105,11 +112,18 @@ PERF_COLUMNS: tuple[tuple[int, str], ...] = (
 
 
 def intraday_signal_ok(code: str) -> bool:
-    """True when `code` honours an intraday timeframe (or has none)."""
-    for tf in INTRADAY_TIMEFRAMES:
-        suffix = "_" + tf
-        if code.endswith(suffix):
-            return code[: -len(suffix)] in INTRADAY_BASES
+    """True when `code` honours an intraday timeframe (or has none).
+
+    A base that only supports the known timeframes is checked as well; anything
+    with an unrecognised timeframe suffix is refused rather than requested, so a
+    typo cannot turn into a 2000-row universe dump.
+    """
+    match = _TIMEFRAME_RE.search(code or "")
+    if match:
+        base = code[: match.start()]
+        if base not in INTRADAY_BASES:
+            return False
+        return match.group(0)[1:] in INTRADAY_TIMEFRAMES
     return True
 
 
@@ -357,11 +371,15 @@ class FinvizClient(BaseClient):
             return None
         price = row_num(row, "Price")
         change_pct = row_num(row, "Change")
-        # Only the post session needs the override: Finviz keeps Price/Change at
-        # the regular close after 16:00, with the real move in After-Hours
-        # Close/Change. In pre-market Finviz already folds the pre-market print
-        # into Price/Change, and the After-Hours columns would be yesterday's.
-        extended = session == "post"
+        # The regular Price/Change freeze at the last regular close from 16:00 ET
+        # until the next session opens, with the real move in the After-Hours
+        # columns. That covers both "post" and, from 20:00 through the next
+        # pre-market (and the whole weekend), "closed" — so the override applies
+        # to both, otherwise a check at 22:00 or on Sunday shows the stale
+        # regular close. In pre-market Finviz already folds the print into
+        # Price/Change and the After-Hours columns would be yesterday's, so it
+        # stays untouched there.
+        extended = session in ("post", "closed")
         if extended and self.cfg.bool("FINVIZ_EXTENDED_HOURS", True):
             ah_price = row_num(row, "After-Hours Close")
             ah_change = row_num(row, "After-Hours Change")

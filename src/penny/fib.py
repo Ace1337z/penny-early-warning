@@ -38,6 +38,7 @@ class TradePlan:
     risk_per_share: float
     reward_risk: Optional[float]
     shares: int
+    viable: bool = True           # False when R:R < the configured minimum
 
     def as_dict(self) -> dict:
         return {
@@ -51,15 +52,19 @@ class TradePlan:
             "risk_per_share": round(self.risk_per_share, 5),
             "reward_risk": round(self.reward_risk, 2) if self.reward_risk else None,
             "shares": self.shares,
+            "viable": self.viable,
         }
 
     def text(self, risk_usd: float) -> str:
         rr = f"{self.reward_risk:.1f}:1" if self.reward_risk else "n/a"
-        return (
+        out = (
             f"{self.mode.upper()} plan | entry {self.entry_low:.4f}-{self.entry_high:.4f} "
             f"| stop {self.stop:.4f} | T1 {self.target1:.4f} | T2 {self.target2:.4f} "
             f"| R:R {rr} | {self.shares} shares for ${risk_usd:.0f} risk"
         )
+        if not self.viable:
+            out += " | NO TRADE: R:R below minimum"
+        return out
 
 
 def fib_levels(swing_low: float, swing_high: float) -> FibLevels:
@@ -72,8 +77,14 @@ def fib_levels(swing_low: float, swing_high: float) -> FibLevels:
     return levels
 
 
-def trade_plan(price: float, levels: FibLevels, risk_usd: float = 50.0) -> Optional[TradePlan]:
-    """Entry/stop/targets from the Fibonacci swing (6.9). None if risk per share <= 0."""
+def trade_plan(price: float, levels: FibLevels, risk_usd: float = 50.0,
+               min_rr: Optional[float] = None) -> Optional[TradePlan]:
+    """Entry/stop/targets from the Fibonacci swing (6.9). None if risk per share <= 0.
+
+    `min_rr` marks the plan as not viable when the reward:risk on T1 falls below
+    it. The numbers still render -- an operator wants to see *why* there is no
+    trade -- but nothing downstream may treat it as a recommendation.
+    """
     if price <= 0 or levels.range <= 0:
         return None
     high = levels.swing_high
@@ -105,9 +116,11 @@ def trade_plan(price: float, levels: FibLevels, risk_usd: float = 50.0) -> Optio
         return None
     shares = max(0, int(risk_usd / risk))
     rr = (t1 - entry) / risk if risk > 0 else None
+    viable = min_rr is None or (rr is not None and rr >= min_rr)
     return TradePlan(
         mode=mode, entry_low=entry_low, entry_high=entry_high, entry=entry, stop=stop,
         target1=t1, target2=t2, risk_per_share=risk, reward_risk=rr, shares=shares,
+        viable=viable,
     )
 
 

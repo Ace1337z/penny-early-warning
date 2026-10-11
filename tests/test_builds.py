@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 from penny.alerts import format_build_digest, format_build_feed
+from penny.config import DEFAULTS
 from penny.scoring import BuildSignal, Metrics, TIER_WATCH
 
 
@@ -164,6 +165,7 @@ def _build_metrics(symbol="ABCD"):
 
 
 def test_engine_build_feed_sends_once_then_stays_quiet(cfg, tmp_path):
+    cfg.set("BUILD_FEED", "1")
     cfg.set("BUILD_MIN_SCORE", "0")
     cfg.set("BUILD_MIN_MINUTES", "0")
     engine, telegram, db, journal = _engine(cfg, tmp_path)
@@ -178,6 +180,7 @@ def test_engine_build_feed_sends_once_then_stays_quiet(cfg, tmp_path):
 
 
 def test_engine_build_feed_announces_a_reappearing_build(cfg, tmp_path):
+    cfg.set("BUILD_FEED", "1")
     cfg.set("BUILD_MIN_SCORE", "0")
     cfg.set("BUILD_MIN_MINUTES", "0")
     engine, telegram, db, journal = _engine(cfg, tmp_path)
@@ -198,6 +201,20 @@ def test_engine_build_feed_is_silent_when_disabled(cfg, tmp_path):
     engine, telegram, db, journal = _engine(cfg, tmp_path)
     engine._maybe_build_feed("regular", [_build_metrics()])
     assert not any("MOMENTUM BUILDS" in m for m in telegram.outbox)
+    db.close()
+    journal.close()
+
+
+def test_build_feed_is_off_by_default(cfg, tmp_path):
+    """The 15-minute digest reads as noise, so it is off unless asked for. The
+    build list is still populated, so /builds keeps working."""
+    assert DEFAULTS["BUILD_FEED"] == "0"
+    cfg.set("BUILD_MIN_SCORE", "0")
+    cfg.set("BUILD_MIN_MINUTES", "0")
+    engine, telegram, db, journal = _engine(cfg, tmp_path)
+    engine._maybe_build_feed("regular", [_build_metrics()])
+    assert not any("MOMENTUM BUILDS" in m for m in telegram.outbox)
+    assert engine._builds
     db.close()
     journal.close()
 

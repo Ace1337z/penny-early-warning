@@ -377,3 +377,78 @@ Acceptance tests 2 (token change), 3 (installer on a fresh VPS), 4 (`doctor` all
 5 (mover parity), 6 (replay), 8 (failure drills), 9 (5-day soak), 11 (full off-server
 backup/restore across servers), 12 (model catalogue against the real provider). Run these
 on the VPS once the credentials are in place.
+
+## C25. A closed market reported the frozen regular close as live
+
+`session_for()` looked only at the clock, never the calendar, so a Saturday
+afternoon returned `post`. Two consequences, both observed on a Sunday:
+
+- The engine polled a market that was shut and reported Friday's frozen close as
+  if it were live.
+- `normalize_row()` applied the After-Hours Close/Change override only when
+  `session == "post"`. From 20:00 ET to the next pre-market, and all weekend, the
+  frozen regular close won instead.
+
+Measured on Finviz `ta_topgainers_1m` during the Sunday session: YMAT publishes
+`Price 1.30 / Change -0.77%` alongside `After-Hours Close 3.03 / +134.85%`. The
+override now covers `post` **and** `closed`, and `session_for()` returns `closed`
+for weekends and market holidays. Live check: regular `1.29` -> post/closed
+`3.03`.
+
+## C26. `ta_topgainers_4m` silently returns the whole universe
+
+Finviz ignores an unsupported timeframe suffix rather than erroring. Measured
+against the live Elite API:
+
+| signal | rows |
+|---|---|
+| `ta_topgainers_1m` | 3 |
+| `ta_topgainers_3m` | 7 |
+| `ta_topgainers_5m` | 7 |
+| `ta_topgainers_4m` | **2317** |
+
+`intraday_signal_ok()` previously returned `True` for any unrecognised suffix, so
+a typo would pull the entire universe into the movers list. It now validates the
+base against `INTRADAY_BASES` *and* the suffix against the known timeframes, and
+refuses anything else. `2m` and `3m` are supported and confirmed live; the default
+is `top_gainers_1m,top_gainers_3m,top_gainers_5m` because the 15-minute screen is
+where a +20% alert used to originate.
+
+## C27. The plan was computed from a price the ticker had already left
+
+Two separate causes, both producing a plan that looked like it came from the
+wrong stock:
+
+- `_candles()` took the **first source that returned anything**. A source that
+  answers with yesterday's history beat one with a bar from the last minute purely
+  by position. Sources are now scored on the age of their newest bar (`<= 90s`
+  wins) and the freshest usable set is returned.
+- Even a fresh candle set lags the quote by up to a full minute, so the EMA/RSI,
+  the Fibonacci swing and the entry/stop were all computed from a stale close.
+  `_live_tail()` now folds the live quote into a synthetic final bar, carrying the
+  recent median volume so the volume-spike test is neither zeroed nor inflated.
+
+Live after the fix (AAPL, VCIG): VCIG swing 0.4711 -> 0.5798 (23.1%) with a
+`PULLBACK` plan at R:R **3.2:1**, viable. AAPL's tight 2.4% swing correctly yields
+`R:R -0.0:1 | NO TRADE: R:R below minimum` instead of a confident-looking plan.
+
+## C28. TwelveData cannot be the extended-hours source on the free plan
+
+Measured directly, which changed the design:
+
+- `/quote` has **no** `post_market_price`; `close` is the last trade, with
+  `last_quote_at` at Friday 19:59 UTC (15:59 ET).
+- `time_series?prepost=true` is rejected with **HTTP 403**, and every returned
+  1-minute bar sits inside 09:30-16:00 ET (exactly 390 bars/day).
+
+So TwelveData is the *freshness* source for single-symbol price, volume and
+candles, and Finviz's After-Hours columns remain the extended-hours source. Both
+free tiers are respected by construction: TwelveData is never pointed at the
+~2300-symbol sweep, only at alerted names and `/check`.
+
+## C29. The 15-minute build digest was on by default
+
+`_maybe_build_feed()` returned early on the config gate *before* assigning
+`self._builds`, so simply defaulting the notification off would have silently
+broken `/builds`. The scan now always runs and populates the list; only the send
+is gated, and `BUILD_FEED` defaults to `0`.

@@ -40,6 +40,19 @@ def test_sessions():
     assert session_for(at(20, 0)) == "closed"
 
 
+def test_weekends_and_holidays_are_always_closed():
+    """Without this a Saturday afternoon reported "post", so the engine polled a
+    shut market and showed the frozen Friday close as if it were live."""
+    def on(year, month, day, h, m):
+        return datetime(year, month, day, h, m, tzinfo=ET)
+    assert session_for(on(2026, 10, 10, 12, 0)) == "closed"   # Saturday
+    assert session_for(on(2026, 10, 11, 17, 0)) == "closed"   # Sunday
+    assert session_for(on(2026, 10, 12, 9, 45)) == "regular"  # Monday
+    assert session_for(on(2026, 10, 12, 17, 0)) == "post"
+    assert session_for(on(2026, 7, 4, 12, 0)) == "closed"     # Independence Day
+    assert session_for(on(2026, 11, 26, 12, 0)) == "closed"   # Thanksgiving
+
+
 def test_holidays_include_observed_dates():
     days = us_market_holidays(2026)
     assert datetime(2026, 1, 1).date() in days

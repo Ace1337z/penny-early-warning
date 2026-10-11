@@ -442,6 +442,9 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     cfg.set("WARMUP_CYCLES", "2")
     cfg.set("ALERT_MIN_TIER", "2")
     cfg.set("RISK_USD", "50")
+    # The periodic build digest is off by default (item 1); this run exists to
+    # exercise that subsystem, so it opts in.
+    cfg.set("BUILD_FEED", "1")
     cfg.save()
 
     state = open_state(cfg.state_db)

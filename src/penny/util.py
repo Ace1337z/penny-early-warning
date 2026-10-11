@@ -98,8 +98,15 @@ def from_epoch_ms(ms: int) -> datetime:
 
 
 def session_for(dt: Optional[datetime] = None) -> str:
-    """Return the trading session name for a US/Eastern datetime."""
+    """Return the trading session name for a US/Eastern datetime.
+
+    Weekends and market holidays are always `closed`. Without this a Saturday or
+    Sunday afternoon reported "post", so the engine polled a market that was shut
+    and reported a frozen Friday close as if it were live.
+    """
     dt = to_et(dt or now_et())
+    if dt.weekday() >= 5 or dt.date() in us_market_holidays(dt.year):
+        return SESSION_CLOSED
     t = dt.time()
     if PRE_OPEN <= t < REGULAR_OPEN:
         return SESSION_PRE

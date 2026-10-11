@@ -25,6 +25,8 @@ ENUMS = {
 FLAG_VALUES = ("dilution", "reverse_split", "halt_risk", "wide_spread", "pump_pattern",
                "low_float", "squeeze_setup", "no_catalyst")
 
+VERDICTS = ("ENTER", "WAIT", "PASS")
+
 MAX_PROMPT_CHARS = 7000
 
 SYSTEM_PROMPT = (
@@ -38,11 +40,20 @@ SYSTEM_PROMPT = (
     "Rules: use only the supplied facts; if the news does not explain the move, say so in "
     "'catalyst' and lower confidence; never invent news or price levels unrelated to the data; "
     "give numeric prices for all three horizons; do not output a risk level.\n"
+    "Verdict: your own call, as 'verdict'. ENTER only when the trade is tradeable *now* -- "
+    "facts support entry, trade_plan.viable is true when a plan is supplied, volume backs the "
+    "move and the price is not already at the expected peak. A clear directional bias with no "
+    "tradeable entry is WAIT, not ENTER: whether a stock will go up and whether this is a "
+    "buyable setup are different questions. PASS when the data is missing or contradictory, or "
+    "the setup is not worth the risk (halt, dilution, pump pattern, spread too wide). The "
+    "verdict must follow from the supplied facts; you may not add numbers of your own.\n"
     "Reply with ONE JSON object and nothing else, with exactly these keys:\n"
     '{"strength": "strong|moderate|weak", "direction": "up|down|mixed", '
     '"shape": "burst|grinder|fade", "durability": "fade-prone|uncertain|sustained", '
-    '"confidence": 0.0-1.0, "catalyst": "<=160 chars, the ONE reason it is moving", '
+    '"confidence": 0.0-1.0, "verdict": "ENTER|WAIT|PASS", '
+    '"catalyst": "<=160 chars, the ONE reason it is moving", '
     '"why_now": "<=200 chars, why it is moving at this moment and whether it has room left", '
+    '"thesis_breaker": "<=120 chars, the one fact that would kill the thesis", '
     '"urgency": "now|wait|avoid", "sentiment": -1.0-1.0, '
     '"forecast": {"15m": {"price": number}, "60m": {"price": number}, '
     '"session_end": {"price": number}}, "expected_peak": number, "expected_low": number, '
@@ -64,6 +75,8 @@ class ModelForecast:
     confidence: float = 0.0
     catalyst: str = ""
     why_now: str = ""
+    thesis_breaker: str = ""
+    verdict: str = ""               # ENTER | WAIT | PASS as the model answered
     urgency: str = ""
     sentiment: float = 0.0
     forecast: dict[str, float] = field(default_factory=dict)
@@ -81,7 +94,8 @@ class ModelForecast:
             "model": self.model, "valid": self.valid, "strength": self.strength,
             "direction": self.direction, "shape": self.shape, "durability": self.durability,
             "confidence": round(self.confidence, 2), "catalyst": self.catalyst,
-            "why_now": self.why_now, "urgency": self.urgency,
+            "why_now": self.why_now, "thesis_breaker": self.thesis_breaker,
+            "verdict": self.verdict, "urgency": self.urgency,
             "sentiment": round(self.sentiment, 2), "forecast": self.forecast,
             "expected_peak": self.expected_peak, "expected_low": self.expected_low,
             "market_effect": self.market_effect, "reasons": self.reasons, "flags": self.flags,
@@ -101,6 +115,7 @@ class AggregateForecast:
     confidence: float = 0.0
     catalyst: str = ""
     why_now: str = ""
+    thesis_breaker: str = ""
     urgency: str = ""
     sentiment: float = 0.0
     forecast: dict[str, float] = field(default_factory=dict)
@@ -111,6 +126,10 @@ class AggregateForecast:
     flags: list[str] = field(default_factory=list)
     change_view: str = ""
     validated: bool = True
+    # Portfolio-manager call, assigned by `decide()` after the hard gates.
+    verdict: str = ""
+    verdict_reason: str = ""
+    data_conflict: str = ""          # why the facts could not be trusted
 
     def as_dict(self) -> dict:
         return {
@@ -118,11 +137,14 @@ class AggregateForecast:
             "agreement": round(self.agreement, 2), "strength": self.strength,
             "direction": self.direction, "shape": self.shape, "durability": self.durability,
             "confidence": round(self.confidence, 2), "catalyst": self.catalyst,
-            "why_now": self.why_now, "urgency": self.urgency,
+            "why_now": self.why_now, "thesis_breaker": self.thesis_breaker,
+            "urgency": self.urgency,
             "sentiment": round(self.sentiment, 2), "forecast": self.forecast,
             "expected_peak": self.expected_peak, "expected_low": self.expected_low,
             "market_effect": self.market_effect, "reasons": self.reasons, "flags": self.flags,
             "change_view": self.change_view, "validated": self.validated,
+            "verdict": self.verdict, "verdict_reason": self.verdict_reason,
+            "data_conflict": self.data_conflict,
         }
 
 
@@ -218,6 +240,9 @@ def parse_forecast(model: str, text: str) -> ModelForecast:
     fc.market_effect = str(data.get("market_effect") or "")[:120]
     fc.change_view = str(data.get("change_view") or "")[:200]
     fc.why_now = str(data.get("why_now") or "")[:200]
+    fc.thesis_breaker = str(data.get("thesis_breaker") or "")[:120]
+    verdict = str(data.get("verdict") or "").strip().upper()
+    fc.verdict = verdict if verdict in VERDICTS else ""
     urgency = str(data.get("urgency") or "").strip().lower()
     fc.urgency = urgency if urgency in ("now", "wait", "avoid") else ""
 
@@ -328,6 +353,12 @@ def aggregate(forecasts: list[ModelForecast]) -> AggregateForecast:
     agg.market_effect = first.market_effect
     agg.change_view = first.change_view
     agg.why_now = first.why_now
+    agg.thesis_breaker = next((f.thesis_breaker for f in valid if f.thesis_breaker), "")
+    # The panel's own verdict, majority with the cautious answer breaking a tie.
+    verdicts = [f.verdict for f in valid if f.verdict]
+    if verdicts:
+        cautious = {"ENTER": 0, "WAIT": 1, "PASS": 2}
+        agg.verdict = max(verdicts, key=lambda v: (verdicts.count(v), -cautious.get(v, 1)))
     # Urgency is a majority vote, defaulting to the most cautious of the answers.
     urgencies = [f.urgency for f in valid if f.urgency]
     if urgencies:
@@ -366,15 +397,21 @@ def reaction_text(agg: AggregateForecast) -> str:
         bits.append(f"panel {agg.direction}")
     head = f"REACTION: {agg.strength}/{agg.direction}/{agg.shape}/{agg.durability}"
     lines.append(head)
-    # The bottom line first: what to do and why, then the supporting detail.
+    # The bottom line first: the PM verdict and its one reason, then the detail.
+    from .verdict import verdict_text, why_text
+    lines.append(verdict_text(agg))
     if call:
         lines.append(f"AI CALL: {call} | " + " | ".join(bits))
     else:
         lines.append(" | ".join(bits))
+    why = why_text(agg)
+    if why:
+        lines.append("")
+        lines.append(f"WHY: {why}")
     detail: list[str] = []
-    if agg.why_now:
+    if not why and agg.why_now:
         detail.append(f"why now: {agg.why_now}")
-    elif agg.catalyst:
+    elif not why and agg.catalyst:
         detail.append(f"catalyst: {agg.catalyst}")
     if agg.reasons:
         detail.append("reasons: " + "; ".join(agg.reasons))
@@ -384,6 +421,8 @@ def reaction_text(agg: AggregateForecast) -> str:
         lines.append("")
         lines.extend(detail)
     tail: list[str] = []
+    if agg.thesis_breaker:
+        tail.append("thesis breaker: " + agg.thesis_breaker)
     if agg.change_view:
         tail.append(f"changes view: {agg.change_view}")
     if agg.sentiment:

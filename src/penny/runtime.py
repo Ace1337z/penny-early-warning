@@ -20,6 +20,7 @@ from .sources.finra import FinraClient
 from .sources.finnhub import FinnhubClient
 from .sources.finviz import FinvizClient
 from .sources.sec import SecClient
+from .sources.twelvedata import TwelveDataClient
 from .sources.yahoo import YahooClient
 from .store import open_journal, open_state
 from .telegram import TelegramClient
@@ -39,6 +40,7 @@ class Runtime:
     sec: Optional[object] = None
     finra: Optional[object] = None
     yahoo: Optional[object] = None
+    twelvedata: Optional[object] = None
     gateway: Optional[object] = None
     catalog: Optional[ModelCatalog] = None
     shariah: Optional[ShariahService] = None
@@ -77,6 +79,7 @@ def build(cfg: Config, *, with_engine: bool = True, fake: Optional[dict] = None,
     sec = fake.get("sec") or SecClient(cfg, secrets)
     finra = fake.get("finra") or FinraClient(cfg, secrets)
     yahoo = fake.get("yahoo") or YahooClient(cfg, secrets)
+    twelvedata = fake.get("twelvedata") or TwelveDataClient(cfg, secrets)
     gateway = fake.get("gateway") or AIGateway(cfg, secrets)
 
     catalog = ModelCatalog(cfg.catalog_path)
@@ -91,14 +94,17 @@ def build(cfg: Config, *, with_engine: bool = True, fake: Optional[dict] = None,
 
     runtime = Runtime(cfg=cfg, state=state, journal_db=journal_db, telegram=telegram,
                       finviz=finviz, alpaca=alpaca, finnhub=finnhub,
-                      sec=sec, finra=finra, yahoo=yahoo, gateway=gateway, catalog=catalog,
+                      sec=sec, finra=finra, yahoo=yahoo, twelvedata=twelvedata,
+                      gateway=gateway, catalog=catalog,
                       shariah=shariah, journal=journal, backup=backup)
-    runtime.components = [c for c in (finviz, alpaca, finnhub, sec, finra, yahoo)
+    runtime.components = [c for c in (finviz, alpaca, finnhub, sec, finra, yahoo,
+                                      twelvedata)
                           if c is not None]
 
     if with_engine:
         engine = Engine(cfg, state, journal_db, telegram, finviz=finviz,
                         alpaca=alpaca, finnhub=finnhub, sec=sec, finra=finra, yahoo=yahoo,
+                        twelvedata=twelvedata,
                         gateway=gateway, catalog=catalog, shariah=shariah, backup=backup)
         if engine.runner is not None:
             from .ai.catalog import INITIAL_FALLBACKS, INITIAL_PANEL

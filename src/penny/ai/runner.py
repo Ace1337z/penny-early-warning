@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures as futures
 import logging
 import random
+import re
 import time
 from typing import Optional
 
@@ -12,8 +13,17 @@ from ..util import scrub
 from .evaluate import BASELINE_MODELS
 from .panel import (AggregateForecast, AnalysisCache, ModelForecast, aggregate,
                     build_messages, parse_forecast)
+from .verdict import decide as decide_verdict
 
 log = logging.getLogger(__name__)
+
+# Provider error text saying "you asked for a model I do not serve" -- the shape
+# seen when AI_BASE_URL/AI_KEY is pointed at a different OpenAI-compatible
+# provider whose ids are unrelated to the configured ones.
+_MODEL_MISSING = re.compile(
+    r"model[^.\n]{0,80}(not\s+found|does\s+not\s+exist|unknown|is\s+not\s+available"
+    r"|not\s+supported|invalid)|invalid\s+model|no\s+such\s+model|"
+    r"HTTP\s+404|status[^0-9]{0,10}404", re.I)
 
 
 class AIRunner:
@@ -40,6 +50,70 @@ class AIRunner:
             return [c for c in cands if c not in BASELINE_MODELS.values()]
         return self.catalog.pool(self.cfg.float("AI_MAX_MULTIPLIER", 4),
                                  self.cfg.list("AI_PREMIUM_MODELS"))
+
+    # -- provider identity --------------------------------------------------
+    def provider_id(self) -> str:
+        return str(self.cfg.raw("AI_BASE_URL") or "").strip().rstrip("/").lower()
+
+    def sync_provider(self) -> bool:
+        """Reset the panel when AI_BASE_URL points somewhere new.
+
+        `active_panel` and `candidates` are copies of the *previous* provider's
+        model ids. Model names differ between OpenAI-compatible providers, so
+        after a switch every call fails with "model not found" and the panel
+        looks dead until someone remembers to re-set it. Rebinding the stored
+        lists to the new endpoint makes a provider swap take effect on its own:
+        the configured list is the fallback and the provider's own `/models`
+        list (any ids, including `vendor/name`) is preferred when reachable.
+        """
+        pid = self.provider_id()
+        if not pid:
+            return False
+        previous = self.db.kv_get("ai_provider")
+        if pid == previous:
+            return False
+        self.db.kv_set("ai_provider", pid)
+        if previous is None:
+            return False  # first run: the panel as configured is already right
+        panel = list(self.cfg.list("AI_MODELS"))
+        self.db.kv_set("active_panel", panel)
+        self.db.kv_set("active_panel_source", panel)
+        self.db.kv_set("candidates", [])
+        log.info("ai: provider changed %s -> %s; panel reset to %s",
+                 previous, pid, panel)
+        try:
+            listed = self.gateway.list_models(timeout=10.0)
+        except Exception as exc:  # noqa: BLE001
+            log.info("ai: no model list from the new provider: %s", exc)
+            return True
+        adopted = self._adopt_panel(listed)
+        if adopted:
+            log.info("ai: adopted panel %s from the new provider", adopted)
+            if self.telegram:
+                self.telegram.send(
+                    "AI provider changed; panel is now: "
+                    + ", ".join(adopted))
+        return True
+
+    def _missing_models(self, forecasts: list[ModelForecast]) -> bool:
+        errors = [f.error for f in forecasts if not f.valid and f.error]
+        return bool(errors) and all(_MODEL_MISSING.search(e) for e in errors)
+
+    def _repair_panel(self) -> list[str]:
+        """One attempt to swap in models this provider actually serves."""
+        pid = self.provider_id()
+        if self.db.kv_get("ai_repair_for") == pid:
+            return []  # already tried for this endpoint
+        self.db.kv_set("ai_repair_for", pid)
+        try:
+            listed = self.gateway.list_models(timeout=10.0)
+        except Exception as exc:  # noqa: BLE001
+            log.info("ai: repair skipped, no model list: %s", scrub(str(exc), self.secrets))
+            return []
+        chosen = self._adopt_panel(listed)
+        if chosen:
+            log.info("ai: panel repaired for %s -> %s", pid, chosen)
+        return chosen
 
     # -- token accounting ---------------------------------------------------
     def _today(self) -> str:
@@ -167,12 +241,21 @@ class AIRunner:
                 return agg, []
 
         messages = build_messages(facts)
+        self.sync_provider()
         panel = self.active_panel()
         # One wall-clock budget for the whole panel, so a slow or hung provider
         # cannot turn a single /check into minutes of stacked 45s timeouts.
         budget = self.cfg.float("AI_DEADLINE", 60.0)
         deadline = time.monotonic() + budget if budget > 0 else None
         forecasts = self._call_many(panel, messages, kind, deadline=deadline)
+
+        # Panel written for a different provider fails wholesale with
+        # "model not found". Swap in ids this endpoint serves and retry once.
+        if forecasts and not any(f.valid for f in forecasts) and self._missing_models(forecasts):
+            repaired = self._repair_panel()
+            if repaired and (deadline is None or time.monotonic() < deadline):
+                panel = repaired
+                forecasts = self._call_many(panel, messages, kind, deadline=deadline)
 
         valid = [f for f in forecasts if f.valid]
         if len(valid) < 2:
@@ -189,6 +272,10 @@ class AIRunner:
         agg = aggregate(forecasts)
         if not any(self._is_eligible(m) for m in agg.models):
             agg.validated = False
+        # The portfolio manager runs on the panel's output and the same facts the
+        # models saw, so the ENTER/WAIT/PASS call can never be based on a number
+        # that was not measured.
+        decide_verdict(agg, facts, min_rr=self.cfg.float("MIN_RR", 2.0))
         self.cache.put(symbol, agg.as_dict(), price=price, tier=tier, news_key=news_key)
         return agg, forecasts
 

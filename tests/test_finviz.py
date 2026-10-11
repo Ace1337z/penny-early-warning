@@ -42,12 +42,20 @@ def test_default_intraday_signals_are_top_gainers_only():
 
 def test_only_top_gainers_and_losers_honour_a_timeframe():
     for base in INTRADAY_BASES:
-        for tf in ("1m", "5m", "15m", "30m", "1h"):
+        for tf in ("1m", "2m", "3m", "5m", "15m", "30m", "1h"):
             assert intraday_signal_ok(f"{base}_{tf}")
     # These silently return the whole universe with a timeframe, so they are refused.
     assert not intraday_signal_ok("ta_unusualvolume_5m")
     assert not intraday_signal_ok("ta_mostactive_1m")
     assert not intraday_signal_ok("ta_newhigh_5m")
+
+
+def test_an_unknown_timeframe_is_refused_rather_than_guessed():
+    """Finviz silently ignores an unsupported suffix and returns the whole
+    universe: `ta_topgainers_4m` measured 2317 rows against 7 for 3m."""
+    assert not intraday_signal_ok("ta_topgainers_4m")
+    assert not intraday_signal_ok("ta_topgainers_7m")
+    assert not intraday_signal_ok("ta_toplosers_4m")
 
 
 def test_signals_without_a_timeframe_are_fine():
@@ -220,6 +228,15 @@ def test_extended_hours_can_be_disabled(cfg):
     cfg.set("FINVIZ_EXTENDED_HOURS", "0")
     quote = client.normalize_row(_row(), "post")
     assert quote["price"] == 1.41
+
+
+def test_after_hours_price_used_when_the_market_is_closed(cfg):
+    """From 20:00 ET through the next pre-market (and every weekend) the regular
+    Price/Change stay frozen at the last close. Reading the frozen close there is
+    what made a check at 22:00 or on Sunday show a stale price."""
+    client = _client(cfg)
+    quote = client.normalize_row(_row(), "closed")
+    assert abs(quote["price"] - 1.41 * 1.2752) < 1e-6
 
 
 def test_intraday_performance_is_exposed(cfg):

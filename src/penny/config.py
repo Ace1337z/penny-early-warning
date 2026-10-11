@@ -69,10 +69,24 @@ DEFAULTS: dict[str, str] = {
     # Intraday top-gainers screens (Elite). These surface a stock that is being
     # bought *right now*, before it reaches the daily top-gainers list. Only the
     # top_gainers/top_losers bases honour a timeframe suffix.
-    "FINVIZ_INTRADAY_SIGNALS": "top_gainers_1m,top_gainers_5m",
+    #
+    # Short timeframes first: 1m/3m/5m catch a jump as it happens. The 15m screen
+    # is deliberately *not* the default — by the time a name reaches it the stock
+    # has often already moved 20%+, which is the "alert arrives late" complaint.
+    "FINVIZ_INTRADAY_SIGNALS": "top_gainers_1m,top_gainers_3m,top_gainers_5m",
     "FINVIZ_EXTENDED_HOURS": "1",
     "FINVIZ_MOVERS_TTL": "15",
     "FINVIZ_QUOTE_BATCH": "40",
+    # --- TwelveData (fresh price / volume / candles) ---
+    # Finviz is the screener and the extended-hours source (it publishes After-Hours
+    # Close/Change). TwelveData is the *freshness* source: the free plan's 1-minute
+    # bars are regular-session only, so it wins on latest price/volume/candles and
+    # Finviz keeps the overnight print.
+    "TWELVEDATA_KEY": "",
+    "TWELVEDATA_BASE": "https://api.twelvedata.com",
+    "TWELVEDATA_MAX_PER_MIN": "8",
+    "TWELVEDATA_MAX_PER_DAY": "800",
+    "TWELVEDATA_MAX_BARS": "500",
     # --- Other sources ---
     "ALPACA_KEY": "",
     "ALPACA_SECRET": "",
@@ -133,11 +147,14 @@ DEFAULTS: dict[str, str] = {
     "WARMUP_CYCLES": "2",
     "WORKERS": "8",
     "RISK_USD": "50",
+    # Minimum reward:risk for a plan to be actionable. Below this the plan still
+    # renders but is marked no-trade, and the AI panel must not recommend ENTER.
+    "MIN_RR": "2.0",
     "BASELINE_FALLBACK": "300",
     "BASELINE_MIN_PER_MIN": "20",
     "FINVIZ_MAX_PER_MIN": "30",
     # --- Momentum-build watch feed (tier 1 before the alert bar) ---
-    "BUILD_FEED": "1",
+    "BUILD_FEED": "0",
     "BUILD_FEED_SECONDS": "900",
     "BUILD_TOP_N": "6",
     "BUILD_MIN_SCORE": "35",
@@ -163,6 +180,12 @@ DEFAULTS: dict[str, str] = {
     "TIER3_ACCEL": "1.0",
     "TIER3_FROM_HIGH": "-8",
     "TIER3_DOLLAR15": "25000",
+    # Pre-market gate: alert as soon as the move clears PREMARKET_PCT with the
+    # volume to back it, rather than waiting for the tier's 15-minute rise window
+    # to catch up (which historically meant the alert arrived at ~+20%).
+    "PREMARKET_PCT": "10",
+    "PREMARKET_VOLX15": "3",
+    "PREMARKET_DOLLAR15": "5000",
     # --- Score weights (6.5) ---
     "SCORE_W_RISE": "30",
     "SCORE_W_VOLX": "30",
@@ -189,7 +212,9 @@ GROUPS: dict[str, list[str]] = {
     "Finviz": ["FINVIZ_TOKEN", "FINVIZ_BASE", "FINVIZ_VIEW", "FINVIZ_FILTERS", "FINVIZ_COLUMNS",
                "FINVIZ_SIGNALS", "FINVIZ_INTRADAY_SIGNALS", "FINVIZ_EXTENDED_HOURS",
                "FINVIZ_MOVERS_TTL", "FINVIZ_QUOTE_BATCH"],
-    "Other sources": ["ALPACA_KEY", "ALPACA_SECRET", "ALPACA_FEED", "FINNHUB_KEY", "SEC_USER_AGENT"],
+    "Other sources": ["ALPACA_KEY", "ALPACA_SECRET", "ALPACA_FEED", "FINNHUB_KEY", "SEC_USER_AGENT",
+                      "TWELVEDATA_KEY", "TWELVEDATA_BASE", "TWELVEDATA_MAX_PER_MIN",
+                      "TWELVEDATA_MAX_PER_DAY", "TWELVEDATA_MAX_BARS"],
     "Telegram": ["TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"],
     "Shariah": ["HALALTERMINAL_API_KEY", "HALALTERMINAL_BASE_URL",
                 "SHARIAH_MODE", "SHARIAH_TTL_DAYS", "SHARIAH_MAX_CALLS_MONTH"],
@@ -202,7 +227,8 @@ GROUPS: dict[str, list[str]] = {
            "AI_DISCOVERY", "AI_MAX_MULTIPLIER", "AI_PREMIUM_MODELS", "PREMIUM_SAMPLE_RATE",
            "MODEL_HALVING_STAGES", "MARKET_SYMBOLS", "TOKEN_NOTIFY_DAILY", "TOKEN_LIMIT_DAILY"],
     "Behaviour": ["MAX_PRICE", "MIN_PRICE", "ALERT_MIN_TIER", "REALERT_SECONDS", "ALERT_EXTENDED",
-                  "EXTENDED_PCT", "WARMUP_CYCLES", "WORKERS", "RISK_USD", "BASELINE_FALLBACK",
+                  "EXTENDED_PCT", "WARMUP_CYCLES", "WORKERS", "RISK_USD", "MIN_RR", "BASELINE_FALLBACK",
+                  "PREMARKET_PCT", "PREMARKET_VOLX15", "PREMARKET_DOLLAR15",
                   "FINVIZ_MAX_PER_MIN", "RETENTION_DAYS"],
     "Build feed": ["BUILD_FEED", "BUILD_FEED_SECONDS", "BUILD_TOP_N", "BUILD_MIN_SCORE",
                    "BUILD_RISE15", "BUILD_VOLX15", "BUILD_DOLLAR15", "BUILD_MIN_MINUTES"],

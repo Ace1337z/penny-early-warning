@@ -43,6 +43,7 @@ class Engine:
 
     def __init__(self, cfg, db, journal, telegram, *, finviz=None,
                  alpaca=None, finnhub=None, sec=None, finra=None, yahoo=None,
+                 twelvedata=None,
                  gateway=None, catalog=None, shariah=None, backup=None, clock=None):
         self.cfg = cfg
         self.db = db
@@ -54,6 +55,7 @@ class Engine:
         self.sec = sec
         self.finra = finra
         self.yahoo = yahoo
+        self.twelvedata = twelvedata
         self.gateway = gateway
         self.catalog = catalog
         self.shariah = shariah
@@ -64,7 +66,7 @@ class Engine:
         self.market = MarketContextProvider(cfg, finviz=finviz, yahoo=yahoo)
         self.enricher = Enricher(cfg, finviz=finviz, alpaca=alpaca,
                                  finnhub=finnhub, sec=sec, finra=finra, yahoo=yahoo,
-                                 market=self.market)
+                                 twelvedata=twelvedata, market=self.market)
         self.runner = None
         if gateway is not None and catalog is not None:
             from .ai.runner import AIRunner
@@ -305,7 +307,9 @@ class Engine:
     # -- alert rules --------------------------------------------------------
     def _alert_candidate(self, m: Metrics, session: str) -> bool:
         min_tier = max(TIER_EARLY, self.cfg.int("ALERT_MIN_TIER", 2))
-        if m.tier < min_tier or not self.scorer.warm:
+        if not self.scorer.warm:
+            return False
+        if m.tier < min_tier and not self._premarket_breakout(m, session):
             return False
         st = self.scorer.state(m.symbol)
         if m.tier <= st.last_alert_tier:
@@ -328,6 +332,21 @@ class Engine:
                     (self.clock(), m.symbol, m.tier, reason, m.price, m.pct_vs_close))
                 return False
         return True
+
+    def _premarket_breakout(self, m: Metrics, session: str) -> bool:
+        """Pre-market: alert at +10% when volume backs it, instead of at +20%.
+
+        The rise windows are thin before 09:30, so a stock gapping at 04:00 often
+        never reached the 15-minute volume multiplier the tier needs, and the
+        first alert only fired once the move was already ~20%. Volume still has
+        to confirm: a headline percentage on no trade is a spread, not a setup.
+        """
+        if session != "pre" or m.pct_vs_close is None:
+            return False
+        if m.pct_vs_close * 100.0 < self.cfg.float("PREMARKET_PCT", 10):
+            return False
+        return (m.volx.get(15, 0.0) >= self.cfg.float("PREMARKET_VOLX15", 3)
+                and m.dollar_vol.get(15, 0.0) >= self.cfg.float("PREMARKET_DOLLAR15", 5000))
 
     def _possible_split_artifact(self, m: Metrics) -> bool:
         if m.pct_vs_close is None or m.pct_vs_close * 100 < SPLIT_ARTIFACT_PCT:
@@ -577,18 +596,20 @@ class Engine:
     def _maybe_build_feed(self, session: str, metrics: list[Metrics]) -> None:
         """Surface quiet accumulations the alert rules stay silent on.
 
-        A gainers screen only shows a stock after it has moved, and the alert bar
-        is tier 2. This keeps the tier-1 builds on the radar with a throttled,
-        low-noise digest of *new* names (so it does not repeat every cycle).
+        The build *list* is always refreshed so `/builds` stays live; only the
+        periodic Telegram notification is optional. It was on by default and read
+        as noise, so it is now off unless asked for.
         """
-        if not self.cfg.bool("BUILD_FEED", True) or session not in ("pre", "regular", "post"):
-            return
         try:
             builds = self.scorer.build_candidates(metrics)
         except Exception as exc:  # noqa: BLE001
             log.debug("build scan failed: %s", exc)
             return
         self._builds = builds
+        if not self.cfg.bool("BUILD_FEED", False):
+            return
+        if session not in ("pre", "regular", "post"):
+            return
         if not builds:
             # Forget the last set so a build that reappears is announced again.
             self._last_build_ids = set()

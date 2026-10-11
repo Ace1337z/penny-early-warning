@@ -89,9 +89,10 @@ def test_aggregate_urgency_is_a_majority_vote():
 def test_reaction_text_leads_with_the_ai_call():
     agg = aggregate([parse_forecast("m", _payload(urgency="now"))])
     text = reaction_text(agg)
+    assert text.split("\n")[1].startswith("PM:")
     assert "AI CALL: ENTER NOW" in text
     assert "confidence 0.55 (medium)" in text
-    assert "why now:" in text
+    assert "WHY:" in text
 
 
 def test_reaction_text_maps_down_direction_to_avoid():
@@ -109,5 +110,5 @@ def test_reaction_text_separates_call_from_detail():
     fc = parse_forecast("m", _payload(urgency="now", change_view="a reclaim"))
     lines = reaction_text(aggregate([fc])).split("\n")
     call = next(i for i, ln in enumerate(lines) if ln.startswith("AI CALL:"))
-    why = next(i for i, ln in enumerate(lines) if ln.startswith("why now:"))
+    why = next(i for i, ln in enumerate(lines) if ln.startswith("WHY:"))
     assert lines[call + 1] == "" or lines[why - 1] == ""

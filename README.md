@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-194%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-234%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -142,7 +142,7 @@ you can act on a symbol without typing anything.
                             v
         ALERT 1 (Telegram, instant, no AI)
                             v
-   parallel enrichment: Finviz verification - candles (Alpaca/Yahoo) - news -
+   parallel enrichment: Finviz verification - candles (TwelveData/Alpaca/Yahoo) - news -
    filings (SEC, Finviz) - short interest/volume - market context
                             v
             technicals + Fibonacci + trade plan
@@ -200,7 +200,9 @@ WXYZ   $1.14   +14.2% vs close  [building 74/100]
 Stages are `warming` -> `building` -> `accelerating` -> `coiled` (nearly at the
 alert bar). Tune it with `BUILD_FEED`, `BUILD_FEED_SECONDS`, `BUILD_TOP_N`,
 `BUILD_MIN_SCORE`, `BUILD_RISE15`, `BUILD_VOLX15`, `BUILD_DOLLAR15` and
-`BUILD_MIN_MINUTES`.
+`BUILD_MIN_MINUTES`. The periodic Telegram digest is **off by default**
+(`BUILD_FEED=0`) because a notification every 15 minutes reads as noise; the same
+list is always available on demand with `/builds`.
 
 The AI panel does not just answer once. Every candidate is forecast, and each forecast is
 **evaluated at its horizon** against what actually happened. The three models with the best
@@ -213,22 +215,40 @@ activated.
 
 - **Whole-universe watching** - market-mover screens (top gainers, new highs, unusual
   volume, overbought, oversold, most active, insider buying) plus the **intraday
-  top-gainers screens** (1m/5m), which surface a stock that is being bought *right now*,
+  top-gainers screens** (1m/3m/5m), which surface a stock that is being bought *right now*,
   plus a full sweep of sub-$10 US stocks, in all three sessions, so nothing depends on a
   single screener's ranking.
+- **One verdict, not a scoreboard** - every AI analysis ends in a portfolio-manager call:
+  `ENTER`, `WAIT` or `PASS`. **Directional bias is not tradeability**: a stock can be
+  unambiguously going up and still be unbuyable because it is already at the expected
+  peak, the volume has left, or the plan's reward:risk is below `MIN_RR` (default 2:1).
+  Those cases output `WAIT` or `PASS`, never a recommendation. A data-quality failure
+  (the quote and the verified price disagree) forces `PASS / DATA_CONFLICT`.
+- **Pre-market at the first sign of a move** - in the pre-market session the alert fires
+  as soon as the stock clears `PREMARKET_PCT` (default +10%) *with* the volume to back it,
+  instead of waiting for the 15-minute window that used to arrive at ~+20%.
+- **Prices that match the clock** - Finviz keeps `Price`/`Change` frozen at the regular
+  close after 16:00 ET, so the after-hours columns are used from 16:00 until the next
+  open (including the whole weekend), and `session_for()` knows a Saturday is `closed`.
+  TwelveData supplies the freshest single-symbol price, volume and 1-minute candles, so
+  the technicals, Fibonacci swing and trade plan are built from *now* rather than from
+  whatever candle set happened to be cached.
 - **On-demand checks for any symbol** - `/check SYM` fetches the symbol live (including
   after-hours) rather than reading the last cycle's cache, so it works for NVDA or AAPL
   just as well as for a sub-$10 name.
 - **Momentum-build watch feed** - the alert bar is a *confirmed* tier-2 move. Stocks that
   are clearly accumulating (rising volume, price above VWAP) but sit just below that bar
   are surfaced separately, with the exact tier-2 gate still missing, so quiet grinds are
-  not invisible until the burst.
+  not invisible until the burst. The periodic notification is off by default; `/builds`
+  shows the same list on demand.
 - **Two-stage alerts** - instant Alert 1, then a fact-rich Alert 2 enriched in parallel.
 - **AI panel with a leaderboard** - parallel model calls, shadow candidates, stored
   forecasts, horizon evaluation, automatic selection of the best three, and a cost
   multiplier so unknown models are never used before you confirm them.
 - **Catalyst research** - news, SEC filings, short interest/volume, float, insiders.
 - **Fibonacci entry plan** - retracements, extensions, stop, targets and position sizing.
+  A plan whose reward:risk is below `MIN_RR` still renders, but is marked `NO TRADE` and
+  cannot back an `ENTER`.
 - **Shariah screening** - halalterminal.com, cached, shown on every alert, with
   `tag` / `only_compliant` / `hide_noncompliant` / `off` modes.
 - **Self-learning journal** - log historical winners and losers, download their bars,
@@ -257,6 +277,7 @@ activated.
 | AI gateway base URL, key, model ids | recommended | reaction and price forecasts (any OpenAI-compatible endpoint) |
 | SEC contact (`Name email`) | recommended | SEC EDGAR requests |
 | halalterminal.com API key | optional | Shariah screening |
+| TwelveData | recommended | fresh single-symbol price, volume and 1-minute candles |
 | Alpaca / Finnhub | optional | candle fallback, extra news |
 | Backup passphrase + destination | optional | encrypted off-server backups |
 
@@ -370,7 +391,7 @@ time changes - most changes apply from the next cycle without a restart. See
 |---|---|
 | **Feed** | `DATA_PROVIDER` (Finviz), mover signals/filters, poll intervals, extra symbols |
 | **Finviz** | token, base URL, view (`152`, the custom view), filters, columns, mover + intraday signals, extended-hours preference |
-| **Other sources** | Alpaca, Finnhub, SEC contact |
+| **Other sources** | TwelveData (key, base URL, per-minute/per-day budgets), Alpaca, Finnhub, SEC contact |
 | **Telegram** | bot token and chat id |
 | **Shariah** | keys, `SHARIAH_MODE`, TTL, monthly call limit |
 | **Backup** | local dir, off-server destination, passphrase, schedule, retention |
@@ -480,7 +501,7 @@ fake Telegram, and asserts the documented acceptance results:
 - a model that does not beat the baselines is not activated
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **194 passed** (1 skipped).
+Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **234 passed** (1 skipped).
 
 ---
 
@@ -509,7 +530,7 @@ src/penny/
   runtime.py               builds every component from configuration
   engine.py                poll loop, alert rules, build feed, digests, tracking, end of day
   scoring.py               rolling state, Rise/Volx/Accel/VWAP, tiers, score, phase, builds
-  sources/                 finviz, alpaca, finnhub, sec, finra, yahoo
+   sources/                 finviz, twelvedata, alpaca, finnhub, sec, finra, yahoo
   ai/                      catalog, gateway, panel, evaluate, leaderboard, runner
   shariah.py               halalterminal.com, screening rules, modes, cache
   enrich.py                parallel enrichment, technicals, Fibonacci, plan
