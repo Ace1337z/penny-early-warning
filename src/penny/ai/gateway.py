@@ -103,6 +103,28 @@ class AIGateway:
         self.cfg = cfg
         self._secrets = list(secrets or [])
         self._base: Optional[str] = None  # resolved endpoint, cached after a success
+        self._base_identity: str = ""     # endpoint+key the cache was found with
+
+    @property
+    def identity(self) -> str:
+        """What the cached endpoint was resolved against.
+
+        `_base` is remembered after the first success so later calls skip discovery.
+        That cache is only valid for the endpoint and credential it was found with:
+        replacing AI_BASE_URL *or* AI_KEY must send the next call back through
+        discovery, otherwise the client keeps posting to an endpoint that answers
+        401 for the new key and the model looks dead. Keying on the base URL alone
+        misses a key-only replacement. The key is digested, not stored: this value
+        is held in memory and logged, and a secret must never appear in it.
+        """
+        import hashlib
+        key = self.key
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12] if key else ""
+        return f"{self._entered_base()}|{digest}"
+
+    def forget_endpoint(self) -> None:
+        """Drop the resolved endpoint so the next call re-discovers it."""
+        self._base = None
 
     def _entered_base(self) -> str:
         raw = str(self.cfg.raw("AI_BASE_URL") or "").strip().rstrip("/")
@@ -113,6 +135,9 @@ class AIGateway:
 
     def bases(self) -> list[str]:
         """Plausible gateway roots, in the order they should be tried."""
+        if self._base_identity and self._base_identity != self.identity:
+            self._base = None       # the credential or host changed: re-discover
+            self._base_identity = ""
         if self._base:
             return [self._base]
         raw = self._entered_base()
@@ -198,6 +223,7 @@ class AIGateway:
                     ids.append(str(item["id"]))
             if ids:
                 self._base = base
+                self._base_identity = self.identity
                 return ids
             last_error = f"ai: model list at {url} was empty"
         raise RuntimeError(last_error)
@@ -319,6 +345,7 @@ class AIGateway:
                     marker = "/chat/completions"
                     if endpoint.endswith(marker):
                         self._base = endpoint[: -len(marker)]
+                        self._base_identity = self.identity
                     return ChatResult(model=model, text=text, tokens=tokens,
                                       latency_ms=latency, ok=True)
         return ChatResult(model=model, ok=False, error=last_error)

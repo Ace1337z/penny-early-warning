@@ -712,6 +712,7 @@ class CommandHandler:
             self._reply(f"Could not save {code(key)}: {h(exc)}")
             return
         self._sync_ai_panel(key)
+        note = self._apply_credential_change(key)
         try:
             from .logging_setup import update_secrets
             update_secrets(self.cfg.secrets())
@@ -730,6 +731,39 @@ class CommandHandler:
         if key in RESTART_KEYS:
             self._reply(f"\u26A0\uFE0F {code(key)} takes effect after the next restart "
                         f"(<code>sudo systemctl restart penny</code>).")
+        if note:
+            self._reply(note)
+
+    def _apply_credential_change(self, key: str) -> str:
+        """Rebind cached state after a credential is replaced, in place.
+
+        Saving a new key is not enough on its own. The AI gateway remembers which
+        endpoint answered and the runner remembers which model ids that endpoint
+        served, while the Shariah cache is keyed only by symbol. Each of those
+        caches was built with the *old* key, so a replaced key produced a system
+        that looked configured but never called the new credential -- it needed a
+        restart to recover. Returns a short note for the user, or "".
+        """
+        if key in ("AI_KEY", "AI_BASE_URL") and self.runner is not None:
+            try:
+                panel = self.runner.reset_after_credential_change()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not rebind the AI panel after %s: %s", key, exc)
+                return ""
+            if not panel:
+                return ("\u26A0\uFE0F AI panel reset, but the provider listed no models. "
+                        "Send <code>/set AI_MODELS id1,id2</code>.")
+            shown = ", ".join(panel[:4])
+            more = f" (+{len(panel) - 4} more)" if len(panel) > 4 else ""
+            return f"\u2705 AI panel reloaded: <code>{h(shown)}</code>{h(more)}"
+        if key == "HALALTERMINAL_API_KEY" and self.shariah is not None:
+            try:
+                cleared = self.shariah.reset_after_credential_change()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not clear the compliance cache: %s", exc)
+                return ""
+            return f"\u2705 Compliance cache cleared ({cleared} row(s)); re-screening on next check."
+        return ""
 
     def _sync_ai_panel(self, key: str) -> None:
         """Keep the stored panel in step with an edited model list.

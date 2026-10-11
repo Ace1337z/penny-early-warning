@@ -234,6 +234,23 @@ class ShariahService:
         self._notified_month = ""
         self._calls: dict[str, int] = {}
 
+    def reset_after_credential_change(self) -> int:
+        """Drop cached screening results after the API key was replaced.
+
+        The compliance table is keyed only by symbol and source, so results
+        fetched with the previous key stayed "fresh" for `SHARIAH_TTL_DAYS`
+        (7 by default) and the new key was never actually consulted. Returns the
+        number of rows cleared.
+        """
+        try:
+            cur = self.db.execute("DELETE FROM compliance")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not clear the compliance cache: %s", exc)
+            return 0
+        self._calls.clear()
+        self._notified_month = ""
+        return cur.rowcount if cur is not None else 0
+
     @property
     def mode(self) -> str:
         return str(self.cfg.raw("SHARIAH_MODE") or "tag").strip().lower()
@@ -320,6 +337,13 @@ class ShariahService:
                 # A source outage uses the stale cached result, marked with its date.
                 entry.stale = True
                 results.append(entry)
+                continue
+            if result.status == ERROR:
+                # A failed call is never stored as an answer. Caching it meant a
+                # wrong (or expired) API key produced one ERROR row that was then
+                # served as "fresh" for the whole TTL, so fixing the key appeared
+                # to do nothing until the cache expired days later.
+                results.append(result)
                 continue
             self._store(symbol, result)
             results.append(result)

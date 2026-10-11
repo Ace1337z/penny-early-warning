@@ -53,7 +53,19 @@ class AIRunner:
 
     # -- provider identity --------------------------------------------------
     def provider_id(self) -> str:
-        return str(self.cfg.raw("AI_BASE_URL") or "").strip().rstrip("/").lower()
+        """Identify the *provider*, meaning the endpoint *and* the credential.
+
+        Keying on the URL alone looked correct but was not: replacing only AI_KEY
+        -- the common case, e.g. swapping in a new token for the same gateway --
+        left the panel holding the previous key's model ids, every call failed
+        with "model not found", and the panel stayed dead until a restart. A cheap
+        digest keeps the key out of the stored value.
+        """
+        import hashlib
+        base = str(self.cfg.raw("AI_BASE_URL") or "").strip().rstrip("/").lower()
+        key = str(self.cfg.raw("AI_KEY") or "")
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12] if key else ""
+        return f"{base}|{digest}"
 
     def sync_provider(self) -> bool:
         """Reset the panel when AI_BASE_URL points somewhere new.
@@ -95,6 +107,29 @@ class AIRunner:
                     + ", ".join(adopted))
         return True
 
+    def reset_after_credential_change(self) -> list[str]:
+        """Force a rebind after AI_KEY / AI_BASE_URL was edited.
+
+        `/set` calls this directly so the fix lands the moment the key is saved,
+        rather than waiting for the next analysis to notice. Returns the panel now
+        in force, which may be empty when the provider exposes no model list.
+        """
+        if hasattr(self.gateway, "forget_endpoint"):
+            self.gateway.forget_endpoint()
+        self.db.kv_set("ai_provider", self.provider_id())
+        self.db.kv_set("ai_repair_for", "")
+        self.cache.clear()
+        panel = list(self.cfg.list("AI_MODELS"))
+        self.db.kv_set("active_panel", panel)
+        self.db.kv_set("active_panel_source", panel)
+        self.db.kv_set("candidates", [])
+        try:
+            listed = self.gateway.list_models(timeout=10.0)
+        except Exception as exc:  # noqa: BLE001
+            log.info("ai: no model list after a key change: %s", exc)
+            return panel
+        adopted = self._adopt_panel(listed)
+        return adopted or panel
     def _missing_models(self, forecasts: list[ModelForecast]) -> bool:
         errors = [f.error for f in forecasts if not f.valid and f.error]
         return bool(errors) and all(_MODEL_MISSING.search(e) for e in errors)

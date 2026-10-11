@@ -452,3 +452,24 @@ free tiers are respected by construction: TwelveData is never pointed at the
 `self._builds`, so simply defaulting the notification off would have silently
 broken `/builds`. The scan now always runs and populates the list; only the send
 is gated, and `BUILD_FEED` defaults to `0`.
+
+## C30. A replaced API key was saved but never used
+
+Three caches were built with the *old* credential and survived its replacement,
+so swapping a key looked like a no-op until a restart. Each needed a different
+fix:
+
+- `AIGateway._base` remembered which endpoint answered. Keyed on `AI_BASE_URL`
+  alone, so replacing only `AI_KEY` re-posted to that endpoint with a credential
+  the provider answers 401 for. It is now keyed on a digest of base *and* key, and
+  `/set AI_KEY` calls `forget_endpoint()` so the next call re-discovers.
+- `AIRunner.provider_id()` had the same gap, leaving `active_panel` holding the
+  old provider's model ids and every call failing as "model not found". It now
+  includes a key digest, and `reset_after_credential_change()` rebinds the panel,
+  clears the analysis cache, and prefers the new provider's `/models` list.
+- `ShariahService` stored an `ERROR` row for a failed lookup and then served it
+  as a fresh result for the whole `SHARIAH_TTL_DAYS` (7 by default). One bad key
+  poisoned the cache until it expired. Failures are no longer stored, and
+  `/set HALALTERMINAL_API_KEY` clears the table outright.
+
+The key is digested, never embedded: `identity` and `provider_id()` are logged.
