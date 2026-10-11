@@ -19,6 +19,8 @@ Three ideas do the work:
 
 from __future__ import annotations
 
+from typing import Optional
+
 from .panel import AggregateForecast
 
 VERDICT_ENTER = "ENTER"
@@ -69,6 +71,36 @@ def plan_conflict(facts: dict, min_rr: float) -> str:
     return "plan reward:risk %s is below the %g:1 minimum" % (shown, min_rr)
 
 
+def _burst_window(facts: dict) -> int:
+    """The shortest window in which the judged move actually happened."""
+    if (facts.get("rise3") or 0.0) >= 1.0:
+        return 3
+    if (facts.get("rise5") or 0.0) >= 1.0:
+        return 5
+    return 15
+
+
+def _burst_volx(facts: dict) -> Optional[float]:
+    """The volume multiple that matches the move being judged.
+
+    Prefer the shortest window in which the move actually happened. Falling back
+    to volx15 is right for a 15-minute setup and wrong for a 3-minute one, where
+    volx15 is still near zero simply because the burst is young.
+    """
+    rise3 = facts.get("rise3")
+    if isinstance(rise3, (int, float)) and rise3 >= 1.0:
+        v = facts.get("volx3")
+        if isinstance(v, (int, float)):
+            return v
+    rise5 = facts.get("rise5")
+    if isinstance(rise5, (int, float)) and rise5 >= 1.0:
+        v = facts.get("volx5")
+        if isinstance(v, (int, float)):
+            return v
+    v = facts.get("volx15")
+    return v if isinstance(v, (int, float)) else None
+
+
 def _soft_verdict(agg: AggregateForecast, facts: dict) -> tuple[str, str]:
     """Blend the signals that can only push the panel's call down, never up."""
     price = facts.get("price")
@@ -79,10 +111,13 @@ def _soft_verdict(agg: AggregateForecast, facts: dict) -> tuple[str, str]:
             extents.append((price / peak - 1.0,
                             "price %g is already at or past the expected peak %g"
                             % (price, peak)))
-        volx = facts.get("volx15")
+        # The burst's own window, not just 15m. A 3-5 minute burst that alerted on
+        # FAST_VOLX3 has barely started filling its 15-minute volume window, so
+        # judging it on volx15 alone reads real flow as "nothing behind the move".
+        volx = _burst_volx(facts)
         if isinstance(volx, (int, float)) and volx < 1.0:
-            extents.append((volx, "volume is only %.2fx the 15-minute average -- "
-                                  "nothing behind the move" % volx))
+            extents.append((volx, "volume is only %.2fx the %d-minute average -- "
+                                  "nothing behind the move" % (volx, _burst_window(facts))))
         fh = facts.get("from_high")
         if isinstance(fh, (int, float)) and fh <= -15.0:
             # A positive extent is a reason NOT to enter. A stock deep under its

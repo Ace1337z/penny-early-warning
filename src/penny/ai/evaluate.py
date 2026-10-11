@@ -45,10 +45,13 @@ def predicted_direction(predicted: float, price0: float) -> str:
 
 
 def baseline_prices(price0: float, rise15: float, low4h: Optional[float],
-                    horizon_minutes: float) -> dict[str, float]:
+                    horizon_minutes: float, burst_window: int = 15) -> dict[str, float]:
     """The three naive predictors scored alongside the models (6.11)."""
     unchanged = price0
-    momentum = price0 * (1.0 + rise15 * (horizon_minutes / 15.0))
+    # Project from the window the move actually happened in. A stock that just
+    # printed its whole move in 3 minutes has not filled a 15-minute rate, so
+    # extrapolating rise15 would project roughly nothing for the next 15.
+    momentum = price0 * (1.0 + rise15 * (horizon_minutes / float(burst_window or 15)))
     if low4h and low4h > 0 and low4h < price0:
         giveback = low4h + 0.5 * (price0 - low4h)
     else:
@@ -63,7 +66,8 @@ def baseline_prices(price0: float, rise15: float, low4h: Optional[float],
 def store_predictions(db, *, alert_id: int, symbol: str, ts: float, session: str,
                       price0: float, forecasts: list[ModelForecast],
                       aggregate: AggregateForecast, active_models: set[str],
-                      rise15: float = 0.0, low4h: Optional[float] = None) -> int:
+                      rise15: float = 0.0, low4h: Optional[float] = None,
+                      burst_window: int = 15) -> int:
     """Store every model's forecast (active and shadow) plus the three baselines."""
     rows = []
     horizon_minutes = {"15m": 15.0, "60m": 60.0}
@@ -98,7 +102,7 @@ def store_predictions(db, *, alert_id: int, symbol: str, ts: float, session: str
                 continue
             minutes = 15.0 if horizon == "15m" else (60.0 if horizon == "60m" else
                                                      max(15.0, (due - ts) / 60.0))
-            prices = baseline_prices(price0, rise15, low4h, minutes)
+            prices = baseline_prices(price0, rise15, low4h, minutes, burst_window)
             add(model_id, horizon, due, prices[name], None, None, False)
 
     if rows:

@@ -1,10 +1,10 @@
-﻿# Penny Stock Early-Warning System
+# Penny Stock Early-Warning System
 
 **Catches sub-$10 US stocks while a move is still *building*, not after it has already run.**
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-256%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-281%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -227,6 +227,21 @@ activated.
 - **Pre-market at the first sign of a move** - in the pre-market session the alert fires
   as soon as the stock clears `PREMARKET_PCT` (default +10%) *with* the volume to back it,
   instead of waiting for the 15-minute window that used to arrive at ~+20%.
+- **Alerts on a 3-5 minute burst, not a 15-minute one** - the tier gates measure a
+  15-minute rise and a 60-minute move and demand 10x normal 15-minute volume, so Alert 1
+  and Alert 2 could not go out until the burst was over - by which time the reader was
+  looking at the give-back. A fast lane reads the **3-minute or 5-minute** window
+  instead (`FAST_RISE3` / `FAST_RISE5`, either one qualifying is enough, with volume
+  checked on whichever window triggered). Replayed against a stock that was flat for
+  16 minutes then printed +3% in three minutes on heavy volume, the fast lane alerts at
+  **t+18m** and the tier gates **never fire at all**. The 60-minute requirement is
+  deliberately absent: a stock that was flat all day and suddenly runs is exactly the
+  penny mover worth catching. Guards keep it honest - the volume multiple and dollar
+  volume must confirm (a percentage on no trade is a spread), the move must not already
+   be spent (`FAST_MAX_FROM_HIGH`), and there is a cumulative volume floor
+   (`FAST_MIN_VOLUME`). A fast alert is tagged `[FAST]`, carries a `WHY NOW` block in
+   Alert 2, and is never described as "below the alert bar". Set `FAST_ON=0` to turn the
+   whole lane off and restore the old 15/60-minute behaviour.
 - **Prices that match the clock** - Finviz keeps `Price`/`Change` frozen at the regular
   close after 16:00 ET, so the after-hours columns are used from 16:00 until the next
   open (including the whole weekend), and `session_for()` knows a Saturday is `closed`.
@@ -501,7 +516,7 @@ fake Telegram, and asserts the documented acceptance results:
 - a model that does not beat the baselines is not activated
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **256 passed** (1 skipped).
+Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **281 passed** (1 skipped).
 
 ---
 

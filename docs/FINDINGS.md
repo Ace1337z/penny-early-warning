@@ -473,3 +473,39 @@ fix:
   `/set HALALTERMINAL_API_KEY` clears the table outright.
 
 The key is digested, never embedded: `identity` and `provider_id()` are logged.
+
+## C31. Every alert was late because every gate measured a 15 or 60 minute window
+
+`tier_for` reads `rise15`, `volx15` and `rise60`, and tier 2 additionally demands 10x
+normal 15-minute volume. A 3-minute burst therefore cannot reach an alert tier until
+minutes after it has already given the move back -- the alert was a description of
+something that had finished. The same 15-minute window was the only volume figure
+supplied to the AI panel, so the panel judged a fresh burst as "nothing behind the
+move" and returned WAIT on the alert that had just fired.
+
+Replaying a realistic burst (16 minutes flat, then +3.0% in three minutes on
+600k shares per minute, 60s polls) measured the gap directly:
+
+    FAST lane (3m/5m)     : t+18m
+    tier gates (15m/60m)  : never
+
+The tier gates never fired at all, so this was not a threshold to loosen but a
+window that had to be added. `WINDOWS` gained 3 minutes, and `Engine._fast_burst()`
+reads the 3- or 5-minute window -- either one, since a stock up 4% in five minutes
+has not necessarily moved 2% in the last three -- with volume judged on whichever
+window actually triggered.
+
+Three things that looked like extra work turned out to be part of the same bug:
+
+- The first draft required *both* `FAST_RISE3` and `FAST_RISE5`, and measured
+  volume on both windows. That fails a 5-minute-only builder on its empty
+  3-minute volume: the same error the tiers already made at 15 minutes.
+- A `FAST_RISE60` guard was added to keep "a 3-minute pop on a dead tape" out. It
+  rejected the exact case worth catching -- a stock flat all day that suddenly
+  runs -- which is the penny mover this tool exists for. Removed, not loosened.
+- `baseline_prices()` extrapolated `rise15` for the naive scoreboard, so a fast
+  alert was graded against a window it never used. It now projects from the
+  window the move actually happened in.
+
+The fast lane can only *add* alerts; the tier path is untouched, so a mis-set
+`FAST_*` threshold costs extra messages, never a missed one.

@@ -79,6 +79,10 @@ def _setup_reason(m: Metrics) -> str:
     """Why this symbol did or did not reach an alert tier."""
     if m.tier != TIER_NONE:
         return ""
+    if m.rise.get(3, 0.0) and m.rise.get(3, 0.0) >= 0.02:
+        # A 3-minute burst does not reach a 15-minute tier. Saying only "under
+        # +3%" would describe a gate it never aimed at.
+        return ""
     rise15 = (m.rise.get(15, 0.0) or 0.0) * 100
     volx15 = m.volx.get(15, 0.0) or 0.0
     dv15 = m.dollar_vol.get(15, 0.0) or 0.0
@@ -95,7 +99,18 @@ def _setup_reason(m: Metrics) -> str:
     return "; ".join(fails) if fails else "below every alert threshold"
 
 
-def verdict_text(m: Metrics, enr: Enrichment, agg=None) -> str:
+def _fast_reason(m: Metrics) -> str:
+    """Why the fast lane fired: the short-window numbers that triggered it."""
+    dv3 = m.dollar_vol.get(3, 0.0) or 0.0
+    bits = [f"{_pct(m.rise.get(3, 0))} in 3m",
+            f"{_pct(m.rise.get(5, 0))} in 5m",
+            f"vol {num(m.volx.get(3, 0), 1)}x in 3m"]
+    if dv3:
+        bits.append(f"${compact(dv3)} traded")
+    return " | ".join(bits)
+
+
+def verdict_text(m: Metrics, enr: Enrichment, agg=None, fast: bool = False) -> str:
     """One fast-read action line: ENTER / EARLY / WAIT / AVOID, with levels."""
     direction = str(getattr(agg, "direction", "") or "")
     confidence = getattr(agg, "confidence", 0.0) or 0.0
@@ -113,6 +128,11 @@ def verdict_text(m: Metrics, enr: Enrichment, agg=None) -> str:
         action, note = "EARLY", "early build - size small, confirm with volume"
     elif m.tier == TIER_WATCH:
         action, note = "WATCH", "watch for the volume that confirms the move"
+    elif fast:
+        # The tier gates are still empty -- a 3-5 minute burst has not filled a
+        # 15-minute volume window yet -- but the move is happening now. Calling
+        # that WAIT would tell the reader to sit out the only part that matters.
+        action, note = "EARLY", "live 3-5m burst on volume - size small, the 15m gate is still filling"
     else:
         action, note = "WAIT", "below the alert bar (see SETUP above)"
 
@@ -129,7 +149,9 @@ def verdict_text(m: Metrics, enr: Enrichment, agg=None) -> str:
 
 def _pulse(m: Metrics) -> str:
     """The one-line numeric strip: move, volume multiple, VWAP side."""
-    parts = [f"{_pct(m.rise.get(15, 0))} 15m",
+    parts = [f"{_pct(m.rise.get(3, 0))} 3m",
+             f"{_pct(m.rise.get(5, 0))} 5m",
+             f"{_pct(m.rise.get(15, 0))} 15m",
              f"{_pct(m.rise.get(60, 0))} 60m",
              f"vol {num(m.volx.get(15, 0), 1)}x"]
     dv = m.dollar_vol.get(15)
@@ -177,15 +199,29 @@ def _ai_lines(text: str) -> list[str]:
 
 def format_alert1(m: Metrics, *, shariah_line: str = "Shariah: checking...",
                   pct_rank: Optional[int] = None, resumed: bool = False,
-                  html: bool = False) -> str:
+                  fast: bool = False, html: bool = False) -> str:
     """Instant Alert 1: no AI, no enrichment (6.12)."""
     msg = _Msg(html)
     head = f"{tier_name(m.tier)}  {m.symbol}  {money(m.price)}{phase_tag(m)}"
     if resumed:
         head += "  RESUMED FROM HALT"
+    elif fast:
+        # A fast-lane alert fires below every tier. Headlining it "NONE" is
+        # self-contradictory -- the reader just received an alert saying the
+        # stock is none of the alert tiers.
+        head = f"FAST  {m.symbol}  {money(m.price)}{phase_tag(m)}"
     msg.line(("b", f"ALERT: {head}"))
-    msg.line(("b", _pct(m.pct_vs_close)), " vs close | ",
-             _pct(m.rise.get(15, 0)), " 15m | ", _pct(m.rise.get(60, 0)), " 60m")
+    if fast:
+        # This fired on the 3-5 minute lane, so the 3m and 5m moves are the ones
+        # that matter and lead. The wider windows still follow: a reader deciding
+        # on this needs the 60m context too, just not before the trigger.
+        msg.line(("b", _pct(m.pct_vs_close)), " vs close | ",
+                 _pct(m.rise.get(3, 0)), " 3m | ", _pct(m.rise.get(5, 0)), " 5m | ",
+                 _pct(m.rise.get(15, 0)), " 15m | ", _pct(m.rise.get(60, 0)), " 60m",
+                 "   [FAST]")
+    else:
+        msg.line(("b", _pct(m.pct_vs_close)), " vs close | ",
+                 _pct(m.rise.get(15, 0)), " 15m | ", _pct(m.rise.get(60, 0)), " 60m")
     vol = f"vol {num(m.volx.get(15, 0), 1)}x normal | day {compact(m.cum_volume)}"
     vol += " | above VWAP" if m.vwap and m.price > m.vwap else " | below VWAP"
     msg.line(vol)
@@ -205,13 +241,16 @@ def format_alert2(m: Metrics, enr: Enrichment, market, *,
                   price_forecast: str = "",
                   verdict: str = "",
                   agg=None,
+                  fast: bool = False,
                   ai_running: bool = True,
                   validated: bool = True,
                   risk_usd: float = 50.0,
                   html: bool = False) -> str:
     """Alert 2: why it moved and what to do first, then the evidence. Max 3,900."""
     msg = _Msg(html)
-    verdict = verdict or verdict_text(m, enr, agg)
+    # `fast` has to reach the fallback verdict too, or a fast alert renders
+    # "WAIT - below the alert bar" directly under its own WHY NOW block.
+    verdict = verdict or verdict_text(m, enr, agg, fast=fast)
     pv = m.pct_vs_close * 100 if m.pct_vs_close is not None else None
 
     # -- headline -----------------------------------------------------------
@@ -219,13 +258,24 @@ def format_alert2(m: Metrics, enr: Enrichment, market, *,
                    f"{_pct(m.pct_vs_close)} vs close{phase_tag(m)}"))
     msg.line(_pulse(m))
     msg.line("momentum ", ("b", f"{m.score:.0f}"), " ", bar((m.score or 0) / 100.0))
-    setup = f"SETUP: {tier_name(m.tier)}"
+    # "NONE" is the tier name for tier 0. Leading a fast alert with it reads as
+    # "no setup" when the whole point is that there very much is one.
+    setup = "SETUP: FAST" if fast else f"SETUP: {tier_name(m.tier)}"
     reason = _setup_reason(m)
-    if reason:
+    if fast:
+        setup += " - live 3-5m burst, the 15m/60m tier gates have not filled yet"
+    elif reason:
         setup += f" - below the alert bar ({reason})"
     elif m.tier >= TIER_EARLY:
         setup += " - qualifies for alerts"
     msg.line(("b", "SETUP: "), setup.split("SETUP: ", 1)[1])
+    if fast:
+        # Spell the trigger out: the numbers that fired the fast lane are not
+        # visible anywhere else on the alert.
+        msg.blank()
+        msg.line(divider("WHY NOW"))
+        msg.line("3-5 minute burst - fired early, ahead of the 15m/60m gates")
+        msg.line(_fast_reason(m))
 
     # -- the decision -------------------------------------------------------
     if verdict:
@@ -405,8 +455,12 @@ def build_ai_facts(m: Metrics, enr: Enrichment, market, *, session: str,        
         "session": session,
         "price": round(m.price, 5),
         "pct_vs_close": round(m.pct_vs_close * 100, 2) if m.pct_vs_close is not None else None,
+        "rise3": round(m.rise.get(3, 0) * 100, 2),
+        "rise5": round(m.rise.get(5, 0) * 100, 2),
         "rise15": round(m.rise.get(15, 0) * 100, 2),
         "rise60": round(m.rise.get(60, 0) * 100, 2),
+        "volx3": round(m.volx.get(3, 0), 2),
+        "volx5": round(m.volx.get(5, 0), 2),
         "volx15": round(m.volx.get(15, 0), 2),
         "accel": round(m.accel, 2),
         "above_vwap": bool(m.vwap and m.price > m.vwap),

@@ -566,7 +566,7 @@ class CommandHandler:
             text = format_alert2(m, enr, market, shariah_lines=shariah_lines,
                                  reaction=reaction, price_forecast=price_fc, agg=agg,
                                  ai_running=False, validated=validated, risk_usd=risk_usd,
-                                 html=True)
+                                 fast=self.engine.fast_burst(m, session), html=True)
             self._reply(text, markup=self._check_menu(symbol), html=True)
         except Exception as exc:  # noqa: BLE001
             log.exception("check failed for %s: %s", symbol, exc)

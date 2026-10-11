@@ -216,8 +216,9 @@ class Engine:
         self._last_metrics = metrics_list
 
         for m in ranked["by_score"]:
-            if self._alert_candidate(m, session):
-                self._fire_alert(m, session, pct_rank)
+            fast = self._fast_burst(m, session)
+            if self._alert_candidate(m, session, fast=fast):
+                self._fire_alert(m, session, pct_rank, fast=fast)
                 stats["alerts"] += 1
 
         self._track_watchlist(metrics_list, session)
@@ -305,11 +306,14 @@ class Engine:
         return out
 
     # -- alert rules --------------------------------------------------------
-    def _alert_candidate(self, m: Metrics, session: str) -> bool:
+    def _alert_candidate(self, m: Metrics, session: str,
+                         fast: Optional[bool] = None) -> bool:
+        if fast is None:
+            fast = self._fast_burst(m, session)
         min_tier = max(TIER_EARLY, self.cfg.int("ALERT_MIN_TIER", 2))
         if not self.scorer.warm:
             return False
-        if m.tier < min_tier and not self._premarket_breakout(m, session):
+        if m.tier < min_tier and not fast and not self._premarket_breakout(m, session):
             return False
         st = self.scorer.state(m.symbol)
         if m.tier <= st.last_alert_tier:
@@ -347,6 +351,75 @@ class Engine:
             return False
         return (m.volx.get(15, 0.0) >= self.cfg.float("PREMARKET_VOLX15", 3)
                 and m.dollar_vol.get(15, 0.0) >= self.cfg.float("PREMARKET_DOLLAR15", 5000))
+    def _fast_burst(self, m: Metrics, session: str) -> bool:
+        """Alert on a 3-5 minute burst instead of waiting for the 15/60-minute gates.
+
+        `tier_for` measures a 15-minute rise and a 60-minute move, and tier 2 also
+        demands 10x normal 15-minute volume. Every one of those windows has to fill
+        before the tier is reached, which is exactly the definition of late: the
+        burst is over and the alert arrives on the give-back. This lane reads the
+        same raw samples over 3 and 5 minutes, so the alert lands while the move
+        is still happening.
+
+        Three guards keep it honest. The move must be real flow and not a spread
+        on no trade, so the volume multiple and dollar volume both have to
+        confirm. It must not already be spent, so a stock parked below its high
+        after an earlier run does not re-alert. And it must be liquid enough to
+        get into, so there is a floor on cumulative volume.
+
+        There is deliberately no 15 or 60 minute requirement. Those are the
+        windows that made the old alerts late, and a stock flat all day that
+        suddenly prints 3% in three minutes is exactly the case worth catching --
+        it is the penny mover this tool exists for.
+
+        This can only *add* alerts; the tier path is untouched, so a mis-set
+        FAST_* threshold costs extra messages, never a missed one.
+        """
+        if not self.cfg.bool("FAST_ON", True):
+            return False
+        rise3 = self.cfg.float("FAST_RISE3", 2) / 100.0
+        rise5 = self.cfg.float("FAST_RISE5", 3) / 100.0
+        if rise3 <= 0 and rise5 <= 0:
+            return False                       # both windows off: the fast lane is off
+        if m.pct_vs_close is None or m.pct_vs_close <= 0:
+            return False
+        # 3m OR 5m, not both. A stock up 4% in five minutes has not necessarily
+        # moved 2% in the last three -- it printed most of that run two minutes
+        # ago and is holding. Requiring both would drop exactly the slower
+        # builders this lane exists to catch.
+        r3 = m.rise.get(3, 0.0) or 0.0
+        r5 = m.rise.get(5, 0.0) or 0.0
+        hot3 = rise3 > 0 and r3 >= rise3
+        hot5 = rise5 > 0 and r5 >= rise5
+        if not (hot3 or hot5):
+            return False
+
+        # Volume is judged on the window that actually triggered. Checking both
+        # would fail a 5-minute-only builder on its empty 3-minute volume, which
+        # is the same mistake the tiers already made at 15 minutes.
+        if hot3:
+            if m.volx.get(3, 0.0) < self.cfg.float("FAST_VOLX3", 5):
+                return False
+            if m.dollar_vol.get(3, 0.0) < self.cfg.float("FAST_DOLLAR3", 3000):
+                return False
+        else:
+            if m.volx.get(5, 0.0) < self.cfg.float("FAST_VOLX5", 5):
+                return False
+        # A burst that has already given the move back is not a fresh entry.
+        from_high = self.cfg.float("FAST_MAX_FROM_HIGH", -6) / 100.0
+        if from_high < 0 and m.from_high is not None and m.from_high < from_high:
+            return False
+        min_vol = self.cfg.float("FAST_MIN_VOLUME", 50000)
+        if min_vol > 0 and (m.cum_volume or 0.0) < min_vol:
+            return False
+        # Same reasoning as the tiers: a move under VWAP is a bounce, not a build.
+        if m.vwap is not None and m.price <= m.vwap:
+            return False
+        return True
+
+    def fast_burst(self, m: Metrics, session: str) -> bool:
+        """`_fast_burst` for callers outside the engine (e.g. `/check`)."""
+        return self._fast_burst(m, session)
 
     def _possible_split_artifact(self, m: Metrics) -> bool:
         if m.pct_vs_close is None or m.pct_vs_close * 100 < SPLIT_ARTIFACT_PCT:
@@ -367,7 +440,8 @@ class Engine:
         self._split_cache[m.symbol] = result
         return result
 
-    def _fire_alert(self, m: Metrics, session: str, pct_rank: dict) -> None:
+    def _fire_alert(self, m: Metrics, session: str, pct_rank: dict,
+                    fast: bool = False) -> None:
         st = self.scorer.state(m.symbol)
         rank = pct_rank.get(m.symbol)
         resumed = st.halt_resume_pending
@@ -379,7 +453,7 @@ class Engine:
             shariah_line = self.shariah.one_line(shariah_status)
 
         text1 = format_alert1(m, shariah_line=shariah_line, pct_rank=rank, resumed=resumed,
-                              html=True)
+                              fast=fast, html=True)
         msg_id = None
         try:
             msg_id = self.telegram.send(text1, markup=alert_menu(m.symbol), html=True)
@@ -394,7 +468,7 @@ class Engine:
         log.info("ALERT %s tier %d score %.1f", m.symbol, m.tier, m.score)
 
         threading.Thread(target=self._alert_detail_worker,
-                         args=(m, alert_id, msg_id, session, rank, shariah_status),
+                         args=(m, alert_id, msg_id, session, rank, shariah_status, fast),
                          daemon=True, name=f"detail-{m.symbol}").start()
 
     def _save_alert(self, m: Metrics, msg_id: Optional[int], shariah_status) -> int:
@@ -409,13 +483,14 @@ class Engine:
 
     # -- detail + AI --------------------------------------------------------
     def _alert_detail_worker(self, m: Metrics, alert_id: int, msg_id, session: str,
-                             rank, shariah_status) -> None:
+                             rank, shariah_status, fast: bool = False) -> None:
         try:
-            self._send_detail(m, alert_id, msg_id, session, rank)
+            self._send_detail(m, alert_id, msg_id, session, rank, fast=fast)
         except Exception as exc:  # noqa: BLE001
             log.exception("detail worker failed for %s: %s", m.symbol, exc)
 
-    def _send_detail(self, m: Metrics, alert_id: int, msg_id, session: str, rank) -> None:
+    def _send_detail(self, m: Metrics, alert_id: int, msg_id, session: str, rank,
+                     fast: bool = False) -> None:
         enr = self.enricher.enrich(m.symbol, self._quote_for(m), m)
         market = self.market.get()
 
@@ -425,7 +500,7 @@ class Engine:
             try:
                 self.telegram.edit(msg_id, format_alert1(
                     m, shariah_line=self.shariah.one_line(shariah), pct_rank=rank,
-                    html=True), markup=alert_menu(m.symbol), html=True)
+                    fast=fast, html=True), markup=alert_menu(m.symbol), html=True)
             except Exception:  # noqa: BLE001
                 pass
         if alert_id and shariah.get("combined"):
@@ -438,7 +513,8 @@ class Engine:
         try:
             detail_id = self.telegram.send(format_alert2(
                 m, enr, market, shariah_lines=shariah_lines, ai_running=True,
-                risk_usd=risk_usd, html=True), markup=alert_menu(m.symbol), html=True)
+                risk_usd=risk_usd, fast=fast, html=True),
+                markup=alert_menu(m.symbol), html=True)
         except Exception as exc:  # noqa: BLE001
             log.error("alert 2 send failed: %s", exc)
 
@@ -459,7 +535,7 @@ class Engine:
         price_fc = price_forecast_text(agg, m.price)
         text2 = format_alert2(m, enr, market, shariah_lines=shariah_lines, reaction=reaction,
                               price_forecast=price_fc, ai_running=False, agg=agg,
-                              validated=agg.validated, risk_usd=risk_usd, html=True)
+                              validated=agg.validated, risk_usd=risk_usd, fast=fast, html=True)
         if detail_id:
             try:
                 self.telegram.edit(detail_id, text2, markup=alert_menu(m.symbol), html=True)
@@ -470,19 +546,26 @@ class Engine:
 
         if alert_id:
             self.db.execute("UPDATE alerts SET alert2_id=? WHERE id=?", (detail_id, alert_id))
-            self._store_predictions(alert_id, m, session, forecasts, agg, enr)
+            self._store_predictions(alert_id, m, session, forecasts, agg, enr, fast=fast)
 
     def _store_predictions(self, alert_id: int, m: Metrics, session: str,
                            forecasts: list[ModelForecast], agg: AggregateForecast,
-                           enr) -> None:
+                           enr, fast: bool = False) -> None:
         if not forecasts:
             return
         st = self.scorer.state(m.symbol)
         try:
+            # The naive baseline has to be scored against the same move the
+            # alert fired on, or a fast alert is graded on a window it never used.
+            if fast:
+                window = 3 if (m.rise.get(3, 0.0) or 0.0) >= 0.01 else 5
+                rise = m.rise.get(window, 0.0) or 0.0
+            else:
+                window, rise = 15, m.rise.get(15, 0.0) or 0.0
             store_predictions(
                 self.db, alert_id=alert_id, symbol=m.symbol, ts=self.clock(), session=session,
                 price0=m.price, forecasts=forecasts, aggregate=agg,
-                active_models=set(agg.models), rise15=m.rise.get(15, 0.0),
+                active_models=set(agg.models), rise15=rise, burst_window=window,
                 low4h=st.day_low if st.day_low else None)
         except Exception as exc:  # noqa: BLE001
             log.warning("storing predictions failed for %s: %s", m.symbol, exc)

@@ -180,6 +180,21 @@ DEFAULTS: dict[str, str] = {
     "TIER3_ACCEL": "1.0",
     "TIER3_FROM_HIGH": "-8",
     "TIER3_DOLLAR15": "25000",
+    # Fast alert lane. The tier gates above measure a 15-minute rise and a
+    # 60-minute move, so by the time they fire the burst is already over -- the
+    # alert was arriving at ~+20% on a stock that had already given back most of
+    # it. These read the 3- and 5-minute windows instead: a stock that prints
+    # this much in five minutes, on this much volume, is still tradable when the
+    # message lands. Cleared to 0 to fall back to the tier gates alone.
+    # FAST_ON=0 is the single switch that turns the whole lane off.
+    "FAST_ON": "1",
+    "FAST_RISE3": "2",
+    "FAST_VOLX3": "5",
+    "FAST_DOLLAR3": "3000",
+    "FAST_RISE5": "3",
+    "FAST_VOLX5": "5",
+    "FAST_MAX_FROM_HIGH": "-6",
+    "FAST_MIN_VOLUME": "50000",
     # Pre-market gate: alert as soon as the move clears PREMARKET_PCT with the
     # volume to back it, rather than waiting for the tier's 15-minute rise window
     # to catch up (which historically meant the alert arrived at ~+20%).
@@ -230,6 +245,8 @@ GROUPS: dict[str, list[str]] = {
                   "EXTENDED_PCT", "WARMUP_CYCLES", "WORKERS", "RISK_USD", "MIN_RR", "BASELINE_FALLBACK",
                   "PREMARKET_PCT", "PREMARKET_VOLX15", "PREMARKET_DOLLAR15",
                   "FINVIZ_MAX_PER_MIN", "RETENTION_DAYS"],
+    "Fast alerts": ["FAST_ON", "FAST_RISE3", "FAST_VOLX3", "FAST_DOLLAR3", "FAST_RISE5",
+                    "FAST_VOLX5", "FAST_MAX_FROM_HIGH", "FAST_MIN_VOLUME"],
     "Build feed": ["BUILD_FEED", "BUILD_FEED_SECONDS", "BUILD_TOP_N", "BUILD_MIN_SCORE",
                    "BUILD_RISE15", "BUILD_VOLX15", "BUILD_DOLLAR15", "BUILD_MIN_MINUTES"],
     "Install": ["PENNY_URL", "PENNY_VERSION", "INSTALL_DIR", "PENNY_HOME", "LOG_LEVEL"],

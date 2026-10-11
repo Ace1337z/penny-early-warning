@@ -21,7 +21,11 @@ PHASE_BUILDING = "BUILDING"
 PHASE_EXTENDED = "EXTENDED"
 PHASE_FADING = "FADING"
 
-WINDOWS = (5, 15, 60, 240)
+# The alert gates read 3m and 5m: a 15-minute rise window needs the whole move
+# to have already happened, so by the time it fires the trade is late. 5m was
+# already here for the sub-minute pullback check; 3m is the new fast lane and is
+# only meaningful because the poll interval is 20-30s.
+WINDOWS = (3, 5, 15, 60, 240)
 
 
 @dataclass
