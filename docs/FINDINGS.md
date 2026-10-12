@@ -335,7 +335,7 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 466 passed, 1 skipped
+### Unit tests (`pytest -q`) — 469 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
 journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
@@ -350,8 +350,8 @@ catalyst decay) and `test_phase2_commands.py` (`/model`, `/postmortem`). Spec 2.
 `test_mechanisms.py` (the three tape-mechanism detectors, the `[NO-NEWS]` tag, the
 `MECHANISM:` block, the provenance buckets and the rules-only DECISION block) and rewrites
 `test_decision.py` for the adversarial v2 schema. `test_news_age.py` pins the news-source
-order (Finviz first, the slow per-symbol feeds only as fallback) and the timezone-correct
-headline age.
+order (Finviz first, the slow per-symbol feeds only as fallback), the per-ticker Finviz
+news-table parse, and the timezone-correct headline age.
 
 ### Offline self-test (`penny selftest`) — ALL PASS
 Configuration defaults and round-trip; owner-only permissions; state and journal schemas
@@ -795,3 +795,31 @@ absence of a named cause is itself a signal - name the mechanism or say
 - **Why it matters:** an age that always reads "just now" makes a stale catalyst
   look live, which is the one thing the age is there to prevent; and the news source
   should be the feed that is already in hand, not the three that cost a round trip.
+
+---
+
+## C39. A small cap with a $201M tender offer alerted with no news at all
+
+- **Question:** SKYA rose 43% on a GlobeNewswire tender offer, yet Alert 2 read
+  `MECHANISM: unidentified`. Finviz clearly had the story on its ticker page. Why
+  did the system not?
+- **Finding:** the news source was `/export/news`, which is **market-wide**: it
+  carries a small cap's press release only when the headline literally spells the
+  ticker. "SkyAI Plans $201 Million Cash Tender Offer..." never says "SKYA", so the
+  symbol filter dropped it and the alert had no cause. The symbol's own headlines
+  live on its **quote page** in `id="news-table"`, keyed by `data-ticker`, which the
+  system never fetched. Two smaller faults rode along: the page's dates read
+  `Today 10:58AM` / `Oct-11-26 11:14PM` (ET, no year on the current-day form), and a
+  bare time parsed as midnight would have made the age wrong again.
+- **Default adopted:** `FinvizClient.ticker_news(symbol)` fetches the quote page and
+  `parse_finviz_news_table` extracts `title`, `source`, `url` and a real ET
+  `published` timestamp (`_finviz_dt` handles the `Today`/`Mon-DD-YY` forms). `_news`
+  uses it first and falls back to the market-wide CSV only when the page yields
+  nothing. No HTML library was added: the table is regex-parsed, the only structural
+  assumption being the `id="news-table"` anchor and the `tab-link-news` links.
+- **Where:** `src/penny/sources/finviz.py` (`ticker_news`, `parse_finviz_news_table`,
+  `_finviz_dt`), `src/penny/enrich.py` (`_finviz_news`).
+- **Why it matters:** "no news" is the most dangerous reading a small-cap alert can
+  give, because it invites treating a priced, material event as an unexplained pump.
+  The per-ticker page is the feed that knows, and it costs one request the quote path
+  already pays for.

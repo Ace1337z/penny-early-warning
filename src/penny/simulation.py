@@ -270,6 +270,10 @@ class FakeFinviz:
         return [{"Title": "Market rises on earnings", "Date": "2026-01-02"},
                 {"Title": "Small caps rally", "Date": "2026-01-02"}]
 
+    def ticker_news(self, ticker: str) -> list[dict]:
+        self.api_calls += 1
+        return []
+
     def latest_filings(self, ticker: str) -> list[dict]:
         self.api_calls += 1
         return [{"Form": "8-K", "Date": time.strftime("%Y-%m-%d"), "Item": "2.02"}]

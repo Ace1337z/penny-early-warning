@@ -21,6 +21,25 @@ FILING_PREFIXES = ("8-K", "S-1", "S-3", "424B", "F-1", "F-3", "13D", "13G",
                    "SCHEDULE 13", "SC 13", "4", "6-K", "NT 10", "25")
 
 
+def _parse_ts(text: str) -> Optional[datetime]:
+    """Parse a feed timestamp, keeping its zone when the feed gave one.
+
+    Order matters: the ISO forms are tried first so a `Z`/offset is not lost, then
+    the naive Finviz forms, then the RSS `pubDate`.
+    """
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z",
+                "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:len(fmt) + 6], fmt)
+        except ValueError:
+            continue
+    try:
+        return parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class Enrichment:
     symbol: str
@@ -259,19 +278,7 @@ class Enricher:
 
         if self.finviz:
             try:
-                rows = self.finviz.news("1")
-                sym = symbol.upper()
-                for row in rows[:60]:
-                    title = row_get(row, "Title", "Headline") or ""
-                    # Only a headline that names the symbol is *its* news; the
-                    # Finviz news export is market-wide, so an unrelated headline
-                    # must not be attached to the move.
-                    if sym not in title.upper():
-                        continue
-                    add([{"title": title,
-                          "source": row_get(row, "Source") or "finviz",
-                          "url": row_get(row, "Url", "URL") or "",
-                          "published": row_get(row, "Date") or ""}], "finviz")
+                add(self._finviz_news(symbol), "finviz")
             except FinvizTokenRejected:
                 pass
             except Exception as exc:  # noqa: BLE001
@@ -309,6 +316,33 @@ class Enricher:
         outlets = len({i["source"] for i in merged})
         return merged[:8], outlets
 
+    def _finviz_news(self, symbol: str) -> list[dict]:
+        """Per-ticker headlines from the Finviz quote page.
+
+        The `/export/news` CSV is market-wide and matches on the headline text, so
+        it misses a small cap whose PR says "SkyAI" and never "SKYA" -- which is
+        exactly the alert that needs a cause. The quote page's own news table is
+        keyed by ticker, so it is the source. Falls back to the market-wide CSV
+        when the quote page yields nothing (older cached pages, token hiccups).
+        """
+        if not self.finviz:
+            return []
+        ticker_news = getattr(self.finviz, "ticker_news", None)
+        if callable(ticker_news):
+            rows = ticker_news(symbol)
+            if rows:
+                return rows
+        sym = str(symbol or "").upper()
+        out = []
+        for row in (self.finviz.news("1") or [])[:60]:
+            title = row_get(row, "Title", "Headline") or ""
+            if sym and sym in title.upper():
+                out.append({"title": title,
+                            "source": row_get(row, "Source") or "finviz",
+                            "url": row_get(row, "Url", "URL") or "",
+                            "published": row_get(row, "Date") or ""})
+        return out
+
     @staticmethod
     def _age_of(published) -> str:
         """Elapsed time since a feed timestamp, as "18m" / "2h" / "3d".
@@ -317,42 +351,28 @@ class Enricher:
         export and most wires publish UTC, Alpaca carries an explicit `Z`, Google
         News carries `GMT`; only some are ET. Reading a UTC stamp as ET put a
         fresh headline hours into the future, which `age_str` then clamped to
-        "0s" -- rendered as "0m ago" for every recent item. So a naive value is
-        read as ET first and re-read as UTC when that lands in the future, which
-        is the only other zone these feeds use.
+        "0s" -- rendered as "0m ago" for every recent item. So a stamped value is
+        trusted, and a naive one is read as ET and re-read as UTC when that lands
+        in the future, which is the only other zone these feeds use.
         """
         if not published:
             return ""
-        text = str(published).strip()
         now = time.time()
-        for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
-            try:
-                dt = datetime.strptime(text[:len(fmt) + 6], fmt)
-            except ValueError:
-                continue
-            return age_str(now - dt.replace(tzinfo=timezone.utc).timestamp())
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
-            try:
-                dt = datetime.strptime(text[:len(fmt) + 6], fmt)
-            except ValueError:
-                continue
-            et = dt.replace(tzinfo=ET).timestamp()
-            if et > now + 60:
-                et = dt.replace(tzinfo=timezone.utc).timestamp()
-            return age_str(now - et)
-        try:  # RSS pubDate ("Mon, 13 Oct 2026 11:30:00 GMT") carries its zone.
-            dt = parsedate_to_datetime(text)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+        dt = _parse_ts(str(published).strip())
+        if dt is None:
+            text = str(published).strip()
+            if text.isdigit():
+                ts = int(text)
+                if ts > 10_000_000_000:
+                    ts //= 1000
+                return age_str(now - ts)
+            return ""
+        if dt.tzinfo is not None:
             return age_str(now - dt.timestamp())
-        except (TypeError, ValueError):
-            pass
-        if text.isdigit():
-            ts = int(text)
-            if ts > 10_000_000_000:
-                ts //= 1000
-            return age_str(now - ts)
-        return ""
+        et = dt.replace(tzinfo=ET).timestamp()
+        if et > now + 60:
+            et = dt.replace(tzinfo=timezone.utc).timestamp()
+        return age_str(now - et)
 
     def _filings(self, symbol: str) -> list[dict]:
         out: list[dict] = []

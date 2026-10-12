@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 import re
 import time
+from datetime import datetime, timedelta
+from html import unescape
 from typing import Any, Iterable, Optional
 from urllib.parse import urlencode
 
 from .base import BaseClient, RateLimiter, SourceError, fnum, looks_like_html, parse_csv
-from ..util import session_for
+from ..util import now_et, session_for
 
 log = logging.getLogger(__name__)
 
@@ -460,6 +462,44 @@ class FinvizClient(BaseClient):
     def news(self, view: str = "1") -> list[dict[str, str]]:
         return self.fetch_csv("news", v=view, ttl=300.0)
 
+    def ticker_news(self, ticker: str, ttl: float = 300.0) -> list[dict[str, str]]:
+        """Headlines for one ticker, from its quote page (not the CSV export).
+
+        `/export/news` is market-wide: it carries a small cap's press release only
+        when the headline spells the ticker, so a "SkyAI ... SKYA" item is missed
+        because the symbol never appears. The quote page's own `news-table` is
+        per-ticker and always carries it, so it is parsed here instead.
+        """
+        ticker = str(ticker or "").upper().strip()
+        if not ticker:
+            return []
+        cache_key = f"ticker-news?{ticker}"
+        if ttl > 0:
+            cached = self._cache.get(cache_key, ttl)
+            if cached is not None:
+                return cached
+        if self._token_rejected:
+            raise FinvizTokenRejected("finviz: steps paused after token rejection")
+        self.limiter.acquire()
+        try:
+            resp = self.request("GET", f"{self.base}/quote.ashx",
+                                params={"t": ticker, "p": "d", "auth": self._token()},
+                                timeout=25.0, retries=2)
+        except Exception as exc:  # noqa: BLE001
+            raise SourceError(f"finviz: {self.error_text(exc)}") from exc
+        if resp.status_code in (401, 403):
+            self._reject()
+        if resp.status_code >= 400:
+            raise SourceError(f"finviz: HTTP {resp.status_code}")
+        text = resp.text
+        if looks_like_html(text) and "news-table" not in text:
+            # HTML with no news table means the token is invalid or expired.
+            self._reject()
+        rows = parse_finviz_news_table(text)
+        if ttl > 0:
+            self._cache.set(cache_key, rows)
+        return rows
+
     def insiders(self, ticker: str, tc: str = "7") -> list[dict[str, str]]:
         return self.fetch_csv("insiders", t=ticker, tc=tc, ttl=1800.0)
 
@@ -475,6 +515,57 @@ class FinvizClient(BaseClient):
             return False, f"token rejected ({self.error_text(exc)})"
         except Exception as exc:  # noqa: BLE001
             return False, self.error_text(exc)
+
+
+def parse_finviz_news_table(html: str, now: Optional[datetime] = None) -> list[dict[str, str]]:
+    """Rows from a Finviz quote page's `id="news-table"`.
+
+    Returns {"title", "source", "url", "published"}. `published` is a real
+    timestamp (ISO), not Finviz's display text, so the age the alert renders is
+    the time since publication rather than since midnight. The page dates read
+    "Today 10:58AM" or "Oct-11-26 11:14PM"; both are ET.
+    """
+    text = html or ""
+    start = text.find('id="news-table"')
+    if start < 0:
+        return []
+    table = text[start:text.find("</table>", start)]
+    now = now or now_et()
+    out: list[dict[str, str]] = []
+    for row in re.split(r"<tr\b", table)[1:]:
+        link = re.search(r'class="tab-link-news"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                         row, re.S | re.I)
+        if not link:
+            continue
+        url, title = link.group(1), unescape(re.sub(r"<[^>]+>", " ", link.group(2))).strip()
+        title = re.sub(r"\s+", " ", title)
+        if not title:
+            continue
+        stamp = re.search(r'<td[^>]*width="130"[^>]*>(.*?)</td>', row, re.S | re.I)
+        source = re.search(r"<span>\(([^)]+)\)</span>", row)
+        item = {"title": title,
+                "source": (source.group(1).strip() if source else "finviz"),
+                "url": unescape(url)}
+        published = _finviz_dt(unescape(stamp.group(1)).strip(), now) if stamp else None
+        if published is not None:
+            item["published"] = published.isoformat()
+        out.append(item)
+    return out
+
+
+def _finviz_dt(stamp: str, now: datetime) -> Optional[datetime]:
+    """Parse a Finviz news-table stamp (ET) into an aware datetime."""
+    text = re.sub(r"\s+", " ", stamp or "").strip()
+    for fmt in ("%b-%d-%y %I:%M%p", "%b-%d-%Y %I:%M%p"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=now.tzinfo)
+        except ValueError:
+            continue
+    m = re.search(r"(\d{1,2}):(\d{2})\s*(AM|PM)", text, re.I)
+    if m:  # "Today 10:58AM" (Finviz shows a bare time for today's items).
+        hour = int(m.group(1)) % 12 + (12 if m.group(3).upper() == "PM" else 0)
+        return now.replace(hour=hour, minute=int(m.group(2)), second=0, microsecond=0)
+    return None
 
 
 def row_get(row: dict[str, str], *names: str) -> Optional[str]:
