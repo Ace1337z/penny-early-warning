@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-471%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-476%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -250,7 +250,9 @@ actually produced.
   No panel, no leaderboard, no agreement score, no persona. A report that claims `ENTER`
   on a gate that did not pass is rejected, not repaired.
 - **Cause-first alerts** - every message names exactly one reason the stock moved, with
-  its outlet, age and confidence, or says `none found`. A news dump is not a cause.
+  its outlet, age and confidence, or says `none found`. A news dump is not a cause. An
+  unrecognised wire headline counts as a real event, not noise; only routine notices and
+  chatter are dropped, and a real event stays nameable for the whole 4h window.
 - **Per-alert tracking with an end-of-day report** - every alerted name is measured from
   the alert price to the close, and the day's alerts are reported once, as a set
   (`/eod`). `/stats` ranks the detectors by what they actually produced.
@@ -594,7 +596,7 @@ fake Telegram, and asserts the documented acceptance results:
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
 Current status: `selftest` **ALL PASS** (85 checks), `simulate` **ALL PASS** (54 checks),
-`pytest` **471 passed** (1 skipped).
+`pytest` **476 passed** (1 skipped).
 
 ---
 

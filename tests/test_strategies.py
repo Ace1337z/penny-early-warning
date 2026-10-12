@@ -118,6 +118,23 @@ def test_hard_catalysts_outrank_soft_ones():
     assert classify("Acme announces partnership with named counterparty") == "MEDIUM"
 
 
+def test_an_unrecognised_wire_headline_is_medium_not_noise():
+    """GIXI regression: a real robotics/hospital PR matched no pattern and fell
+    through to SOFT, so `extract_cause` never named it. An unrecognised headline
+    is a real event we did not categorise, not routine noise."""
+    gixi = ("Gix Internet Brings Physical AI to Life-Saving Logistics as Robots "
+            "Begin Delivering Blood and Bone Marrow at One of the World's Top 10 "
+            "Hospitals")
+    assert classify(gixi) == "MEDIUM"
+
+
+def test_chatter_is_still_soft():
+    """The catch-all is MEDIUM now, so the 'the internet is talking' phrases
+    have to be named explicitly or a social post becomes the named cause."""
+    assert classify("trending on social media says to buy") == "SOFT"
+    assert classify("GME is a meme stock, buy alert") == "SOFT"
+
+
 def test_an_offering_is_classified_as_dilution():
     assert classify("Acme prices $12M offering at $1.05 per share") == "DILUTION"
     assert classify("Acme announces public offering") == "DILUTION"
@@ -500,6 +517,44 @@ def test_a_hard_catalyst_is_named_inside_the_window_even_after_decay():
     cause = extract_cause(ranked, b)
     assert cause.kind == "CATALYST"
     assert "Tender Offer" in cause.text
+
+
+def test_an_aged_medium_catalyst_is_named_inside_the_window():
+    """GIXI regression: a MEDIUM at 2h is 0.30, well under the old 0.6 floor,
+    so it was dropped even though its class is a real event. Nameability is the
+    class; decay only ranks."""
+    item = {"title": "Acme announces partnership with BigCo",
+            "source": "wire", "url": "u", "age": "2h"}
+    b = bundle(news=[item])
+    _, ranked, _ = rank_catalysts(b)
+    assert ranked[0]["weight"] < 0.6
+    cause = extract_cause(ranked, b)
+    assert cause.kind == "CATALYST"
+    assert cause.cls == "MEDIUM"
+
+
+def test_a_real_headline_with_no_known_keywords_is_named():
+    """The end-to-end GIXI case: a genuine PR whose wording matched no pattern
+    must still be the named cause, not a mechanism."""
+    item = {"title": ("Gix Internet Brings Physical AI to Life-Saving Logistics "
+                      "as Robots Begin Delivering Blood and Bone Marrow at One "
+                      "of the World's Top 10 Hospitals"),
+            "source": "GlobeNewswire", "url": "https://finviz.com/news/401152/x",
+            "age": "2h"}
+    b = bundle(news=[item])
+    _, ranked, _ = rank_catalysts(b)
+    cause = extract_cause(ranked, b)
+    assert cause.kind == "CATALYST"
+    assert "Blood and Bone Marrow" in cause.text
+
+
+def test_a_medium_catalyst_outside_the_window_is_not_named():
+    """The 4h CAUSE_MAX_AGE_H bound still applies to MEDIUM."""
+    item = {"title": "Acme announces partnership with BigCo",
+            "source": "wire", "url": "u", "age": "5h"}
+    b = bundle(news=[item])
+    _, ranked, _ = rank_catalysts(b)
+    assert extract_cause(ranked, b).kind == "UNEXPLAINED"
 
 
 def test_social_only_items_do_not_become_a_cause():

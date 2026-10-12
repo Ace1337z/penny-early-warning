@@ -335,7 +335,7 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 471 passed, 1 skipped
+### Unit tests (`pytest -q`) — 476 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
 journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
@@ -842,6 +842,8 @@ absence of a named cause is itself a signal - name the mechanism or say
   *class* decides inside it. HARD is nameable for the whole window regardless of
   decayed weight; MEDIUM still has to hold 0.6; SOFT never qualifies. Decay remains
   a ranking signal (`rank_catalysts` sorts on it), not a nameability test.
+  *(Superseded by C43: the "MEDIUM still has to hold 0.6" clause was itself the
+  bug -- MEDIUM's base weight is 0.6, so it never held. Only SOFT is dropped now.)*
 - **Where:** `src/penny/strategies/news_cause.py` (`extract_cause`).
 - **Why it matters:** the floor conflated "how strongly does this still pull"
   with "may we name it at all". Those are different questions, and collapsing them
@@ -887,3 +889,36 @@ absence of a named cause is itself a signal - name the mechanism or say
   test rather than inherit the new default; the shipped behaviour is the new one.
   The tracker bug above is what turning the gate on surfaced -- the defaults were
   not the only thing that had been hidden by `STRATEGY_GATE=0`.
+
+## C43. A real headline with no keyword matched read as noise, and every MEDIUM expired instantly
+
+- **Question:** SKYA's tender offer now shows, but GIXI's "Gix Internet Brings
+  Physical AI to Life-Saving Logistics..." did not, even though it is on the
+  ticker's own Finviz news table. The fetch and parse were verified working (the
+  row was parsed). So why no cause?
+- **Finding:** two independent defects, both ticker-agnostic.
+  1. `classify`'s catch-all returned `SOFT`. The patterns are a *vocabulary of
+     known events*, so any real wire headline whose wording they did not
+     anticipate -- a robotics/hospital PR -- fell through to the same class as a
+     conference notice, and `extract_cause` never names `SOFT`. SKYA only worked
+     because "tender offer" happens to match `_HARD`.
+  2. The `weight < 0.6` floor was still class-blind for everything but HARD.
+     MEDIUM's base weight *is* 0.6, so `0.6 * 2**(-t/120) < 0.6` for any `t > 0`:
+     a MEDIUM was dropped the instant a single minute passed, i.e. always. C40
+     exempted HARD only, which fixed SKYA and left every MEDIUM equally dead.
+- **Default adopted:** an unrecognised headline is `MEDIUM`, not `SOFT` -- a real
+  event the patterns did not categorise, not noise. The genuinely routine phrases
+  (updates, presentations) and pure chatter (`social media`, `trending`,
+  `stocktwits`, `reddit`, `meme stock`, `buy alert`, ...) are named explicitly in
+  `_SOFT`, so the fallback is honest. In `extract_cause`, nameability is the
+  *class*: HARD and MEDIUM are nameable for the whole 4h `CAUSE_MAX_AGE_H` window;
+  only `SOFT` is dropped; the redundant `weight < 0.6` cut is gone. Decay remains
+  a ranking signal (`rank_catalysts` sorts on it), not a nameability test.
+- **Where:** `src/penny/strategies/news_cause.py` (`classify`, `_SOFT`,
+  `extract_cause`).
+- **Why it matters:** the cause-first design is only as good as the vocabulary it
+  recognises, and a keyword list can never be complete. Treating "unrecognised"
+  as "noise" silently discarded the very headlines -- novel events, unusual
+  companies -- most likely to be the reason a penny stock moved. The floor made
+  the same mistake in time: it asked "how strong is this still" when the question
+  is "may we name it at all".

@@ -8,8 +8,9 @@ Classification is by what the item actually *is*, because that is what decides
 whether the move can continue:
 
   HARD (1.0)    an event that changes the business or the share count
-  MEDIUM (0.6)  a real event with a counterparty or a number attached
-  SOFT (0.25)   routine updates that historically do not move a float
+  MEDIUM (0.6)  a real event with a counterparty or a number attached, and the
+                fallback for a real wire headline the patterns did not anticipate
+  SOFT (0.25)   routine updates and chatter that historically do not move a float
   DILUTION      an offering priced below the open -- a long blocker, never a cause
 
 A catalyst alone is not a setup: `catalyst_volume` requires volume behind it.
@@ -86,7 +87,12 @@ _MEDIUM = re.compile(
 _SOFT = re.compile(
     r"\b(provides update|to present at|will present|regains compliance|"
     r"regained compliance|conference|webcast|investor day|"
-    r"schedule|upcoming|announces (a )?(date|event))\b", re.I)
+    r"schedule|upcoming|announces (a )?(date|event)|"
+    # Chatter is not news. An unrecognised headline is now read as a real event
+    # (MEDIUM), so the phrases that mark "the internet is talking" have to be
+    # named here or a social-media post would be named as the cause of a move.
+    r"social media|trending|stocktwits|reddit|message board|chat room|"
+    r"meme stock|buy alert|hot stock|to the moon)\b", re.I)
 
 # Word order varies a great deal in real press-release headlines ("prices $12M
 # offering", "offering priced at", "$12M public offering"), so this matches the
@@ -136,7 +142,18 @@ def _age_minutes(item: dict, now_ts: Optional[float]) -> Optional[float]:
 
 def classify(text: str) -> str:
     """One class per item. Negative checks run first: an offering PR often also
-    contains the word "approval" somewhere in the body."""
+    contains the word "approval" somewhere in the body.
+
+    An unrecognised headline is MEDIUM, not SOFT. The old catch-all made every
+    real event whose wording the patterns did not happen to anticipate -- a
+    robotics/hospital PR, say -- indistinguishable from a routine conference
+    notice, and `extract_cause` never names SOFT. The patterns are a vocabulary
+    of the events worth ranking *higher*, not a whitelist of the only events
+    that count; a wire headline is a real counterparty saying something. The
+    genuinely routine cases (updates, presentations) and pure chatter are named
+    explicitly above, so the fallback is the honest "a real event we did not
+    categorise" rather than "noise".
+    """
     t = _norm(text)
     if _DILUTION.search(t):
         return DILUTION
@@ -146,7 +163,7 @@ def classify(text: str) -> str:
         return MEDIUM
     if _SOFT.search(t):
         return SOFT
-    return SOFT
+    return MEDIUM
 
 
 def trust_of(source: str) -> float:
@@ -253,14 +270,16 @@ def extract_cause(catalysts: list[dict], b, filings: Optional[list] = None) -> C
             continue
         if e["age_minutes"] > max_age_h * 60:
             continue
-        # The 4h window above is the outer bound. Inside it the *class* decides:
-        # a HARD event (an FDA approval, a tender offer) is nameable for the
-        # whole window even after its decayed weight drops below the floor --
-        # decay is a ranking signal, not a nameability test. A HARD catalyst at
-        # the 4h edge is 0.40, and the old flat 0.6 floor silently dropped it,
-        # which is how a 3h-old tender offer came back as "unidentified". A
-        # MEDIUM event still has to hold the floor; SOFT never qualifies.
-        if e["class"] != HARD and e["weight"] < 0.6:
+        # The 4h window above is the outer bound and the *class* decides inside
+        # it: a real event -- HARD or MEDIUM -- is nameable for the whole window
+        # even after its decayed weight falls. Decay is a ranking signal
+        # (`rank_catalysts` sorts on it), not a nameability test. The old flat
+        # `weight < 0.6` floor was the MEDIUM base weight, so it dropped every
+        # MEDIUM the moment any time passed (0.6 * 2**(-t/120) < 0.6 for t > 0)
+        # and every aged HARD, which is how a 3h tender offer and a plain
+        # robotics PR both came back as "unidentified". Only SOFT -- routine
+        # notices and chatter -- never qualifies.
+        if e["class"] == SOFT:
             continue
         conf = "high" if (e["weight"] >= 1.0 and e["trust"] >= 0.9) else "medium"
         supporting = ""
