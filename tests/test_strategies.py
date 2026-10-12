@@ -488,6 +488,20 @@ def test_a_catalyst_names_its_source_and_url():
     assert "CONFIDENCE" in text
 
 
+def test_a_hard_catalyst_is_named_inside_the_window_even_after_decay():
+    # SKYA regression: a tender offer at 3h decays to ~0.50, below the 0.6
+    # floor, and the flat floor silently returned "unidentified" while the
+    # headline sat right there. HARD must stay nameable for the whole 4h window.
+    offer = {"title": "SkyAI Plans $201 Million Cash Tender Offer at $3 Per Share",
+             "source": "Finviz", "url": "https://example.com/offer", "age": "3h"}
+    b = bundle(news=[offer])
+    _, ranked, _ = rank_catalysts(b)
+    assert ranked[0]["weight"] < 0.6            # decayed below the old floor
+    cause = extract_cause(ranked, b)
+    assert cause.kind == "CATALYST"
+    assert "Tender Offer" in cause.text
+
+
 def test_social_only_items_do_not_become_a_cause():
     b = bundle(news=[{"title": "trending on social media says to buy",
                       "source": "Yahoo", "url": "", "age": "1h"}])

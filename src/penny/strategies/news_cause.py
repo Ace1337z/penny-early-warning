@@ -253,10 +253,14 @@ def extract_cause(catalysts: list[dict], b, filings: Optional[list] = None) -> C
             continue
         if e["age_minutes"] > max_age_h * 60:
             continue
-        # The decay curve is now the age test. A headline four hours old has
-        # already fallen below the 0.6 floor for anything but a HARD catalyst,
-        # so this one comparison replaces the old separate age window.
-        if e["weight"] < 0.6:
+        # The 4h window above is the outer bound. Inside it the *class* decides:
+        # a HARD event (an FDA approval, a tender offer) is nameable for the
+        # whole window even after its decayed weight drops below the floor --
+        # decay is a ranking signal, not a nameability test. A HARD catalyst at
+        # the 4h edge is 0.40, and the old flat 0.6 floor silently dropped it,
+        # which is how a 3h-old tender offer came back as "unidentified". A
+        # MEDIUM event still has to hold the floor; SOFT never qualifies.
+        if e["class"] != HARD and e["weight"] < 0.6:
             continue
         conf = "high" if (e["weight"] >= 1.0 and e["trust"] >= 0.9) else "medium"
         supporting = ""

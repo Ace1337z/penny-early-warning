@@ -335,7 +335,7 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 469 passed, 1 skipped
+### Unit tests (`pytest -q`) — 470 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
 journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
@@ -823,3 +823,26 @@ absence of a named cause is itself a signal - name the mechanism or say
   give, because it invites treating a priced, material event as an unexplained pump.
   The per-ticker page is the feed that knows, and it costs one request the quote path
   already pays for.
+
+## C40. The 0.6 weight floor made a three-hour-old tender offer "unidentified"
+
+- **Question:** after C39 the tender offer was finally in the feed, yet the alert
+  still read `MECHANISM: unidentified`. The headline was right there with a HARD
+  class. Why was it dropped?
+- **Finding:** `extract_cause` skipped any item whose decayed `weight < 0.6`. That
+  floor is the MEDIUM base weight, so it silently became a class-blind cut: a HARD
+  catalyst decays on a 180m half-life and is 0.50 at three hours and 0.40 at the
+  four-hour `CAUSE_MAX_AGE_H` edge — below the floor the whole time, so a material
+  event inside its own window was treated as no cause. The old `0m ago` age bug
+  (C38) had pinned every weight at 1.0 and masked it; fixing the age exposed it.
+  The code comment claimed "a headline four hours old has already fallen below the
+  0.6 floor for anything but a HARD catalyst", which is backwards — HARD is exactly
+  what the floor was dropping.
+- **Default adopted:** the 4h `CAUSE_MAX_AGE_H` window is the outer bound and the
+  *class* decides inside it. HARD is nameable for the whole window regardless of
+  decayed weight; MEDIUM still has to hold 0.6; SOFT never qualifies. Decay remains
+  a ranking signal (`rank_catalysts` sorts on it), not a nameability test.
+- **Where:** `src/penny/strategies/news_cause.py` (`extract_cause`).
+- **Why it matters:** the floor conflated "how strongly does this still pull"
+  with "may we name it at all". Those are different questions, and collapsing them
+  turns the one feed that knew about a $201M tender offer back into "no news".
