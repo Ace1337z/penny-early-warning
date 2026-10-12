@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from penny.alerts import format_alert1, format_alert2, verdict_text
+from penny.alerts import format_alert1, format_alert2
 from penny.scoring import Metrics, TIER_NONE, WINDOWS
 
 
@@ -179,24 +179,38 @@ def test_alert_1_leads_with_the_burst_when_fast():
 
 def test_alert_1_keeps_the_normal_strip_when_not_fast():
     text = format_alert1(_m(), fast=False)
-    assert "15m" in text and "60m" in text
+    assert "3m" in text and "5m" in text
     assert "[FAST]" not in text
 
 
 def test_alert_1_still_shows_the_15_and_60_minute_moves():
-    """Context is not lost: the fast alert still reports the wider windows."""
+    """The fast alert keeps the wider windows as context; the plain one does not.
+
+    Spec 11.1 takes 15m and 60m out of the *alert* header, because they are what
+    made a live burst read like a move that was already over. The fast lane
+    prints them anyway, where the burst is the reason for the message."""
     text = format_alert1(_m(), fast=True)
     assert "15m" in text and "60m" in text
 
 
+def test_a_plain_alert_header_has_no_15_or_60_minute_windows():
+    """Spec 11.1: the alert path reads 3m and 5m only."""
+    text = format_alert1(_m(), fast=False)
+    assert "15m" not in text and "60m" not in text
+
+
 def test_a_fast_alert_is_never_told_it_is_below_the_alert_bar():
-    assert verdict_text(_m(), _enr(), None, fast=True).startswith("EARLY")
-    assert "below the alert bar" not in verdict_text(_m(), _enr(), None, fast=True)
+    """The tier-0 wording came from `verdict_text`, which no longer exists.
 
+    With the standalone VERDICT block removed, the SETUP line carries this.
+    """
+    fast = format_alert2(_m(), _enr(), None, fast=True)
+    assert "below the alert bar" not in fast
+    assert "SETUP: FAST" in fast
 
-def test_a_non_fast_tier_zero_stock_still_says_wait():
-    assert verdict_text(_m(), _enr(), None, fast=False).startswith("WAIT")
-
+    slow = format_alert2(_m(), _enr(), None, fast=False)
+    assert "below the alert bar" in slow
+    assert "SETUP: NONE" in slow
 
 def test_a_fast_alert_2_explains_why_now():
     text = format_alert2(_m(), _enr(), None, fast=True)
@@ -227,14 +241,15 @@ def test_a_fast_alert_2_does_not_say_below_the_alert_bar(cfg):
 
 
 def test_the_fallback_verdict_receives_the_fast_flag(cfg):
-    """format_alert2 must pass `fast` down; it used to render WAIT on a fast alert."""
+    """No AI call must not produce a misleading "WAIT" on a live fast alert."""
     text = format_alert2(_m(), _enr(), None, fast=True)
-    assert "VERDICT: EARLY" in text
     assert "VERDICT: WAIT" not in text
+    assert "AI unavailable" in text
 
 
-def test_an_explicit_pm_verdict_still_wins_over_the_fallback(cfg):
-    """The PM's call is authoritative when one was actually produced."""
+def test_an_explicit_decision_still_wins_over_the_fallback(cfg):
+    """The one AI decision is authoritative when one was actually produced."""
     text = format_alert2(_m(), _enr(), None, fast=True,
-                         verdict="VERDICT: AVOID - the panel leans down")
-    assert "AVOID" in text
+                         decision="VERDICT: WAIT - distribution at the high")
+    assert "WAIT" in text
+    assert "AI unavailable" not in text

@@ -367,7 +367,7 @@ class AIGateway:
         else:
             listing_error = ""
         target = model or (models[0] if models
-                           else str(self.cfg.raw("AI_MODELS") or "").split(",")[0].strip())
+                           else str(self.cfg.raw("AI_MODEL") or "").strip())
         if not target:
             return False, listing_error or "no model to test"
         result = self.test_model(target)
@@ -437,34 +437,39 @@ class FakeGateway:
 
         price = self._price_from_prompt(messages)
         bias = self._bias_for(model)
-        # A deliberately accurate model follows the simulated path; a wrong one inverts it.
-        if bias == "accurate":
-            f15 = price * 1.04
-            f60 = price * 1.12
-            send = price * 1.20
-        elif bias == "wrong":
-            f15 = price * 0.80
-            f60 = price * 0.70
-            send = price * 0.65
-        else:
-            f15 = price * 1.01
-            f60 = price * 1.02
-            send = price * 1.03
+        passed = bool((self._facts_from_prompt(messages).get("gate") or {}).get("passed"))
+        # A gated-in setup answers ENTER; anything the gate rejected answers PASS.
+        # The bias only moves the confidence, never the verdict, so a test cannot
+        # smuggle an entry through a gate that said no.
+        verdict = "ENTER" if passed else "PASS"
+        confidence = {"accurate": 0.75, "wrong": 0.25}.get(bias, 0.55)
+        direction = "rising" if passed else "fading"
         payload = {
-            "strength": "moderate", "direction": "up", "shape": "grinder",
-            "durability": "uncertain", "confidence": 0.6,
-            "catalyst": "fake catalyst", "why_now": "fake reason it is moving now",
-            "urgency": "now", "sentiment": 0.4,
-            "forecast": {"15m": {"price": round(f15, 4)},
-                         "60m": {"price": round(f60, 4)},
-                         "session_end": {"price": round(send, 4)}},
-            "expected_peak": round(price * 1.25, 4),
-            "expected_low": round(price * 0.95, 4),
-            "market_effect": "fake market", "reasons": ["r1", "r2"],
-            "flags": ["pump_pattern"], "change_view": "volume fades",
+            "key_findings": ["fake finding one", "fake finding two"],
+            "rating": {"grade": "MODERATE" if passed else "WEAK",
+                       "confidence": confidence},
+            "trends": {"direction": direction, "momentum": "steady"},
+            "entry_points": [{"zone": f"{price * 0.99:.2f}-{price:.2f}"}],
+            "exit_points": {"stop": f"{price * 0.92:.2f}", "t1": f"{price * 1.15:.2f}",
+                            "t2": f"{price * 1.30:.2f}"},
+            "verdict": verdict,
+            "rubrics_applied": ["fake rubric: volume + float"] if passed else [],
+            "gate": {"passed": passed},
         }
         return ChatResult(model=model, text=json.dumps(payload), tokens=420,
                           latency_ms=300.0, ok=True)
+
+    @staticmethod
+    def _facts_from_prompt(messages: list[dict]) -> dict:
+        for m in messages:
+            content = m.get("content") or ""
+            if isinstance(content, str) and '"price"' in content:
+                try:
+                    start = content.find("{")
+                    return json.loads(content[start:content.rfind("}") + 1])
+                except (ValueError, TypeError):
+                    continue
+        return {}
 
     @staticmethod
     def _price_from_prompt(messages: list[dict]) -> float:

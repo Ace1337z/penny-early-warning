@@ -12,7 +12,7 @@ from penny.config import DEFAULTS, SECRET_KEYS, Config
 
 def test_defaults_are_complete():
     assert len(DEFAULTS) > 100
-    for key in ("MAX_PRICE", "MIN_PRICE", "ALERT_MIN_TIER", "AI_MODELS", "TELEGRAM_TOKEN"):
+    for key in ("MAX_PRICE", "MIN_PRICE", "ALERT_MIN_TIER", "AI_MODEL", "TELEGRAM_TOKEN"):
         assert key in DEFAULTS
 
 

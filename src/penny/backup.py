@@ -544,7 +544,8 @@ class BackupManager:
             "predictions": self.state.scalar("SELECT COUNT(*) FROM predictions", default=0),
             "evaluated": self.state.scalar(
                 "SELECT COUNT(*) FROM predictions WHERE status='evaluated'", default=0),
-            "active_panel": self.state.kv_get("active_panel"),
+            "tracked": self.state.scalar(
+                "SELECT COUNT(*) FROM alert_tracking", default=0),
         }
 
     # -- restore drill ------------------------------------------------------

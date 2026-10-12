@@ -116,24 +116,9 @@ DEFAULTS: dict[str, str] = {
     # --- AI ---
     "AI_BASE_URL": "",
     "AI_KEY": "",
-    "AI_MODELS": "deepseek-v4.1-flash,kimi-k3,glm-5.3",
-    "AI_FALLBACK_MODELS": "deepseek-v4-pro,minimax-m3",
-    "AI_CANDIDATES": "",
+    "AI_MODEL": "deepseek-v4.1-flash",
     "AI_TIMEOUT": "45",
-    "AI_DEADLINE": "60",
-    "AI_CACHE_MINUTES": "10",
-    "AI_MAX_TOKENS": "900",
-    "SHADOW_SAMPLE_RATE": "0.2",
-    "TRACKER_AI": "1",
-    "MODEL_SELECTION": "auto",
-    "MIN_EVALUATED": "100",
-    "SELECTION_WINDOW_DAYS": "0",
-    "AI_MODEL_CATALOG": "models_catalog.json",
-    "AI_DISCOVERY": "auto",
-    "AI_MAX_MULTIPLIER": "4",
-    "AI_PREMIUM_MODELS": "",
-    "PREMIUM_SAMPLE_RATE": "0.1",
-    "MODEL_HALVING_STAGES": "30,60,100",
+    "AI_MAX_TOKENS": "1800",
     "MARKET_SYMBOLS": "SPY,QQQ,IWM",
     "TOKEN_NOTIFY_DAILY": "0",
     "TOKEN_LIMIT_DAILY": "0",
@@ -325,11 +310,8 @@ GROUPS: dict[str, list[str]] = {
     "Backup": ["BACKUP_LOCAL_DIR", "BACKUP_REMOTE", "BACKUP_PASSPHRASE", "BACKUP_HOURLY",
                "BACKUP_TELEGRAM", "BACKUP_KEEP_HOURLY", "BACKUP_KEEP_DAILY",
                "BACKUP_KEEP_WEEKLY", "BACKUP_KEEP_MONTHLY", "BACKUP_MAX_AGE_HOURS"],
-    "AI": ["AI_BASE_URL", "AI_KEY", "AI_MODELS", "AI_FALLBACK_MODELS", "AI_CANDIDATES",
-           "AI_TIMEOUT", "AI_DEADLINE", "AI_CACHE_MINUTES", "SHADOW_SAMPLE_RATE", "TRACKER_AI",
-           "MODEL_SELECTION", "MIN_EVALUATED", "SELECTION_WINDOW_DAYS", "AI_MODEL_CATALOG",
-           "AI_DISCOVERY", "AI_MAX_MULTIPLIER", "AI_PREMIUM_MODELS", "PREMIUM_SAMPLE_RATE",
-           "MODEL_HALVING_STAGES", "MARKET_SYMBOLS", "TOKEN_NOTIFY_DAILY", "TOKEN_LIMIT_DAILY"],
+    "AI": ["AI_BASE_URL", "AI_KEY", "AI_MODEL", "AI_TIMEOUT", "AI_MAX_TOKENS",
+           "MARKET_SYMBOLS", "TOKEN_NOTIFY_DAILY", "TOKEN_LIMIT_DAILY"],
     "Behaviour": ["MAX_PRICE", "MIN_PRICE", "ALERT_MIN_TIER", "REALERT_SECONDS", "ALERT_EXTENDED",
                   "EXTENDED_PCT", "WARMUP_CYCLES", "WORKERS", "RISK_USD", "MIN_RR", "BASELINE_FALLBACK",
                   "PREMARKET_PCT", "PREMARKET_VOLX15", "PREMARKET_DOLLAR15",
@@ -553,13 +535,6 @@ class Config:
     def bars_dir(self) -> Path:
         p = self.data_path("bars")
         p.mkdir(parents=True, exist_ok=True)
-        return p
-
-    @property
-    def catalog_path(self) -> Path:
-        p = Path(self.raw("AI_MODEL_CATALOG"))
-        if not p.is_absolute():
-            p = self.home / p
         return p
 
     def summary(self) -> str:

@@ -10,14 +10,15 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from .ai.evaluate import evaluate_due, store_predictions
-from .ai.panel import AggregateForecast, ModelForecast, price_forecast_text, reaction_text
+from .ai.decision import decide, render as render_decision
 from .alerts import (build_ai_facts, format_alert1, format_alert2, format_build_digest,
                      tier_name)
 from .enrich import Enricher
 from .fib import reentry_guidance
 from .market_context import MarketContextProvider
 from .scoring import (PHASE_EXTENDED, PHASE_FADING, TIER_EARLY, Metrics, Scorer)
+from .strategies.wiring import run_gate
+from .tracking import Tracker, eod_report, stats_report
 from .sources.finviz import FinvizTokenRejected, avg_volume_shares, row_get, row_num
 from .ui import button, cb, inline
 from .util import (SESSION_CLOSED, age_str, is_trading_day, money, pct, session_end,
@@ -63,15 +64,13 @@ class Engine:
         self.clock = clock or time.time
 
         self.scorer = Scorer(cfg, clock=self.clock)
+        self.tracker = Tracker(db, clock=self.clock)
         self.market = MarketContextProvider(cfg, finviz=finviz, yahoo=yahoo)
         self.enricher = Enricher(cfg, finviz=finviz, alpaca=alpaca,
                                  finnhub=finnhub, sec=sec, finra=finra, yahoo=yahoo,
                                  twelvedata=twelvedata, market=self.market)
-        self.runner = None
-        if gateway is not None and catalog is not None:
-            from .ai.runner import AIRunner
-            self.runner = AIRunner(cfg, gateway, catalog, db, telegram=telegram,
-                                   secrets=cfg.secrets())
+        self.gateway = gateway          # one call per alert; see ai/decision.py
+        self.tokens_used = 0     # cumulative, for the status line
 
         self.universe: list[str] = []
         self.avg_volume: dict[str, float] = {}
@@ -83,6 +82,8 @@ class Engine:
         self._quotes_by_symbol: dict[str, dict] = {}
         self._last_metrics: list[Metrics] = []
         self._builds: list = []
+        self._gates: dict[str, object] = {}
+        self._gate_rejects: dict[str, dict] = {}
         self._split_cache: dict[str, bool] = {}
         self._last_alert: dict[str, tuple[float, int]] = {}
         self._alert_ids: dict[str, int] = {}
@@ -217,14 +218,23 @@ class Engine:
 
         for m in ranked["by_score"]:
             fast = self._fast_burst(m, session)
-            if self._alert_candidate(m, session, fast=fast):
-                self._fire_alert(m, session, pct_rank, fast=fast)
-                stats["alerts"] += 1
+            if not self._alert_candidate(m, session, fast=fast):
+                continue
+            # The strategy gate. Metrics-only detectors run here, on every poll,
+            # with no extra fetch. The enrichment primaries run later, in
+            # _fire_alert, where a fetch is already being paid for.
+            gate, bundle = self._run_gate(m, metrics_list)
+            if gate is not None and not gate.passed and self._gate_is_mandatory():
+                self._note_gate_reject(m, gate)
+                continue
+            self._fire_alert(m, session, pct_rank, fast=fast, gate=gate, bundle=bundle)
+            stats["alerts"] += 1
 
+        self._update_tracker(metrics_list)
+        self._record_daily_close(metrics_list)
         self._track_watchlist(metrics_list, session)
         self._maybe_build_feed(session, metrics_list)
         self._maybe_digest(session, metrics_list)
-        self._evaluate_forecasts()
         self.scorer.cycle()
         self.scorer.prune()
         self._maybe_backups()
@@ -306,16 +316,35 @@ class Engine:
         return out
 
     # -- alert rules --------------------------------------------------------
+    def _reached_alert_bar(self, m: Metrics, session: str, fast: bool) -> bool:
+        """Has this stock actually reached the alert bar yet?
+
+        Spec 1.1: the alert fires the moment the strategy gate passes, and the 15m
+        and 60m windows come out of the alert path entirely. Under the gate that
+        is exactly what `cycle()` does -- the gate ran before we got here. The old
+        tier path still waits, because those windows are the only thing it reads.
+
+        This can only remove the "came early" fallback that the tier check used
+        to grant. It can never gate in something on its own: `_fast_burst` and the
+        pre-market rule are both *weaker* than the tier they replace, and they are
+        only consulted when the tier path is still in charge.
+        """
+        if self._gate_is_mandatory():
+            return True
+        min_tier = max(TIER_EARLY, self.cfg.int("ALERT_MIN_TIER", 2))
+        if m.tier >= min_tier:
+            return True
+        return fast or self._premarket_breakout(m, session)
+
     def _alert_candidate(self, m: Metrics, session: str,
                          fast: Optional[bool] = None) -> bool:
         if fast is None:
             fast = self._fast_burst(m, session)
-        min_tier = max(TIER_EARLY, self.cfg.int("ALERT_MIN_TIER", 2))
         if not self.scorer.warm:
             return False
-        if m.tier < min_tier and not fast and not self._premarket_breakout(m, session):
-            return False
         st = self.scorer.state(m.symbol)
+        if not self._reached_alert_bar(m, session, fast):
+            return False
         if m.tier <= st.last_alert_tier:
             if self.clock() - st.last_alert_ts < self.cfg.int("REALERT_SECONDS", 3600):
                 return False
@@ -441,7 +470,7 @@ class Engine:
         return result
 
     def _fire_alert(self, m: Metrics, session: str, pct_rank: dict,
-                    fast: bool = False) -> None:
+                    fast: bool = False, gate=None, bundle=None) -> None:
         st = self.scorer.state(m.symbol)
         rank = pct_rank.get(m.symbol)
         resumed = st.halt_resume_pending
@@ -453,7 +482,7 @@ class Engine:
             shariah_line = self.shariah.one_line(shariah_status)
 
         text1 = format_alert1(m, shariah_line=shariah_line, pct_rank=rank, resumed=resumed,
-                              fast=fast, html=True)
+                              fast=fast, html=True, gate=gate)
         msg_id = None
         try:
             msg_id = self.telegram.send(text1, markup=alert_menu(m.symbol), html=True)
@@ -465,10 +494,22 @@ class Engine:
         st.last_alert_tier = m.tier
         st.last_tier = m.tier
         self._alert_ids[m.symbol] = alert_id
+        # Start tracking before the detail thread, so a slow AI call cannot leave
+        # a gap between the alert and the first tracked quote.
+        try:
+            self.tracker.start(
+                m.symbol, alert_ts=self.clock(), alert_price=m.price,
+                primary=getattr(gate, "primary", None),
+                entry_trigger=getattr(gate, "entry_trigger", None),
+                gate_score=getattr(gate, "gate_score", None),
+                plan=getattr(bundle, "plan", None) if bundle is not None else None)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("tracker start failed for %s: %s", m.symbol, exc)
         log.info("ALERT %s tier %d score %.1f", m.symbol, m.tier, m.score)
 
         threading.Thread(target=self._alert_detail_worker,
-                         args=(m, alert_id, msg_id, session, rank, shariah_status, fast),
+                         args=(m, alert_id, msg_id, session, rank, shariah_status, fast,
+                               gate, bundle),
                          daemon=True, name=f"detail-{m.symbol}").start()
 
     def _save_alert(self, m: Metrics, msg_id: Optional[int], shariah_status) -> int:
@@ -483,16 +524,25 @@ class Engine:
 
     # -- detail + AI --------------------------------------------------------
     def _alert_detail_worker(self, m: Metrics, alert_id: int, msg_id, session: str,
-                             rank, shariah_status, fast: bool = False) -> None:
+                             rank, shariah_status, fast: bool = False,
+                             gate=None, bundle=None) -> None:
         try:
-            self._send_detail(m, alert_id, msg_id, session, rank, fast=fast)
+            self._send_detail(m, alert_id, msg_id, session, rank, fast=fast,
+                              gate=gate, bundle=bundle)
         except Exception as exc:  # noqa: BLE001
             log.exception("detail worker failed for %s: %s", m.symbol, exc)
 
     def _send_detail(self, m: Metrics, alert_id: int, msg_id, session: str, rank,
-                     fast: bool = False) -> None:
+                     fast: bool = False, gate=None, bundle=None) -> None:
         enr = self.enricher.enrich(m.symbol, self._quote_for(m), m)
         market = self.market.get()
+
+        # Now that the symbol has been enriched, re-run the gate with the inputs
+        # that were unavailable in the poll loop: candles, news, filings, float.
+        # The metrics-only pass could only see a fraction of the picture, so this
+        # is the verdict that counts. A hard blocker found here still holds.
+        if gate is not None:
+            gate, bundle = self._recheck_gate(m, gate, bundle, enr)
 
         shariah = self._shariah_status(m.symbol, filings=enr.filings, fetch=True)
         shariah_lines = self.shariah.detail_lines(shariah) if self.shariah else []
@@ -506,36 +556,34 @@ class Engine:
         if alert_id and shariah.get("combined"):
             self._store_alert_shariah(alert_id, shariah)
 
-        risk_usd = self.cfg.float("RISK_USD", 50)
         facts = build_ai_facts(m, enr, market, session=session, pct_rank=rank,
-                               time_to_horizon=self._time_to_horizons())
+                               time_to_horizon=self._time_to_horizons(),
+                               gate=gate, bundle=bundle)
         detail_id = None
         try:
             detail_id = self.telegram.send(format_alert2(
-                m, enr, market, shariah_lines=shariah_lines, ai_running=True,
-                risk_usd=risk_usd, fast=fast, html=True),
+                m, enr, market, shariah_lines=shariah_lines, gate=gate,
+                bundle=bundle, fast=fast, html=True),
                 markup=alert_menu(m.symbol), html=True)
         except Exception as exc:  # noqa: BLE001
             log.error("alert 2 send failed: %s", exc)
 
-        agg = AggregateForecast()
-        forecasts: list[ModelForecast] = []
-        if self.runner is not None:
-            try:
-                agg, forecasts = self.runner.analyze(
-                    symbol=m.symbol, facts=facts, price=m.price, tier=m.tier,
-                    news_key=enr.news_key(), kind="alert")
-                shadow = self.runner.shadow(symbol=m.symbol, facts=facts,
-                                            exclude=set(agg.models))
-                forecasts.extend(shadow)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("AI analysis failed for %s: %s", m.symbol, exc)
+        # One call, one decision. It is made after the placeholder is already in
+        # the chat, so a slow provider delays the verdict but never the alert.
+        decision_text = ""
+        decision = None
+        try:
+            decision = decide(self.gateway, facts,
+                              model=self.cfg.raw("AI_MODEL") or "",
+                              deadline=self.clock() + self.cfg.float("AI_TIMEOUT", 45.0))
+            decision_text = render_decision(decision)
+            self.tokens_used += 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning("AI decision failed for %s: %s", m.symbol, exc)
 
-        reaction = reaction_text(agg)
-        price_fc = price_forecast_text(agg, m.price)
-        text2 = format_alert2(m, enr, market, shariah_lines=shariah_lines, reaction=reaction,
-                              price_forecast=price_fc, ai_running=False, agg=agg,
-                              validated=agg.validated, risk_usd=risk_usd, fast=fast, html=True)
+        text2 = format_alert2(m, enr, market, shariah_lines=shariah_lines, gate=gate,
+                              bundle=bundle, decision=decision_text,
+                              fast=fast, html=True)
         if detail_id:
             try:
                 self.telegram.edit(detail_id, text2, markup=alert_menu(m.symbol), html=True)
@@ -546,29 +594,19 @@ class Engine:
 
         if alert_id:
             self.db.execute("UPDATE alerts SET alert2_id=? WHERE id=?", (detail_id, alert_id))
-            self._store_predictions(alert_id, m, session, forecasts, agg, enr, fast=fast)
+        if decision is not None and getattr(decision, "ok", False):
+            self._store_decision(decision, facts)
 
-    def _store_predictions(self, alert_id: int, m: Metrics, session: str,
-                           forecasts: list[ModelForecast], agg: AggregateForecast,
-                           enr, fast: bool = False) -> None:
-        if not forecasts:
-            return
-        st = self.scorer.state(m.symbol)
+    def _store_decision(self, decision, facts: dict) -> None:
+        """Record the one report, so /stats can be checked against what was sent."""
         try:
-            # The naive baseline has to be scored against the same move the
-            # alert fired on, or a fast alert is graded on a window it never used.
-            if fast:
-                window = 3 if (m.rise.get(3, 0.0) or 0.0) >= 0.01 else 5
-                rise = m.rise.get(window, 0.0) or 0.0
-            else:
-                window, rise = 15, m.rise.get(15, 0.0) or 0.0
-            store_predictions(
-                self.db, alert_id=alert_id, symbol=m.symbol, ts=self.clock(), session=session,
-                price0=m.price, forecasts=forecasts, aggregate=agg,
-                active_models=set(agg.models), rise15=rise, burst_window=window,
-                low4h=st.day_low if st.day_low else None)
+            self.db.execute(
+                "INSERT INTO ai_calls(ts, model, kind, ok, latency_ms, tokens, error) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (self.clock(), decision.model or "unknown", "decision",
+                 1 if decision.ok else 0, decision.latency_ms, 0, decision.error or ""))
         except Exception as exc:  # noqa: BLE001
-            log.warning("storing predictions failed for %s: %s", m.symbol, exc)
+            log.debug("decision log failed for %s: %s", facts.get("symbol"), exc)
 
     def _quote_for(self, m: Metrics) -> dict:
         quote = self._quotes_by_symbol.get(m.symbol)
@@ -666,16 +704,142 @@ class Engine:
             lines.append(f"P/L {pct((m.price / entry - 1) * 100)} vs entry {money(entry)}")
         if m.vwap:
             lines.append(reentry_guidance(m.price, m.vwap, None))
-        if self.runner is not None and self.cfg.bool("TRACKER_AI", True):
-            comment = self._tracker_comment(m, watch)
-            if comment:
-                lines.append(comment)
         return "\n".join(lines)
 
-    def _tracker_comment(self, m: Metrics, watch) -> str:
-        return ""
-
     # -- digests / end of day ----------------------------------------------
+    # -- tracking -----------------------------------------------------------
+    def _update_tracker(self, metrics: list[Metrics]) -> None:
+        """Fold this cycle's quotes into every open alert.
+
+        Only symbols with an open tracked alert are touched. Finviz already
+        returns a session high and low per row, so max gain, drawdown and the
+        stop/target tests need no extra fetch -- the TwelveData quota is not
+        spent here, which is the whole reason tracking reads quotes rather than
+        re-fetching candles.
+        """
+        if not self.cfg.bool("TRACKER_ENABLED", True):
+            return
+        open_syms = self.tracker.open_symbols()
+        if not open_syms:
+            return
+        wanted = set(open_syms)
+        for m in metrics:
+            if m.symbol not in wanted:
+                continue
+            q = self._quotes_by_symbol.get(m.symbol) or {}
+            self.tracker.update(m.symbol, price=m.price,
+                                high=q.get("high_price"), low=q.get("low_price"))
+
+    def _record_daily_close(self, metrics: list[Metrics]) -> None:
+        """Accumulate today's OHLC per symbol so prior sessions exist tomorrow.
+
+        This is what makes first_green_day, day3_surge and WORG possible at all.
+        They read prior completed sessions, and there is no free source for
+        history here, so the system builds its own from the quotes it is already
+        polling. Until enough days have accumulated those detectors report
+        INSUFFICIENT_DATA rather than guessing.
+        """
+        day = to_et().strftime("%Y-%m-%d")
+        for m in metrics:
+            q = self._quotes_by_symbol.get(m.symbol) or {}
+            op = q.get("open_price") or m.prev_close
+            hi = max(m.day_high or m.price, q.get("high_price") or 0.0) or m.price
+            lo = q.get("low_price") or m.price
+            try:
+                self.db.execute(
+                    "INSERT INTO daily_close(symbol, day, open, high, low, close, volume) "
+                    "VALUES(?,?,?,?,?,?,?) ON CONFLICT(symbol, day) DO UPDATE SET "
+                    "high=MAX(daily_close.high, excluded.high), "
+                    "low=MIN(daily_close.low, excluded.low), "
+                    "close=excluded.close, volume=MAX(daily_close.volume, excluded.volume)",
+                    (m.symbol, day, op, hi, lo, m.price, m.cum_volume))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("daily_close write failed for %s: %s", m.symbol, exc)
+
+    # -- strategy gate -------------------------------------------------------
+    def _gate_is_mandatory(self) -> bool:
+        """STRATEGY_GATE=0 leaves the old tier path running, for comparison."""
+        return self.cfg.bool("STRATEGY_GATE", False)
+
+    def _run_gate(self, m: Metrics, metrics_list: Optional[list] = None):
+        """Evaluate the metrics-only gate for one symbol.
+
+        Returns (gate, bundle). Both are None when the gate is switched off.
+        No fetch happens here: the detectors that need bars report
+        INSUFFICIENT_DATA and are re-run in `_fire_alert`, where enrichment is
+        already being paid for on the detail thread.
+        """
+        if not self._gate_is_mandatory():
+            return None, None
+        try:
+            gate, bundle = run_gate(m, cfg=self.cfg, now=to_et(),
+                                    history=self._daily_history(m.symbol))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("gate error for %s: %s", m.symbol, exc)
+            return None, None
+        self._gates[m.symbol] = gate
+        return gate, bundle
+
+    def _recheck_gate(self, m: Metrics, gate, bundle, enr):
+        """Re-evaluate the gate now that enrichment exists.
+
+        The poll-loop pass sees price, volume and VWAP only. This pass sees the
+        candles, news, filings and float that make most of the detectors
+        decidable, and it is the one that decides whether the alert stands.
+
+        `bundle` is reused when present so the caller's reference stays live.
+        """
+        try:
+            new_gate, new_bundle = run_gate(
+                m, enr=enr, cfg=self.cfg, now=to_et(),
+                history=self._daily_history(m.symbol))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("gate recheck failed for %s: %s", m.symbol, exc)
+            return gate, bundle
+        self._gates[m.symbol] = new_gate
+        if not new_gate.passed:
+            self._note_gate_reject(m, new_gate)
+            log.info("gate withdrew %s: blocked_by=%s primary=%s", m.symbol,
+                     new_gate.blocked_by, new_gate.primary)
+        return new_gate, new_bundle
+
+    def _daily_history(self, symbol: str) -> list[dict]:
+        """Prior completed sessions for a symbol, oldest first.
+
+        Empty until `daily_close` has been populated, which happens as the
+        system runs. Detectors that need it say INSUFFICIENT_DATA rather than
+        guessing; they will start working on their own once there is history.
+        """
+        if not symbol:
+            return []
+        try:
+            rows = self.db.query(
+                "SELECT day, open, high, low, close, volume FROM daily_close "
+                "WHERE symbol=? AND day < ? ORDER BY day ASC",
+                (symbol.upper(), to_et().strftime("%Y-%m-%d")))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("daily history %s failed: %s", symbol, exc)
+            return []
+        return [dict(r) for r in rows if r["close"] is not None]
+
+    def _note_gate_reject(self, m: Metrics, gate) -> None:
+        """Record why a stock was held back, so `/builds` and `/stats` can say so.
+
+        The rejection is kept even though nothing was sent: a setup that was
+        rejected for `no_catalyst` yesterday and passes today is a better signal
+        than the alert itself.
+        """
+        if gate is None:
+            return
+        self._gate_rejects[m.symbol] = {
+            "ts": self.clock(),
+            "blocked_by": gate.blocked_by,
+            "primary": gate.primary,
+            "score": round(gate.gate_score, 1),
+            "price": m.price,
+            "failed_on": [f for r in gate.strategies if r.failed_on][:4],
+        }
+
     def _maybe_build_feed(self, session: str, metrics: list[Metrics]) -> None:
         """Surface quiet accumulations the alert rules stay silent on.
 
@@ -758,21 +922,22 @@ class Engine:
                     (row["symbol"], day, label, row["peak_pct"], "auto"))
         alerts_today = self.db.scalar("SELECT COUNT(*) FROM alerts WHERE ts>=?",
                                       (self.clock() - 86400,), default=0)
-        tokens = self.runner.tokens_today() if self.runner else 0
-        weighted = self.runner.weighted_tokens_today() if self.runner else 0
         last_backup = self.db.scalar("SELECT MAX(ts) FROM backups", default=None)
         backup_txt = f"{age_str(self.clock() - last_backup)} ago" if last_backup else "none"
-        self._safe_send(
-            f"END OF DAY {day}\n"
-            f"alerts: {alerts_today} | tier>=2 stocks: {len(rows)} | winners: {winners}\n"
-            f"tokens: {tokens:,} (weighted {weighted:,}) | last backup: {backup_txt}")
-        self._evaluate_forecasts()
-        try:
-            from .ai.leaderboard import staged_elimination
-            if self.runner:
-                staged_elimination(self.db, self.cfg, self.catalog)
-        except Exception as exc:  # noqa: BLE001
-            log.debug("staged elimination failed: %s", exc)
+
+        # Close the tracked alerts first, so the report counts them correctly.
+        self.tracker.close_day(day)
+
+        if self.cfg.bool("EOD_REPORT_ENABLED", True):
+            # ONE message a day. Per-alert result messages train the reader to
+            # ignore results; the day's alerts are better judged as a set.
+            self._safe_send(eod_report(self.tracker, day))
+        else:
+            self._safe_send(
+                f"END OF DAY {day}\n"
+                f"alerts: {alerts_today} | tier>=2 stocks: {len(rows)} | "
+                f"winners: {winners}\n"
+                f"last backup: {backup_txt}")
 
     def _record_daily(self, m: Metrics) -> None:
         day = to_et().strftime("%Y-%m-%d")
@@ -856,12 +1021,6 @@ class Engine:
                 return best
         return None
 
-    def _evaluate_forecasts(self) -> None:
-        try:
-            evaluate_due(self.db, self._actual_price, now=self.clock())
-        except Exception as exc:  # noqa: BLE001
-            log.debug("forecast evaluation failed: %s", exc)
-
     # -- shariah ------------------------------------------------------------
     def _shariah_status(self, symbol: str, filings=None, fetch: bool = True) -> dict:
         if not self.shariah or not self.shariah.enabled:
@@ -891,13 +1050,13 @@ class Engine:
             rss = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
         except Exception:  # noqa: BLE001
             pass
-        tokens = self.runner.tokens_today() if self.runner else 0
-        weighted = self.runner.weighted_tokens_today() if self.runner else 0
-        hit = f"{self.runner.cache.hit_rate:.0%}" if self.runner else "n/a"
+        decisions = self.db.scalar(
+            "SELECT COUNT(*) FROM ai_calls WHERE kind='decision'", default=0)
+        rejected = self.db.scalar(
+            "SELECT COUNT(*) FROM ai_calls WHERE kind='decision' AND ok=0", default=0)
+        gate_on = self.cfg.bool("STRATEGY_GATE", False)
+        gate_state = ("on" if gate_on else "off")
         last_backup = self.db.scalar("SELECT MAX(ts) FROM backups", default=None)
-        panel = ", ".join(self.runner.active_panel()) if self.runner else "n/a"
-        mult = (sum(self.catalog.multiplier_of(m) for m in self.runner.active_panel())
-                if self.runner and self.catalog else 0.0)
         backup_txt = f"{age_str(self.clock() - last_backup)} ago" if last_backup else "none"
         return (
             f"STATUS\n"
@@ -905,18 +1064,12 @@ class Engine:
             f"trading day {is_trading_day()}\n"
             f"symbols {s.get('symbols', 0)} | cycle {s.get('ms', 0):.0f} ms | "
             f"quotes {s.get('quotes', 0)} | memory {rss:.0f} MB\n"
-            f"alerts this cycle {s.get('alerts', 0)} | AI cache hit {hit}\n"
-            f"tokens today {tokens:,} (weighted {weighted:,}) | panel {panel} ({mult:.2f}x)\n"
-            f"last backup: {backup_txt}")
+            f"alerts this cycle {s.get('alerts', 0)} | strategy gate {gate_state}\n"
+            f"decisions {decisions} (rejected {rejected}) | last backup: {backup_txt}")
 
     def run_forever(self, poll: Optional[float] = None) -> None:
         self.running = True
         self._safe_send("penny early-warning online.")
-        if self.runner and getattr(self.gateway, "configured", True):
-            try:
-                self.runner.discovery(self.telegram)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("model discovery failed: %s", exc)
         while not self._stop.is_set():
             started = time.monotonic()
             try:

@@ -48,8 +48,8 @@ def run_selftest(cfg: Config | None = None) -> SelfTestReport:
         _ai_checks(report)
         _fib_checks(report)
         _message_checks(report)
-        _catalog_checks(report, home)
-        _leaderboard_checks(report)
+        _strategy_checks(report)
+        _tracking_checks(report)
         _shariah_checks(report)
         _security_checks(report)
         _backup_checks(report, home)
@@ -179,37 +179,31 @@ def _parser_checks(report) -> None:
 
 
 def _ai_checks(report) -> None:
-    from .ai.panel import ModelForecast, aggregate, build_messages, parse_forecast
-    valid = json.dumps({
-        "strength": "strong", "direction": "up", "shape": "grinder",
-        "durability": "sustained", "confidence": 0.7, "catalyst": "news",
-        "sentiment": 0.3, "forecast": {"15m": {"price": 1.2}, "60m": {"price": 1.4},
-                                       "session_end": {"price": 1.8}},
-        "expected_peak": 1.9, "expected_low": 1.1, "market_effect": "risk-on",
-        "reasons": ["a", "b"], "flags": ["dilution"], "change_view": "volume fades",
-    })
-    fc = parse_forecast("m", valid)
-    report.add("AI parser accepts a valid object", fc.valid and fc.forecast["60m"] == 1.4)
-    report.add("AI parser strips code fences",
-               parse_forecast("m", f"```json\n{valid}\n```").valid)
-    report.add("AI parser rejects HTML", not parse_forecast("m", "<html>no</html>").valid)
-    weird = parse_forecast("m", json.dumps({"direction": "sideways",
-                                            "forecast": {"15m": {"price": -3}}}))
-    report.add("unknown enums map to unclear and bad prices are dropped",
-               weird.direction == "unclear" and not weird.valid)
-    many = [ModelForecast(model=f"m{i}", valid=True, direction="up", shape="grinder",
-                          strength="strong", durability="sustained", confidence=0.6,
-                          forecast={"15m": 1.1 + i * 0.1, "60m": 1.2, "session_end": 1.3},
-                          reasons=[f"r{i}"], flags=["dilution"] if i == 0 else [])
-            for i in range(3)]
-    many[1].direction = "down"
-    agg = aggregate(many)
-    report.add("aggregation takes majorities and medians",
-               agg.direction == "up" and agg.n_models == 3
-               and abs(agg.forecast["15m"] - 1.2) < 1e-9,
-               f"direction {agg.direction}, 15m {agg.forecast['15m']}")
-    messages = build_messages({"symbol": "X", "price": 1.23456789,
-                               "news": [{"title": "t" * 500, "summary": "s" * 500}]})
+    from .ai.decision import build_messages, load_methodology, parse_report, validate
+    valid = {
+        "key_findings": ["reclaimed VWAP on 9x volume"],
+        "rating": {"grade": "MODERATE", "confidence": 0.6},
+        "trends": {"direction": "rising", "momentum": "3m accel"},
+        "entry_points": [{"zone": "1.40-1.42"}],
+        "exit_points": {"stop": "1.33", "t1": "1.55"},
+        "verdict": "ENTER", "rubrics_applied": ["catalyst + volume"],
+        "gate": {"passed": True},
+    }
+    report.add("the decision validator accepts a valid report",
+               validate(valid).ok, validate(valid).error or "ok")
+    report.add("the decision parser strips code fences",
+               validate(parse_report(f"```json\n{json.dumps(valid)}\n```")).ok)
+    report.add("the decision parser rejects HTML",
+               not validate(parse_report("<html>no</html>")).ok)
+    report.add("ENTER on a gate that did not pass is rejected",
+               not validate(dict(valid, gate={"passed": False})).ok)
+    report.add("a short entry zone is rejected: long-only",
+               not validate(dict(valid, entry_points=[{"zone": "short below 1.30"}])).ok)
+    method = load_methodology().lower()
+    report.add("the methodology prompt states long-only and forbids roleplay",
+               "long-only" in method and "roleplay" in method)
+    messages = build_messages({"symbol": "X", "price": 1.23456789, "news": [],
+                               "gate": {"passed": True}})
     report.add("prompt stays within the character cap",
                len(messages[1]["content"]) <= 7000, f"{len(messages[1]['content'])} chars")
 
@@ -238,7 +232,7 @@ def _message_checks(report) -> None:
     from .enrich import Enrichment
     from .scoring import Metrics
     m = Metrics(symbol="XYZ", ts=time.time(), price=1.227, prev_close=1.0)
-    m.rise = {15: 0.05, 60: 0.23}
+    m.rise = {3: 0.012, 5: 0.035, 15: 0.05, 60: 0.23}
     m.volx = {15: 10.0}
     m.dollar_vol = {15: 12000}
     m.cum_volume = 113000
@@ -249,47 +243,119 @@ def _message_checks(report) -> None:
     m.pct_vs_close = 0.227
     text1 = format_alert1(m, shariah_line="Shariah: COMPLIANT (halalterminal)", pct_rank=1)
     report.add("Alert 1 has the documented shape",
-               "EARLY BUILD" in text1 and "+22.7% vs close" in text1
+               text1.startswith("ALERT: EARLY ") and "+22.7% vs close" in text1
                and "vol 10.0x normal" in text1 and "#1 gainer" in text1
                and "Shariah: COMPLIANT" in text1,
                text1.splitlines()[0])
+    report.add("Alert 1 header reads 3m and 5m only, not 15m and 60m",
+               "3m" in text1 and "5m" in text1 and "15m" not in text1
+               and "60m" not in text1, text1.splitlines()[1])
     enr = Enrichment(symbol="XYZ")
-    enr.news = [{"title": "headline", "source": "alpaca", "age": "2h", "summary": ""}]
+    enr.news = [{"title": "Acme awarded $12M contract", "source": "Benzinga",
+                 "age": "2m", "summary": ""}]
     enr.outlets = 1
     enr.missing = ["candles"]
-    text2 = format_alert2(m, enr, None, shariah_lines=["Shariah: COMPLIANT"],
-                          reaction="REACTION: strong/up/grinder/sustained",
-                          price_forecast="PRICE FORECAST: +15m 1.30",
-                          ai_running=False)
+    text2 = format_alert2(m, enr, None, shariah_lines=["Shariah: COMPLIANT"])
     report.add("Alert 2 stays under the 3,900 character limit", len(text2) <= 3900,
                f"{len(text2)} chars")
-    report.add("Alert 2 carries the high-risk disclaimer", "not financial advice" in text2)
+    report.add("Alert 2 carries the high-risk disclaimer",
+               "not investment advice" in text2.lower())
+    report.add("Alert 2 leads with WHY IT MOVED and names one cause",
+               "WHY IT MOVED" in text2 and "CAUSE:" in text2
+               and "awarded $12M" in text2)
+    report.add("the lean alert carries no TECH, FIB, PLAN or standalone VERDICT",
+               not any(block in text2 for block in ("\nTECH", "FIB swing", "\nPLAN:",
+                                                    "\u2500\u2500 VERDICT")))
+    report.add("the verdict lives only inside the AI DECISION block",
+               "\u2500\u2500 AI DECISION" in text2)
+    report.add("no trade instruction in the lean alert is a short",
+               not any(w in text2.lower() for w in ("sell short", "go short", "fade the")))
 
 
-def _catalog_checks(report, home: Path) -> None:
-    from .ai.catalog import ModelCatalog
-    catalog = ModelCatalog(home / "catalog.json")
-    report.add("the starting catalogue is loaded", len(catalog.all_ids()) > 20,
-               f"{len(catalog.all_ids())} models")
-    catalog.add("brand-new-model", 2.5)
-    reloaded = ModelCatalog(home / "catalog.json")
-    report.add("catalogue changes persist",
-               reloaded.get("brand-new-model") is not None
-               and reloaded.multiplier_of("brand-new-model") == 2.5)
-    pool = catalog.pool(max_multiplier=4.0)
-    report.add("the candidate pool excludes routing aliases and over-limit models",
-               "auto" not in pool and "gpt-5.6" not in pool and "glm-5.1" in pool,
-               f"{len(pool)} candidates")
+def _strategy_checks(report) -> None:
+    """The gate every alert now passes through, and what it refuses."""
+    from .strategies import Bundle, evaluate_gate
+
+    def bundle(**over):
+        base = dict(symbol="STRAT", price=1.20, prev_close=1.00, open_price=1.01,
+                    day_high=1.21, day_low=0.99, cum_volume=400_000,
+                    pct_vs_close=0.20, rise={3: 0.012, 5: 0.035, 15: 0.05},
+                    volx={3: 9.0, 5: 12.4, 15: 10.0},
+                    dollar_vol={5: 900.0, 15: 12_000.0}, vwap=1.10,
+                    minutes_since_low=38.0, float_shares=8_000_000,
+                    short_pct=22.0, dollar_level=1.00)
+        base.update(over)
+        return Bundle(**base)
+
+    ran = evaluate_gate(bundle())
+    report.add("the gate runs the detector library, not a score",
+               len(ran.strategies) >= 10, f"{len(ran.strategies)} detectors")
+
+    parabolic = evaluate_gate(bundle(rise={3: 0.05, 5: 0.12, 15: 0.31},
+                                     volx={3: 30.0, 5: 40.0, 15: 30.0},
+                                     dollar_vol={5: 40_000.0, 15: 300_000.0},
+                                     price=2.40, vwap=1.60, from_high=-0.005))
+    report.add("an exhausted parabolic move is blocked, never shorted",
+               not parabolic.passed
+               and parabolic.blocked_by in ("EXHAUSTED", "no_strategy"),
+               f"blocked_by={parabolic.blocked_by}")
+
+    offering = evaluate_gate(bundle(news=[
+        {"title": "Company prices $12M offering at $0.95 per share",
+         "source": "Benzinga", "url": "https://example.invalid/a", "age": "5m"}]))
+    report.add("an offering priced below the open blocks the gate",
+               not offering.passed and offering.blocked_by == "DILUTION",
+               f"blocked_by={offering.blocked_by}")
+
+    conflict = evaluate_gate(bundle(data_conflict=True))
+    report.add("a quote that disagrees with the verified price blocks the gate",
+               not conflict.passed and conflict.blocked_by == "DATA_CONFLICT",
+               f"blocked_by={conflict.blocked_by}")
+
+    thin = evaluate_gate(bundle())
+    report.add("a detector with no history says INSUFFICIENT_DATA and does not pass",
+               any(r.verdict == "INSUFFICIENT_DATA" for r in thin.strategies),
+               "history has not accumulated yet")
 
 
-def _leaderboard_checks(report) -> None:
-    from .ai.leaderboard import composite_from, wilson_interval
-    report.add("composite score matches the documented formula",
-               abs(composite_from(0.8, 0.0) - 0.88) < 1e-9
-               and abs(composite_from(0.5, 0.125) - 0.5) < 1e-9
-               and abs(composite_from(0.5, 0.25) - 0.3) < 1e-9)
-    lo, hi = wilson_interval(80, 100)
-    report.add("Wilson interval is sane", 0.7 < lo < 0.8 < hi < 0.9, f"{lo:.2f}-{hi:.2f}")
+def _tracking_checks(report) -> None:
+    """Every alert graded to the close, and one message a day for the results."""
+    from .store import open_state
+    from .tracking import Tracker, eod_report, stats_report
+
+    day = "2026-10-09"
+    ts = 1_760_000_000.0
+    db = open_state(Path(tempfile.mkdtemp(prefix="penny-track-")) / "state.db")
+    try:
+        tr = Tracker(db, clock=lambda: ts)
+        tr.start("GRND", alert_ts=ts, alert_price=1.00, day=day,
+                 primary="low_float_squeeze")
+        tr.update("GRND", price=1.20, high=1.21, low=1.00, day=day)
+        tr.start("BRST", alert_ts=ts, alert_price=2.00, day=day, primary="gap_and_go")
+        tr.update("BRST", price=1.80, high=1.85, low=1.78, day=day)
+        tr.start("GONE", alert_ts=ts, alert_price=1.00, day=day)
+        closed = tr.close_day(day)
+        report.add("the tracker closes every open alert at the close",
+                   closed == 3, f"{closed} closed")
+        rows = {r["symbol"]: r for r in tr.rows_for(day)}
+        report.add("a winner records its gain and a loser its drawdown",
+                   abs(rows["GRND"]["close_pct"] - 0.20) < 1e-6
+                   and rows["BRST"]["close_pct"] < 0,
+                   f"GRND {rows['GRND']['close_pct']:.0%}, BRST {rows['BRST']['close_pct']:.0%}")
+        report.add("a symbol that stopped being quoted is invalid, not flat",
+                   rows["GONE"]["status"] == "invalid"
+                   and rows["GONE"]["close_pct"] is None, rows["GONE"]["status"])
+        report.add("closing a day twice does not close it twice", tr.close_day(day) == 0)
+        text = eod_report(tr, day)
+        report.add("one end-of-day message carries the whole day as a set",
+                   text.startswith(f"END OF DAY {day}") and "alerts 3" in text
+                   and "invalidate 1" in text, text.splitlines()[0])
+        stats = stats_report(tr, days=3650)
+        report.add("stats grade the strategies, ranked by average close",
+                   stats.startswith("STATS") and "low_float_squeeze" in stats
+                   and "gap_and_go" in stats, stats.splitlines()[0])
+    finally:
+        db.close()
 
 
 def _shariah_checks(report) -> None:

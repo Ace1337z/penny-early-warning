@@ -26,8 +26,8 @@ PROMPTS: dict[str, tuple[str, bool, str]] = {
     "AI_BASE_URL": ("AI gateway base URL (OpenAI-compatible, e.g. https://host/v1)", False,
                     "the provider's base URL; /set can also change it later"),
     "AI_KEY": ("AI gateway key", False, "the AI gateway account; can also be set later with /set"),
-    "AI_MODELS": ("Active panel model ids, comma separated", False,
-                  "e.g. model-a,model-b,model-c"),
+    "AI_MODEL": ("The one model that makes the decision call", False,
+                  "the provider's model id, e.g. deepseek-v4.1-flash"),
     "SEC_USER_AGENT": ("SEC contact as 'Name email' (required for SEC EDGAR)", False,
                        "your own name and email"),
     "ALPACA_KEY": ("Alpaca key id (optional: candles fallback, news)", False, "Alpaca dashboard"),
@@ -47,7 +47,7 @@ PROMPTS: dict[str, tuple[str, bool, str]] = {
 # key can be entered later with /set. Everything else here is optional.
 SETUP_ORDER = [
     "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "FINVIZ_TOKEN", "AI_BASE_URL", "AI_KEY",
-    "AI_MODELS", "SEC_USER_AGENT", "ALPACA_KEY", "ALPACA_SECRET", "FINNHUB_KEY",
+    "AI_MODEL", "SEC_USER_AGENT", "ALPACA_KEY", "ALPACA_SECRET", "FINNHUB_KEY",
     "HALALTERMINAL_API_KEY", "BACKUP_PASSPHRASE", "BACKUP_REMOTE", "GITHUB_TOKEN",
 ]
 
@@ -140,44 +140,39 @@ def _detect_chat_id(cfg: Config) -> Optional[str]:
 
 
 def _discover_models(cfg: Config) -> None:
-    from .ai.catalog import ModelCatalog
+    """Pick the one model that will make the decision calls.
+
+    There is no panel and no leaderboard any more, so this is a single choice.
+    The first model the provider lists is offered as the default because there is
+    no evidence-based way to rank a provider's own catalogue from here.
+    """
     from .ai.gateway import AIGateway
     gateway = AIGateway(cfg, cfg.secrets())
-    catalog = ModelCatalog(cfg.catalog_path)
     try:
         models = gateway.list_models()
     except Exception as exc:  # noqa: BLE001
         print(f"\nCould not read the model list from the provider ({exc}).")
-        print("Enter model ids manually (comma separated, optionally id:multiplier).")
-        raw = input("model ids: ").strip()
+        print("Enter the model id to use for decisions.")
+        raw = input("model id: ").strip()
         if raw:
-            for token in raw.split(","):
-                token = token.strip()
-                if not token:
-                    continue
-                model, _, mult = token.partition(":")
-                try:
-                    catalog.add(model, float(mult or 1.0))
-                except ValueError:
-                    catalog.add(model, 1.0)
-            cfg.set("AI_MODELS", ",".join(t.split(":")[0] for t in raw.split(",") if t.strip()))
+            cfg.set("AI_MODEL", raw.split(",")[0].strip())
         return
-    known = [m for m in models if catalog.get(m)]
-    unknown = [m for m in models if not catalog.get(m)]
+
     print(f"\nThe provider lists {len(models)} models.")
-    if unknown:
-        print("Not in your catalogue (not used until you confirm them and give a multiplier):")
-        for m in unknown[:20]:
-            print(f"  {m}")
-        print("Add with: penny models add ID MULTIPLIER")
-    if known:
-        default = cfg.raw("AI_MODELS")
-        print(f"current active panel: {default}")
-        choice = input("keep the current panel? [Y/n]: ").strip().lower()
-        if choice == "n":
-            raw = input("active panel model ids (comma separated): ").strip()
-            if raw:
-                cfg.set("AI_MODELS", raw)
+    for m in models[:20]:
+        print(f"  {m}")
+    current = cfg.raw("AI_MODEL")
+    if current and current in models:
+        print(f"\ncurrently in use: {current}")
+        return
+    default = models[0] if models else ""
+    if not default:
+        print("The provider listed no models. Set one manually with: "
+              "penny config set AI_MODEL <id>")
+        return
+    print(f"\nOne model makes the decision calls. Suggested: {default}")
+    raw = input(f"model id [{default}]: ").strip() or default
+    cfg.set("AI_MODEL", raw.split(",")[0].strip())
 
 
 def _post_setup_checks(cfg: Config, args) -> None:
@@ -343,41 +338,28 @@ def cmd_status(args) -> int:
 
 
 def cmd_models(args) -> int:
+    """Inspect the single decision model. No catalogue, no panel."""
     cfg = _config(args)
-    from .ai.catalog import ModelCatalog
-    from .ai.leaderboard import apply_selection, leaderboard_text
     from .runtime import build
     runtime = build(cfg, with_engine=True, console_logs=False)
     try:
-        catalog = runtime.catalog
-        if args.action == "add":
-            if not args.model or args.multiplier is None:
-                print("usage: penny models add ID MULTIPLIER")
-                return 2
-            catalog.add(args.model, args.multiplier)
-            print(f"added {args.model} at {args.multiplier}x")
-            return 0
-        if args.action == "remove":
-            ok = catalog.remove(args.model)
-            print(f"removed {args.model}" if ok else f"{args.model} not in the catalogue")
-            return 0
-        if args.action == "enable" or args.action == "disable":
-            ok = catalog.enable(args.model, args.action == "enable")
-            print(f"{args.action}d {args.model}" if ok else f"{args.model} not found")
-            return 0
         if args.action == "refresh":
-            if runtime.engine.runner is None:
+            gateway = runtime.engine.gateway
+            if gateway is None or not gateway.configured:
                 print("AI gateway not configured")
                 return 1
-            result = runtime.engine.runner.discovery(None)
-            print(json.dumps({k: v for k, v in result.items() if k != "listed"}, indent=2))
-            print(f"listed {len(result['listed'])} models")
+            models = gateway.list_models()
+            print(f"listed {len(models)} models")
+            for m in models[: args.limit or 30]:
+                print(f"  {m}")
             return 0
-        if args.action == "apply":
-            panel, changed = apply_selection(runtime.state, cfg, catalog, None)
-            print(f"panel {'changed to' if changed else 'unchanged:'} {', '.join(panel)}")
-            return 0
-        print(leaderboard_text(runtime.state, cfg, catalog, limit=args.limit))
+        current = cfg.raw("AI_MODEL")
+        print(f"decision model: {current or '(unset)'}")
+        print(f"base url:      {cfg.raw('AI_BASE_URL') or '(unset)'}")
+        print(f"key set:       {'yes' if cfg.raw('AI_KEY') else 'no'}")
+        if not current:
+            print("\nSet one with: penny config set AI_MODEL <id>")
+        return 0
     finally:
         runtime.close()
     return 0

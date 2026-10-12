@@ -139,20 +139,19 @@ def run_doctor(runtime, *, test_models: bool = True) -> DoctorReport:
             report.add("AI model list", False,
                        f"{exc} (optional: not all providers expose /models)",
                        optional=True)
-        targets = list(dict.fromkeys(
-            cfg.list("AI_MODELS") + cfg.list("AI_FALLBACK_MODELS")))
+        targets = [cfg.raw("AI_MODEL").strip()] if cfg.raw("AI_MODEL") else []
         if test_models:
             if not targets:
-                targets = models[:3]
+                targets = models[:1]
             available = set(models)
-            # If the provider advertises its models and NONE of the configured ids
-            # are among them, the panel can never answer: that is a real failure,
-            # not an optional one. (Example ids shipped in the default config are
-            # the usual cause.)
+            # If the provider advertises its models and the configured id is not
+            # among them, the decision call can never answer: that is a real
+            # failure, not an optional one. (The example id shipped in the
+            # default config is the usual cause.)
             if models and not (available & set(targets)):
-                report.add("AI models configured", False,
+                report.add("AI model configured", False,
                            "none of " + ", ".join(targets[:4])
-                           + " are offered by the provider; set real ids, e.g. "
+                           + " are offered by the provider; set a real id, e.g. "
                            + ", ".join(models[:4]), optional=False)
             for model in targets:
                 if models and model not in available:

@@ -141,8 +141,6 @@ class Bundle:
     minutes_tracked: float = 0.0
     session: str = "regular"
     now_et: Any = None
-    session: str = "regular"
-    now_et: Any = None
     data_conflict: bool = False
     # Thresholds the engine copies from config once per cycle, so a detector
     # never reads config directly (and stays trivially testable).

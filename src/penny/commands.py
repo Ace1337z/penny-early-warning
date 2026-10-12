@@ -5,13 +5,16 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import timedelta
 from typing import Optional
 
-from .ai.leaderboard import apply_selection, leaderboard_text
+from .ai.decision import decide, render as render_decision
+from .strategies.wiring import run_gate
+from .tracking import eod_report, stats_report, summary_line
 from .alerts import format_build_feed, tier_name
 from .ui import (arrow_for, bar, bold, button, cb, code, divider, h, inline,
                  parse_cb, reply_keyboard)
-from .util import money, num, pct, session_for
+from .util import money, num, pct, session_for, to_et
 
 log = logging.getLogger(__name__)
 
@@ -30,9 +33,13 @@ Tap a button below, or type a command.
 /unwatch SYM
 /watchlist
 
-<b>Models and keys</b>
-/models - leaderboard and active panel
-/setmodels A,B,C - set the panel
+<b>Results</b>
+/eod - tracked results for a day
+/eod YYYY-MM-DD - results for a specific day
+/stats - performance by strategy
+/tracked - alerts still open today
+
+<b>Keys</b>
 /set KEY VALUE - change any setting
 /keys - what is configured
 
@@ -50,7 +57,9 @@ COMMANDS: list[tuple[str, str]] = [
     ("status", "system health"),
     ("check", "full analysis for a symbol"),
     ("watchlist", "your watchlist"),
-    ("models", "model leaderboard and panel"),
+    ("eod", "tracked results for a day"),
+    ("stats", "performance by strategy"),
+    ("tracked", "alerts still open today"),
     ("keys", "what is configured"),
     ("backup", "run a backup now"),
     ("help", "all commands"),
@@ -59,7 +68,7 @@ COMMANDS: list[tuple[str, str]] = [
 MAIN_MENU = inline([
     [button("\U0001F4C8 Top", cb("top")), button("\U0001F331 Builds", cb("builds")),
      button("\U0001F30E Market", cb("market"))],
-    [button("\U0001F440 Watchlist", cb("watch")), button("\U0001F916 Models", cb("models")),
+    [button("\U0001F440 Watchlist", cb("watch")), button("\U0001F4CA Results", cb("eod")),
      button("\u22EF More", cb("more"))],
 ])
 
@@ -79,8 +88,9 @@ STATUS_MENU = inline([
      button("\U0001F3E0 Menu", cb("menu"))],
 ])
 
-MODELS_MENU = inline([
-    [button("\U0001F504 Refresh", cb("models")), button("\U0001F3E0 Menu", cb("menu"))],
+RESULTS_MENU = inline([
+    [button("\U0001F504 Refresh", cb("eod")), button("Stats", cb("stats")),
+     button("\U0001F3E0 Menu", cb("menu"))],
 ])
 
 
@@ -208,10 +218,33 @@ class CommandHandler:
         text = self.engine.status_text() if self.engine else "engine not available"
         self._render(text, STATUS_MENU, mid)
 
-    def _cb_models(self, arg: str, mid: Optional[int]) -> None:
-        text = (leaderboard_text(self.db, self.cfg, self.catalog)
-                if self.catalog else "models are not configured")
-        self._render(text, MODELS_MENU, mid, html=False)
+    def _cb_eod(self, arg: str, mid: Optional[int]) -> None:
+        tracker = getattr(self.engine, "tracker", None) if self.engine else None
+        if tracker is None:
+            self._render("Tracking is not available.", RESULTS_MENU, mid)
+            return
+        self._render(eod_report(tracker, (arg or "").strip() or self._default_eod_day()),
+                     RESULTS_MENU, mid)
+
+    def _cb_stats(self, arg: str, mid: Optional[int]) -> None:
+        tracker = getattr(self.engine, "tracker", None) if self.engine else None
+        if tracker is None:
+            self._render("Tracking is not available.", RESULTS_MENU, mid)
+            return
+        self._render(stats_report(tracker, self.cfg.int("STATS_WINDOW_DAYS", 30)),
+                     RESULTS_MENU, mid)
+
+    @staticmethod
+    def _default_eod_day() -> str:
+        """Today once the session is done, otherwise the previous session.
+
+        Asking at 09:15 should return yesterday, not an empty report for a
+        session that has not started.
+        """
+        now = to_et()
+        if now.hour >= 16:
+            return now.strftime("%Y-%m-%d")
+        return (now - timedelta(days=1)).strftime("%Y-%m-%d")
 
     def _cb_keys(self, arg: str, mid: Optional[int]) -> None:
         self._render(self._render_keys_text(), MAIN_MENU, mid)
@@ -264,7 +297,9 @@ class CommandHandler:
         "builds": _cb_builds,
         "market": _cb_market,
         "status": _cb_status,
-        "models": _cb_models,
+        "eod": _cb_eod,
+        "stats": _cb_stats,
+        "tracked": lambda a, m: self._render(self._render_tracked_text(), RESULTS_MENU, m),
         "keys": _cb_keys,
         "watch": _cb_watch,
         "backup": _cb_backup,
@@ -289,8 +324,9 @@ class CommandHandler:
                 "/watchlist": self.cmd_watchlist,
                 "/check": self.cmd_check,
                 "/market": self.cmd_market,
-                "/models": self.cmd_models,
-                "/setmodels": self.cmd_setmodels,
+                "/eod": self.cmd_eod,
+                "/stats": self.cmd_stats,
+                "/tracked": self.cmd_tracked,
                 "/set": self.cmd_set,
                 "/setkey": self.cmd_set,
                 "/keys": self.cmd_keys,
@@ -322,7 +358,7 @@ class CommandHandler:
             self.telegram.send(greeting, html=True,
                                markup=reply_keyboard([
                                    ["/top", "/builds", "/market"],
-                                   ["/watchlist", "/models", "/help"],
+                                   ["/watchlist", "/eod", "/help"],
                                ]))
         except TypeError:
             # A client that does not accept markup yet.
@@ -548,24 +584,19 @@ class CommandHandler:
             shariah_lines = self.engine.shariah.detail_lines(shariah) if self.engine.shariah else []
             mark("shariah")
             risk_usd = self.cfg.float("RISK_USD", 50)
+            # Run the same gate the alert path uses, so /check and the live
+            # alert cannot disagree about whether this is a setup.
+            gate, bundle = run_gate(m, enr=enr, cfg=self.cfg, now=to_et())
             facts = build_ai_facts(m, enr, market, session=session_for(),
-                                   time_to_horizon=self.engine._time_to_horizons())
-            reaction = ""
-            price_fc = ""
-            validated = False
-            agg = None
-            if self.runner:
-                agg, _ = self.runner.analyze(symbol=symbol, facts=facts, price=m.price,
-                                             tier=m.tier, kind="check", force=True)
-                from .ai.panel import price_forecast_text, reaction_text
-                reaction = reaction_text(agg)
-                price_fc = price_forecast_text(agg, m.price)
-                validated = agg.validated
-            mark("ai panel")
+                                   time_to_horizon=self.engine._time_to_horizons(),
+                                   gate=gate, bundle=bundle)
+            decision = decide(getattr(self.engine, "gateway", None), facts,
+                              model=self.cfg.raw("AI_MODEL") or "")
+            mark("ai decision")
             log.info("check %s: total %.1fs", symbol, time.monotonic() - started)
             text = format_alert2(m, enr, market, shariah_lines=shariah_lines,
-                                 reaction=reaction, price_forecast=price_fc, agg=agg,
-                                 ai_running=False, validated=validated, risk_usd=risk_usd,
+                                 gate=gate, bundle=bundle,
+                                 decision=render_decision(decision),
                                  fast=self.engine.fast_burst(m, session), html=True)
             self._reply(text, markup=self._check_menu(symbol), html=True)
         except Exception as exc:  # noqa: BLE001
@@ -623,73 +654,43 @@ class CommandHandler:
             return
         self._reply(self._render_market_text(), markup=MARKET_MENU)
 
-    def cmd_models(self, args) -> None:
-        if not self.catalog or not self.runner:
-            self._reply("Models are not configured.")
+    def cmd_eod(self, args) -> None:
+        """The day's tracked results. Defaults to the last completed session."""
+        tracker = getattr(self.engine, "tracker", None) if self.engine else None
+        if tracker is None:
+            self._reply("Tracking is not available.")
             return
-        sub = args[0].lower() if args else ""
-        if sub == "refresh":
-            self._typing()
-            result = self.runner.discovery(self.telegram)
-            self._reply(f"{bold('Model list refreshed')}\n"
-                        f"listed: {len(result['listed'])}\n"
-                        f"failed test: {h(', '.join(result['failed_tests']) or 'none')}\n"
-                        f"new (confirm with <code>/models add</code>): "
-                        f"{h(', '.join(result['unknown_to_user']) or 'none')}",
-                        markup=MODELS_MENU)
-            return
-        if sub == "add":
-            if len(args) < 3:
-                self._reply("Usage: <code>/models add ID MULTIPLIER</code>")
-                return
-            try:
-                multiplier = float(args[2])
-            except ValueError:
-                self._reply("Multiplier must be a number.")
-                return
-            self.catalog.add(args[1], multiplier)
-            self._reply(f"Added {code(args[1])} at {multiplier}x", markup=MODELS_MENU)
-            return
-        if sub == "remove":
-            if len(args) < 2:
-                self._reply("Usage: <code>/models remove ID</code>")
-                return
-            ok = self.catalog.remove(args[1])
-            self._reply(f"Removed {code(args[1])}" if ok
-                        else f"{code(args[1])} was not in the catalogue",
-                        markup=MODELS_MENU)
-            return
-        if sub == "apply":
-            panel, changed = apply_selection(self.db, self.cfg, self.catalog, self.telegram)
-            self._reply(f"Panel {'changed to' if changed else 'unchanged: '} "
-                        + ", ".join(code(m) for m in panel), markup=MODELS_MENU)
-            return
-        if sub == "set":
-            ids = []
-            for token in (args[1] if len(args) > 1 else "").split(","):
-                if ":" in token:
-                    model, _, mult = token.partition(":")
-                    self.catalog.add(model, float(mult or 1.0))
-                ids.append(token.split(":")[0])
-            self._reply("Model ids recorded: " + ", ".join(code(i) for i in ids),
-                        markup=MODELS_MENU)
-            return
-        self._reply(leaderboard_text(self.db, self.cfg, self.catalog),
-                    markup=MODELS_MENU, html=False)
+        day = (args[0].strip() if args and args[0] else "") or self._default_eod_day()
+        self._reply(eod_report(tracker, day), markup=RESULTS_MENU)
 
-    def cmd_setmodels(self, args) -> None:
-        if not args:
-            self._reply("Usage: <code>/setmodels A,B,C</code>")
+    def cmd_stats(self, args) -> None:
+        """Performance grouped by the strategy that fired.
+
+        Grouped rather than averaged, because the actionable question is which
+        detector to keep, and an overall average hides a consistently flat one.
+        """
+        tracker = getattr(self.engine, "tracker", None) if self.engine else None
+        if tracker is None:
+            self._reply("Tracking is not available.")
             return
-        models = [m.strip() for m in args[0].split(",") if m.strip()]
-        if len(models) < 1:
-            self._reply("Usage: <code>/setmodels A,B,C</code>")
-            return
-        self.db.kv_set("active_panel", models)
-        self._reply("Active panel set to: " + ", ".join(code(m) for m in models),
-                    markup=MODELS_MENU)
-        if self.backup:
-            self.backup.run("panel-change")
+        self._reply(stats_report(tracker, self.cfg.int("STATS_WINDOW_DAYS", 30)),
+                    markup=RESULTS_MENU)
+
+    def cmd_tracked(self, args) -> None:
+        """Alerts still open right now, and where each has got to."""
+        self._reply(self._render_tracked_text(), markup=RESULTS_MENU)
+
+    def _render_tracked_text(self) -> str:
+        tracker = getattr(self.engine, "tracker", None) if self.engine else None
+        if tracker is None:
+            return "Tracking is not available."
+        rows = tracker.rows_for(limit=20)
+        if not rows:
+            return "No alerts tracked today."
+        still_open = sum(1 for r in rows if r.get("status") == "open")
+        lines = [f"TRACKED TODAY - {still_open} open of {len(rows)}", ""]
+        lines.extend(summary_line(r) for r in rows)
+        return "\n".join(lines)
 
     def cmd_set(self, args) -> None:
         """Set any configuration value from the bot. Secrets are saved, not echoed."""
@@ -711,7 +712,6 @@ class CommandHandler:
         except Exception as exc:  # noqa: BLE001
             self._reply(f"Could not save {code(key)}: {h(exc)}")
             return
-        self._sync_ai_panel(key)
         note = self._apply_credential_change(key)
         try:
             from .logging_setup import update_secrets
@@ -744,18 +744,17 @@ class CommandHandler:
         that looked configured but never called the new credential -- it needed a
         restart to recover. Returns a short note for the user, or "".
         """
-        if key in ("AI_KEY", "AI_BASE_URL") and self.runner is not None:
+        if key in ("AI_KEY", "AI_BASE_URL") and self.engine is not None:
             try:
-                panel = self.runner.reset_after_credential_change()
+                forget = self.engine.gateway.forget_endpoint()
             except Exception as exc:  # noqa: BLE001
-                log.warning("could not rebind the AI panel after %s: %s", key, exc)
+                log.warning("could not rebind the AI endpoint after %s: %s", key, exc)
                 return ""
-            if not panel:
-                return ("\u26A0\uFE0F AI panel reset, but the provider listed no models. "
-                        "Send <code>/set AI_MODELS id1,id2</code>.")
-            shown = ", ".join(panel[:4])
-            more = f" (+{len(panel) - 4} more)" if len(panel) > 4 else ""
-            return f"\u2705 AI panel reloaded: <code>{h(shown)}</code>{h(more)}"
+            if forget:
+                # The gateway caches which base answered and which model ids it
+                # served, both under the old key. A replaced key otherwise leaves
+                # a system that looks configured but never calls the new one.
+                return "AI endpoint rebound to the new credential."
         if key == "HALALTERMINAL_API_KEY" and self.shariah is not None:
             try:
                 cleared = self.shariah.reset_after_credential_change()
@@ -764,24 +763,6 @@ class CommandHandler:
                 return ""
             return f"\u2705 Compliance cache cleared ({cleared} row(s)); re-screening on next check."
         return ""
-
-    def _sync_ai_panel(self, key: str) -> None:
-        """Keep the stored panel in step with an edited model list.
-
-        `active_panel`/`fallbacks` are DB copies the auto-selector can change, so
-        without this a `/set AI_MODELS ...` fix would be shadowed until a restart.
-        """
-        if key not in ("AI_MODELS", "AI_FALLBACK_MODELS"):
-            return
-        try:
-            models = self.cfg.list(key)
-            if not models:
-                return
-            is_panel = key == "AI_MODELS"
-            self.db.kv_set("active_panel" if is_panel else "fallbacks", models)
-            self.db.kv_set("active_panel_source" if is_panel else "fallbacks_source", models)
-        except Exception as exc:  # noqa: BLE001
-            log.debug("could not sync panel from %s: %s", key, exc)
 
     def _render_keys_text(self) -> str:
         """Show which settings are configured, masking every secret."""

@@ -1,15 +1,13 @@
-"""Custom OpenAI-compatible provider: panel sync and self-healing.
+"""A custom OpenAI-compatible provider, and the one model id it is given.
 
 Covers the failure mode where alerts carry no AI text because the shipped
-example model ids are absent from the operator's provider, and where a
-`/set AI_MODELS` fix would otherwise be shadowed by the stored panel.
+example model id is absent from the operator's provider, and pins that `/set
+AI_MODEL` takes effect without a restart.
 """
 
 from __future__ import annotations
 
-from penny.ai.catalog import ModelCatalog
 from penny.ai.gateway import FakeGateway
-from penny.ai.runner import AIRunner
 
 
 class _FakeDB:
@@ -34,107 +32,75 @@ class _FakeDB:
         return default
 
 
-def _runner(cfg, gateway, db):
-    catalog = ModelCatalog(cfg.path.parent / "models.json")
-    return AIRunner(cfg, gateway, catalog, db, secrets=[])
+# --- /set AI_MODEL takes effect without a restart ----------------------------
 
-
-# --- /set AI_MODELS takes effect without a restart -------------------------
-
-def test_set_models_syncs_the_stored_panel(cfg):
-    """A corrected model list must replace the DB snapshot, not be shadowed."""
+def test_set_model_is_applied_immediately(cfg):
     from penny.commands import CommandHandler
     from penny.telegram import FakeTelegram
 
     db = _FakeDB()
-    db.kv_set("active_panel", ["deepseek-v4.1-flash", "kimi-k3", "glm-5.3"])
     telegram = FakeTelegram(cfg)
     handler = CommandHandler(cfg, db, None, telegram)
 
-    handler.cmd_set(["AI_MODELS", "provider-a,provider-b,provider-c"])
+    handler.cmd_set(["AI_MODEL", "provider-a"])
 
-    assert db.kv_get("active_panel") == ["provider-a", "provider-b", "provider-c"]
-    assert db.kv_get("active_panel_source") == ["provider-a", "provider-b", "provider-c"]
+    assert cfg.raw("AI_MODEL") == "provider-a"
+    assert any("AI_MODEL" in m for m in telegram.outbox)
 
 
-def test_set_unrelated_key_does_not_touch_the_panel(cfg):
+def test_set_unrelated_key_does_not_touch_the_model(cfg):
     from penny.commands import CommandHandler
     from penny.telegram import FakeTelegram
 
-    db = _FakeDB()
-    db.kv_set("active_panel", ["keep-me"])
-    handler = CommandHandler(cfg, db, None, FakeTelegram(cfg))
+    before = cfg.raw("AI_MODEL")
+    CommandHandler(cfg, _FakeDB(), None, FakeTelegram(cfg)).cmd_set(["RISK_USD", "75"])
 
-    handler.cmd_set(["RISK_USD", "75"])
-
-    assert db.kv_get("active_panel") == ["keep-me"]
+    assert cfg.raw("AI_MODEL") == before
 
 
-# --- self-healing when none of the configured ids exist --------------------
+def test_a_shipped_example_id_the_provider_lacks_yields_no_decision(cfg):
+    """The exact complaint this module exists for: ids that cannot answer."""
+    from penny.ai.decision import decide
 
-def test_discovery_adopts_provider_models_when_none_match(cfg):
-    cfg.set("AI_MODELS", "deepseek-v4.1-flash,kimi-k3,glm-5.3")
-    db = _FakeDB()
-    db.kv_set("active_panel", ["deepseek-v4.1-flash", "kimi-k3", "glm-5.3"])
-    gateway = FakeGateway(cfg, models=["provider-a", "provider-b", "provider-c"])
-    runner = _runner(cfg, gateway, db)
+    cfg.set("AI_MODEL", "deepseek-v4.1-flash")
+    gateway = FakeGateway(cfg, models=["provider-a", "provider-b"])
+    gateway.fail("deepseek-v4.1-flash")
 
-    result = runner.discovery()
+    facts = {"symbol": "TEST", "price": 1.0, "news": [],
+             "gate": {"passed": True, "primary": None, "entry_trigger": None,
+                      "gate_score": 70.0, "blocked_by": ""}}
+    d = decide(gateway, facts, model="deepseek-v4.1-flash")
 
-    assert result["adopted_panel"] == ["provider-a", "provider-b", "provider-c"]
-    assert db.kv_get("active_panel") == ["provider-a", "provider-b", "provider-c"]
-    assert runner.active_panel() == ["provider-a", "provider-b", "provider-c"]
-
-
-def test_discovery_keeps_a_matching_panel(cfg):
-    cfg.set("AI_MODELS", "provider-a,provider-b")
-    db = _FakeDB()
-    db.kv_set("active_panel", ["provider-a", "provider-b"])
-    gateway = FakeGateway(cfg, models=["provider-a", "provider-b", "other"])
-    runner = _runner(cfg, gateway, db)
-
-    result = runner.discovery()
-
-    assert result["adopted_panel"] == []
-    assert db.kv_get("active_panel") == ["provider-a", "provider-b"]
+    assert not d.ok
+    assert d.verdict == "PASS"
 
 
-def test_adopt_skips_models_that_fail_their_test(cfg):
-    db = _FakeDB()
-    db.kv_set("active_panel", ["nope-1", "nope-2", "nope-3"])
-    gateway = FakeGateway(cfg, models=["dead-model", "live-model"])
-    gateway.fail("dead-model")
-    runner = _runner(cfg, gateway, db)
+def test_a_working_model_produces_one_decision(cfg):
+    from penny.ai.decision import decide
 
-    adopted = runner._adopt_panel(["dead-model", "live-model"])
+    cfg.set("AI_MODEL", "provider-a")
+    gateway = FakeGateway(cfg, models=["provider-a", "provider-b"])
 
-    assert adopted == ["live-model"]
-    assert runner.active_panel() == ["live-model"]
+    facts = {"symbol": "TEST", "price": 1.0, "news": [],
+             "gate": {"passed": True, "primary": [], "triggers": [], "blockers": []}}
+    d = decide(gateway, facts, model=cfg.raw("AI_MODEL"))
 
-
-def test_discovery_without_a_model_list_does_not_adopt(cfg):
-    db = _FakeDB()
-    db.kv_set("active_panel", ["kept"])
-    gateway = FakeGateway(cfg, listing_error="HTTP 404 (no /models)")
-    runner = _runner(cfg, gateway, db)
-
-    result = runner.discovery()
-
-    assert result["unavailable_list"] is True
-    assert result["adopted_panel"] == []
-    assert db.kv_get("active_panel") == ["kept"]
+    assert d.ok, d.error
+    assert d.verdict == "ENTER"
+    # One alert, one call.
+    assert len(gateway.calls) == 1
 
 
-# --- doctor pinpoints the "example ids" failure ----------------------------
+# --- doctor pinpoints the "example id" failure ------------------------------
 
-def test_doctor_flags_example_ids_that_the_provider_lacks(cfg):
+def test_doctor_flags_an_example_id_that_the_provider_lacks(cfg):
     from penny.doctor import run_doctor
     from penny.runtime import build
     from penny.telegram import FakeTelegram
 
     cfg.set("AI_BASE_URL", "https://gw.example.com/v1")
     cfg.set("AI_KEY", "sk-x")
-    cfg.set("AI_MODELS", "deepseek-v4.1-flash,kimi-k3,glm-5.3")
+    cfg.set("AI_MODEL", "deepseek-v4.1-flash")
 
     gateway = FakeGateway(cfg, models=["provider-a", "provider-b"])
     runtime = build(cfg, with_engine=False, console_logs=False,
@@ -145,20 +111,19 @@ def test_doctor_flags_example_ids_that_the_provider_lacks(cfg):
         runtime.close()
 
     text = report.text()
-    assert "AI models configured" in text
+    assert "AI model configured" in text
     assert "provider-a" in text
     assert not report.ok
 
 
-def test_doctor_passes_with_the_providers_real_ids(cfg):
+def test_doctor_passes_with_the_providers_real_id(cfg):
     from penny.doctor import run_doctor
     from penny.runtime import build
     from penny.telegram import FakeTelegram
 
     cfg.set("AI_BASE_URL", "https://gw.example.com/v1")
     cfg.set("AI_KEY", "sk-x")
-    cfg.set("AI_MODELS", "provider-a,provider-b")
-    cfg.set("AI_FALLBACK_MODELS", "")
+    cfg.set("AI_MODEL", "provider-a")
 
     gateway = FakeGateway(cfg, models=["provider-a", "provider-b"])
     runtime = build(cfg, with_engine=False, console_logs=False,
@@ -170,4 +135,4 @@ def test_doctor_passes_with_the_providers_real_ids(cfg):
 
     text = report.text()
     assert "AI model provider-a: 40 ms" in text
-    assert "AI models configured" not in text
+    assert "AI model configured" not in text

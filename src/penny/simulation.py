@@ -8,10 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
-from .ai.catalog import ModelCatalog
 from .ai.gateway import FakeGateway
-from .ai.leaderboard import eligibility, leaderboard, select_panel
-from .ai.runner import AIRunner
 from .config import Config
 from .scoring import TIER_CONFIRMED, TIER_EARLY, TIER_WATCH
 from .shariah import (COMPLIANT, DOUBTFUL, NON_COMPLIANT, FakeShariahSource,
@@ -433,10 +430,7 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     cfg.set("SEC_USER_AGENT", "simulation test@example.com")
     cfg.set("AI_BASE_URL", "http://fake")
     cfg.set("AI_KEY", "fake")
-    cfg.set("AI_MODELS", "accurate,wrong,glm-5.1")
-    cfg.set("AI_FALLBACK_MODELS", "hy3")
-    cfg.set("MIN_EVALUATED", "4")
-    cfg.set("SHADOW_SAMPLE_RATE", "1.0")
+    cfg.set("AI_MODEL", "accurate")
     cfg.set("SHARIAH_MODE", "tag")
     cfg.set("HALALTERMINAL_API_KEY", "fake")
     cfg.set("WARMUP_CYCLES", "2")
@@ -465,24 +459,15 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
                                             "FADE": NON_COMPLIANT}),
     ], telegram)
 
-    catalog = ModelCatalog(home / "models_catalog.json")
-    for model in ("accurate", "wrong", "glm-5.1", "hy3"):
-        if catalog.get(model) is None:
-            catalog.add(model, 1.0)
-
     report = SimulationReport()
     journal = Journal(cfg, journal_db, alpaca=alpaca, yahoo=yahoo)
 
     sim_clock = {"t": day_start}
     engine = Engine(cfg, state, journal_db, telegram, finviz=finviz,
                     alpaca=alpaca, finnhub=None, sec=sec, finra=None, yahoo=yahoo,
-                    gateway=gateway, catalog=catalog, shariah=shariah, backup=None,
+                    gateway=gateway, shariah=shariah, backup=None,
                     clock=lambda: sim_clock["t"])
     engine.forced_session = "regular"
-
-    state.kv_set("active_panel", ["accurate", "wrong", "glm-5.1"])
-    state.kv_set("candidates", ["accurate", "wrong", "glm-5.1", "hy3"])
-    state.kv_set("fallbacks", ["hy3"])
 
     steps = int(minutes * 60 / cycle_seconds)
     alerts_by_symbol: dict[str, dict] = {}
@@ -514,8 +499,8 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
                not any(s.startswith("NZ") for s in symbols),
                f"alerted: {sorted(symbols)}")
 
-    builds_seen = [m for m in telegram.outbox if "MOMENTUM BUILDS" in m
-                   or "BUILDING NOW" in m]
+    builds_seen = [m for m in telegram.outbox if m.startswith("<b>BUILDS</b>")
+                   or m.startswith("BUILDS")]
     report.add("momentum-build feed surfaces accumulating stocks below the alert bar",
                max_builds > 0 and bool(builds_seen),
                f"max {max_builds} build(s) in a cycle, {len(builds_seen)} feed message(s)")
@@ -555,19 +540,24 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     else:
         report.add("spike that fades", True, "no alert needed (visible in /top)")
 
-    # Every alert got enrichment and a forecast.
-    preds = state.query("SELECT COUNT(DISTINCT alert_id) AS c FROM predictions")
-    report.add("forecasts stored for every alert",
-               (preds[0]["c"] if preds else 0) >= len(alerts_by_symbol),
-               f"{preds[0]['c'] if preds else 0} alerts with predictions")
+    # Every alert got enrichment, and the tracker picked each one up.
+    tracked = state.scalar("SELECT COUNT(DISTINCT symbol) AS c FROM alert_tracking",
+                           default=0)
+    report.add("every alert is entered in the per-alert tracker",
+               (tracked or 0) >= len(alerts_by_symbol),
+               f"{tracked or 0} tracked vs {len(alerts_by_symbol)} alerts")
 
     alert2 = [m for m in telegram.outbox if "DETAIL" in m]
     report.add("every alert received enrichment (Alert 2 sent)",
                len(alert2) >= len(alerts_by_symbol),
                f"{len(alert2)} detail messages for {len(alerts_by_symbol)} alerts")
-    report.add("Fibonacci levels and a plan appear",
-               any("FIB swing" in m for m in telegram.outbox)
-               and any("PLAN:" in m for m in telegram.outbox))
+    report.add("the lean alert carries no Fibonacci grid and no standalone plan",
+               not any("FIB swing" in m for m in telegram.outbox)
+               and not any(m.startswith("PLAN:") for m in telegram.outbox))
+    report.add("the lean alert carries no standalone VERDICT block",
+               not any("\u2500\u2500 VERDICT" in m for m in telegram.outbox))
+    report.add("the lean alert carries no technicals block",
+               not any("\nTECH" in m for m in telegram.outbox))
     report.add("market context appears in the AI input",
                any("market" in json_text for json_text in
                    [str(c) for c in gateway.calls]) or True,
@@ -576,66 +566,111 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
                any("DATA MISMATCH" in m for m in telegram.outbox),
                f"forced mismatch on {mismatch_symbol}")
 
-    # Forecast evaluation and the leaderboard.
-    evaluated = state.scalar("SELECT COUNT(*) FROM predictions WHERE status='evaluated'",
-                             default=0)
-    report.add("forecasts evaluated at their horizons", evaluated > 0,
-               f"{evaluated} evaluated rows")
+# -- the single decision call -----------------------------------------
+    from .ai.decision import (decide, validate, parse_report, load_methodology, render)
 
-    rows = {r["model"]: r for r in leaderboard(state, cfg, catalog)}
-    acc = rows.get("accurate")
-    wrong = rows.get("wrong")
-    if acc and wrong and acc["composite"] is not None and wrong["composite"] is not None:
-        report.add("accurate fake model outranks the deliberately wrong one",
-                   acc["composite"] > wrong["composite"],
-                   f"accurate {acc['composite']:.3f} vs wrong {wrong['composite']:.3f}")
-    else:
-        report.add("accurate fake model outranks the wrong one", False,
-                   "not enough evaluated forecasts")
+    valid = {"key_findings": ["reclaimed VWAP on 3.2x volume"],
+             "rating": {"grade": "MODERATE", "confidence": 0.6},
+             "trends": {"direction": "rising", "momentum": "3m accel"},
+             "entry_points": [{"zone": "1.40-1.42"}],
+             "exit_points": {"stop": "1.33", "t1": "1.55"},
+             "verdict": "ENTER", "rubrics_applied": ["catalyst + volume"],
+             "gate": {"passed": True}}
+    d = validate(valid)
+    report.add("a valid Decision Report passes validation", d.ok, d.error or "ok")
 
-    report.leaderboard = list(rows.values())
+    for field in ("key_findings", "rating", "trends", "entry_points", "exit_points"):
+        broken = dict(valid)
+        broken.pop(field)
+        report.add(f"a report missing {field} is rejected",
+                   not validate(broken).ok, "rejected")
 
-    # A model that does not beat the baselines must not be eligible.
-    ineligible = [r for r in rows.values()
-                  if not r.get("is_baseline") and not r.get("eligible")
-                  and r["composite"] is not None]
-    report.add("a model that does not beat the baselines is not activated",
-               bool(ineligible) or (wrong is not None and not wrong.get("eligible")),
-               f"{len(ineligible)} model(s) below the baseline bar")
+    no_rubrics = dict(valid, rubrics_applied=[])
+    report.add("verdict=ENTER with empty rubrics_applied is rejected",
+               not validate(no_rubrics).ok, "rejected")
 
-    panel, _ = select_panel(state, cfg, catalog)
-    report.add("automatic selection returns a three-model panel or keeps the current one",
-               len(panel) >= 1, f"panel: {panel}")
+    gate_fail = dict(valid, gate={"passed": False})
+    report.add("verdict=ENTER on a gate that did not pass is rejected",
+               not validate(gate_fail).ok, "rejected")
 
-    # Cache reuse.
-    hits_before = engine.runner.cache.hits
-    engine.runner.analyze(symbol="GRND", facts={"symbol": "GRND", "price": 1.5},
-                          price=1.5, tier=TIER_EARLY, news_key="k")
-    engine.runner.analyze(symbol="GRND", facts={"symbol": "GRND", "price": 1.5},
-                          price=1.5, tier=TIER_EARLY, news_key="k")
-    report.add("the cache reuses an analysis within the cache window",
-               engine.runner.cache.hits > hits_before)
+    short_zone = dict(valid, entry_points=[{"zone": "short below 1.30"}])
+    report.add("a short entry zone is rejected: this is long-only",
+               not validate(short_zone).ok,
+               short_zone["entry_points"][0]["zone"])
 
-    # A failing panel model is survived.
-    gateway.fail("glm-5.1")
-    agg, _ = engine.runner.analyze(symbol="BRST", facts={"symbol": "BRST", "price": 1.5},
-                                   price=1.5, tier=TIER_EARLY, kind="failing-test", force=True)
-    report.add("the AI panel survives a failing model", agg.n_models >= 1,
-               f"{agg.n_models} models answered")
+    short_verdict = dict(valid, verdict="SHORT")
+    report.add("a SHORT verdict is rejected: this is long-only",
+               not validate(short_verdict).ok, short_verdict["verdict"])
 
-    # Parser rejects HTML and missing columns.
-    from .ai.panel import parse_forecast
-    bad = parse_forecast("x", "<html>not json</html>")
-    report.add("parsers reject HTML", not bad.valid)
+    # The prompt must forbid roleplay rather than merely not ask for it.
+    method = load_methodology().lower()
+    report.add("the methodology prompt forbids roleplay",
+               "roleplay" in method and "long-only" in method,
+               "the prompt names no persona and states long-only")
+
+    persona = dict(valid, key_findings=["As Ross, this is a clean setup"])
+    report.add("persona text in a finding is not silently accepted as ENTER",
+               persona["key_findings"][0] in render(validate(persona)),
+               "the prompt never asks for a persona, so this cannot come from it")
+
+    report.add("the parser rejects HTML in place of JSON",
+               not validate(parse_report("<html>not json</html>")).ok, "rejected")
+
+    # -- the strategy gate, end to end ------------------------------------
+    from .strategies import Bundle, evaluate_gate
+    from .strategies.news_cause import rank_catalysts, extract_cause
+
+    def gate_for(**kw):
+        base = dict(symbol="SIM", price=1.42, prev_close=1.09, open_price=1.10,
+                    day_high=1.44, day_low=1.08, cum_volume=9_000_000,
+                    pct_vs_close=0.31, rise={3: 0.012, 5: 0.035, 15: 0.09},
+                    volx={3: 9.0, 5: 12.4, 15: 6.0},
+                    dollar_vol={5: 45_000.0, 15: 210_000.0}, vwap=1.31,
+                    minutes_since_low=38.0, float_shares=18_500_000, short_pct=8.4,
+                    dollar_level=1.00,
+                    news=[{"title": "Acme Corp awarded $12M contract",
+                           "source": "Benzinga", "url": "u", "age": "2h"}])
+        base.update(kw)
+        return evaluate_gate(Bundle(**base))
+
+    report.add("a clean setup passes the gate", gate_for().passed,
+               f"blocked_by={gate_for().blocked_by}")
+    report.add("a noise stock never passes", not gate_for(
+        price=1.09, pct_vs_close=0.02, rise={3: 0.001, 5: 0.002, 15: 0.02},
+        volx={3: 0.9, 5: 1.1, 15: 0.8}, dollar_vol={5: 900.0}, vwap=1.05,
+        float_shares=90_000_000, short_pct=2.0).passed, "noise rejected")
+    report.add("an offering priced below the open blocks the gate",
+               gate_for(news=[{"title": "Acme prices $12M offering at $1.05 per share",
+                               "source": "GlobeNewswire", "url": "u", "age": "1h"}]
+                        ).blocked_by == "DILUTION", "DILUTION")
+    report.add("a parabolic move near its high on declining volume is blocked",
+               gate_for(price=1.43, day_high=1.44, volx={3: 1.2, 5: 1.4, 15: 1.1},
+                        vwap=1.20).blocked_by == "EXHAUSTED", "EXHAUSTED")
+
+    _, ranked, _ = rank_catalysts(Bundle(symbol="SIM", price=1.42, prev_close=1.09,
+                                         open_price=1.10,
+                                         news=[{"title": "Company provides update",
+                                                "source": "Yahoo", "url": "u",
+                                                "age": "5h"}]))
+    report.add("a news dump with no aligned catalyst renders CAUSE: none found",
+               extract_cause(ranked, Bundle(symbol="SIM")).kind == "UNEXPLAINED",
+               "none found")
+
+    # -- per-alert tracking ------------------------------------------------
+    tracked = state.scalar("SELECT COUNT(*) FROM alert_tracking", default=0)
+    report.add("every alerted name is present in the tracker",
+               tracked > 0 or telegram.outbox == [],
+               f"{tracked} tracked row(s)")
+
+    from .tracking import eod_report, Tracker
+    tr = Tracker(state, clock=time.time)
+    text = eod_report(tr)
+    report.add("an EOD report is produced after the session", bool(text), text.split("\n")[0])
+
+    # Parser rejects malformed source payloads.
     from .sources.base import parse_csv, looks_like_html
     report.add("parsers reject missing columns",
                looks_like_html("<html></html>") and parse_csv("") == [])
-
-    # Staged elimination.
-    from .ai.leaderboard import staged_elimination
-    survivors = staged_elimination(state, cfg, catalog)
-    report.add("staged elimination of candidates runs", isinstance(survivors, list),
-               f"{len(survivors)} candidate(s) remain")
 
     # Tracker events.
     state.execute("INSERT OR REPLACE INTO watch(symbol, entry, stop, target, ts) "

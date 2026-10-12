@@ -47,31 +47,31 @@ momentum **quality and acceleration** rather than the % level alone.
 An **Alert 1** is sent instantly, with no AI and no waiting for enrichment:
 
 ```text
-ALERT: EARLY BUILD  ABCD  $1.42
-+31.5% vs close | +6.8% 15m | +24.1% 60m
+ALERT: EARLY  ABCD  $1.42
++31.5% vs close | +1.2% 3m | +3.5% 5m
 vol 12.4x normal | day 8.9M | above VWAP
 low 38m ago | score 74 | #1 gainer
+STRATEGY: first_green_day (78) + low_float_squeeze (61)
 Shariah: COMPLIANT (halalterminal)
 ```
 
-A few seconds later an **Alert 2** leads with the decision and *why the stock
-moved*, then the evidence. The AI blocks are edited in as soon as the models
-answer:
+A few seconds later an **Alert 2** leads with *why the stock moved*, then the
+evidence. The decision block is edited in as soon as the model answers:
 
 ```text
 DETAIL  🟢 ABCD  $1.42  +31.5% vs close
-+6.8% 15m  |  +24.1% 60m  |  vol 12.4x  |  $1.1M 15m  |  above VWAP
-momentum 74 ████████░░
-SETUP: EARLY BUILD - qualifies for alerts
-
-── VERDICT ─────────
-VERDICT: EARLY - early build - size small, confirm with volume
-  buy 1.4200-1.4600 | stop 1.3157 | T1 1.5972 | panel up (high)
+PULSE: above VWAP
+SETUP: EARLY - qualifies for alerts
 
 ── WHY IT MOVED ────
-CATALYST: $12M direct offering priced; volume 12x normal
-HEADLINE: ABCD announces pricing of $12.0 million registered direct offering (2h) - Benzinga
-MOVE: +31.5% vs prior close | +6.8% 15m | +24.1% 60m | still moving now
+CAUSE: ABCD announces pricing of $12.0 million registered direct offering
+SOURCE: Benzinga, 2h ago
+CONFIDENCE: high
+SUPPORTING: 8-K 2026-10-05 items 1.01, 9.01
+
+── STRATEGIES ──────
+STRATEGY: first_green_day (78) + low_float_squeeze (61)
+ENTRY TRIGGER: first_pullback (74)
 
 ── MARKET BACKDROP ─
 MARKET SPY +0.42%, QQQ +0.61%, IWM +0.28% | RISK-ON
@@ -84,38 +84,36 @@ FILINGS (last 5 days)
 - 8-K 2026-10-05 items 1.01,9.01
 SHORT/FLOAT: short float 8.4% (finviz 2026-10-05) | float 18,500,000
 Shariah: COMPLIANT (halalterminal)
-TECH: 15m up RSI 71 | 5m up RSI 68 | 1m up RSI 74 | VWAP 1.2900 | vol spike 11.2x
-FIB swing 1.0500 -> 1.4800
-  retrace 23.6% 1.3785 | 38.2% 1.3157 | 50% 1.2650 | 61.8% 1.2143 | 78.6% 1.1420
-  extensions 127.2% 1.5972 | 161.8% 1.7457
-PLAN: BREAKOUT plan | entry 1.4200-1.4600 | stop 1.3157 | T1 1.5972 | T2 1.7457
-      | R:R 2.4:1 | 172 shares for $50 risk
 
-AI PANEL
-  REACTION: strong/up/grinder/sustained
-  AI CALL: ENTER NOW | confidence 0.71 (high) | agreement 0.83 across 3 model(s) | panel up
-  why now: offering removes the funding overhang and float is still tight
-  reasons: offering removes funding overhang; float still tight; above VWAP all session
-  flags: dilution, low_float
-  changes view: a close back below VWAP 1.2900
-  PRICE FORECAST: +15m 1.4700 (+3.5%) | +60m 1.5900 (+12.0%) | session end 1.7800 (+25.4%) | expected peak 1.8200 | expected low 1.3600
+── AI DECISION ─────
+VERDICT: ENTER
+RATING: MODERATE | confidence 0.62
+KEY FINDINGS:
+  - reclaimed VWAP on 9x volume and held it for 12 minutes
+  - float still tight at 18.5M with the ATM removed
+ENTRY POINTS (LONG)
+  1.4200-1.4600   first pullback that holds VWAP
+EXIT POINTS
+  stop 1.3157 | T1 1.5972 | T2 1.7457
+APPLIED: catalyst + volume; float < 20M
 
-High-risk penny stock. Automated screening and forecasts are estimates, not financial advice.
+Screener and decision support only. No orders are placed. Not investment advice.
 ```
 
 Reading it fast:
 
-- **VERDICT** is the one line that matters: `ENTER` / `EARLY` / `WAIT` / `AVOID`,
-  with buy/stop/T1 levels and the panel's own call.
-- **WHY IT MOVED** puts the catalyst first, then one headline, then the shape of
-  the move (still moving / cooling / off the high).
+- **WHY IT MOVED** names exactly **one** cause, with its outlet, age and
+  confidence - or says `none found` rather than inventing one.
+- **AI DECISION** is the only place the verdict appears: `ENTER` / `WAIT` /
+  `PASS`, with the entry and exit levels that justify it.
+- **STRATEGY** names the detector setups that passed, with the entry trigger
+  when one has not fired yet.
 - **SETUP** tells you why this is an alert - or, when the tier is `NONE`, exactly
   which rule is not met yet (e.g. *"volume 1.6x is under 3x"*).
 - **MARKET BACKDROP** shows index direction and the risk-on/off regime, because
   small caps follow it.
-- A `NONE` tier is no longer a mystery: it means the alert came from a manual
-  `/check`, a resumed halt, or a signal override, and the message says which
-  threshold is unmet.
+- Every alert is graded to the close and reported once, after the session, in
+  the **end-of-day report** (`/eod`).
 
 The system **places no orders** - it tells you, you trade manually.
 
@@ -138,23 +136,23 @@ you can act on a symbol without typing anything.
                     quote normalization
                             v
             scoring engine (rolling windows, tiers, score)
-                            | tier rises
+                            | ranked
+                            v
+   LONG-ONLY STRATEGY GATE (18 detectors, cause-first)
+                            | gate passes
                             v
         ALERT 1 (Telegram, instant, no AI)
                             v
    parallel enrichment: Finviz verification - candles (TwelveData/Alpaca/Yahoo) - news -
    filings (SEC, Finviz) - short interest/volume - market context
                             v
-            technicals + Fibonacci + trade plan
+        ALERT 2 (cause first, "AI unavailable" placeholder)
                             v
-        ALERT 2 (facts first, "AI running")
+      ONE AI decision call ---> DECISION REPORT ---> ALERT 2 edited
                             v
-   AI active panel ---> reaction + price forecast ---> ALERT 2 edited
-   other candidates run in shadow ---> forecasts stored
+    per-alert tracker (quotes) ---> END OF DAY report, once a day
                             v
-   forecast evaluator (+15m, +60m, session end) ---> model leaderboard
-                            v
-            active panel = the three most accurate models
+                /stats grades each strategy
 ```
 
 The engine ranks stocks by **momentum quality**, not the % level:
@@ -171,11 +169,11 @@ The engine ranks stocks by **momentum quality**, not the % level:
 
 | Line | What it tells you |
 |---|---|
-| `VERDICT` | The action: `ENTER`, `EARLY`, `WAIT` or `AVOID`, with buy/stop/T1 and the panel's call |
-| `WHY IT MOVED` | The catalyst, one headline, and whether the move is still going |
+| `WHY IT MOVED` | Exactly one cause (outlet, age, confidence), or `none found` |
+| `STRATEGY` | The detector setups that passed, and the entry trigger if one has not fired |
+| `AI DECISION` | The one report: `ENTER` / `WAIT` / `PASS`, with the entry and exit levels |
 | `SETUP` | Why this is an alert - or, for a `NONE` tier, which threshold is not met |
 | `MARKET BACKDROP` | Index direction and risk-on/off, which drives small-cap appetite |
-| `AI CALL` | The models' own action, with confidence in words (low/medium/high) |
 
 A **`NONE` tier** is not an error. The alert bar is `WATCH` and above; `NONE` means
 the message came from a manual `/check`, a resumed halt, or a signal override, and
@@ -204,10 +202,9 @@ alert bar). Tune it with `BUILD_FEED`, `BUILD_FEED_SECONDS`, `BUILD_TOP_N`,
 (`BUILD_FEED=0`) because a notification every 15 minutes reads as noise; the same
 list is always available on demand with `/builds`.
 
-The AI panel does not just answer once. Every candidate is forecast, and each forecast is
-**evaluated at its horizon** against what actually happened. The three models with the best
-track record form the active panel; models that fail to beat simple baselines are not
-activated.
+Every alert is tracked from the alert price to the close and graded once, at the end of
+the day. `/eod` prints that day's report; `/stats` ranks the detectors by what they
+actually produced.
 
 ---
 
@@ -218,12 +215,25 @@ activated.
   top-gainers screens** (1m/3m/5m), which surface a stock that is being bought *right now*,
   plus a full sweep of sub-$10 US stocks, in all three sessions, so nothing depends on a
   single screener's ranking.
-- **One verdict, not a scoreboard** - every AI analysis ends in a portfolio-manager call:
-  `ENTER`, `WAIT` or `PASS`. **Directional bias is not tradeability**: a stock can be
-  unambiguously going up and still be unbuyable because it is already at the expected
-  peak, the volume has left, or the plan's reward:risk is below `MIN_RR` (default 2:1).
-  Those cases output `WAIT` or `PASS`, never a recommendation. A data-quality failure
-  (the quote and the verified price disagree) forces `PASS / DATA_CONFLICT`.
+- **Long-only, always** - the tool never proposes a short. Exhaustion and distribution
+  can only produce `WAIT` / `PASS` or an exit warning. An offering priced below the open
+  blocks the gate outright (`DILUTION`); a quote that disagrees with the verified price
+  blocks it too (`DATA_CONFLICT`).
+- **A strategy gate between the screener and the alert** - 18 named detectors (first
+  green day, low-float squeeze, $1 breakout, VWAP reclaim, failed breakout, WORG, day-3
+  surge, float rotation, and six entry triggers). A stock has to *match a setup* before
+  it becomes an alert, so the alerts that arrive are setups rather than movers. Detector
+  failures are shown, so you can see what the gate examined. Off by default
+  (`STRATEGY_GATE=0`) while you compare it against the old tier path.
+- **One AI decision per alert** - a single call returns one DECISION REPORT: the verdict
+  (`ENTER` / `WAIT` / `PASS`), the rating, the findings, and the entry and exit levels.
+  No panel, no leaderboard, no agreement score, no persona. A report that claims `ENTER`
+  on a gate that did not pass is rejected, not repaired.
+- **Cause-first alerts** - every message names exactly one reason the stock moved, with
+  its outlet, age and confidence, or says `none found`. A news dump is not a cause.
+- **Per-alert tracking with an end-of-day report** - every alerted name is measured from
+  the alert price to the close, and the day's alerts are reported once, as a set
+  (`/eod`). `/stats` ranks the detectors by what they actually produced.
 - **Pre-market at the first sign of a move** - in the pre-market session the alert fires
   as soon as the stock clears `PREMARKET_PCT` (default +10%) *with* the volume to back it,
   instead of waiting for the 15-minute window that used to arrive at ~+20%.
@@ -246,7 +256,7 @@ activated.
   close after 16:00 ET, so the after-hours columns are used from 16:00 until the next
   open (including the whole weekend), and `session_for()` knows a Saturday is `closed`.
   TwelveData supplies the freshest single-symbol price, volume and 1-minute candles, so
-  the technicals, Fibonacci swing and trade plan are built from *now* rather than from
+  the gate's detectors and the cause ranking are built from *now* rather than from
   whatever candle set happened to be cached.
 - **On-demand checks for any symbol** - `/check SYM` fetches the symbol live (including
   after-hours) rather than reading the last cycle's cache, so it works for NVDA or AAPL
@@ -257,13 +267,11 @@ activated.
   not invisible until the burst. The periodic notification is off by default; `/builds`
   shows the same list on demand.
 - **Two-stage alerts** - instant Alert 1, then a fact-rich Alert 2 enriched in parallel.
-- **AI panel with a leaderboard** - parallel model calls, shadow candidates, stored
-  forecasts, horizon evaluation, automatic selection of the best three, and a cost
-  multiplier so unknown models are never used before you confirm them.
+- **AI decision support** - one model, one call per alert, on any OpenAI-compatible endpoint. It never places an order.
 - **Catalyst research** - news, SEC filings, short interest/volume, float, insiders.
-- **Fibonacci entry plan** - retracements, extensions, stop, targets and position sizing.
-  A plan whose reward:risk is below `MIN_RR` still renders, but is marked `NO TRADE` and
-  cannot back an `ENTER`.
+- **Internal entry gate** - reward:risk is checked against `MIN_RR` (default 2:1)
+  before a level set may back an `ENTER`, but the levels live inside the decision
+  block rather than in a separate plan block, so the alert stays lean.
 - **Shariah screening** - halalterminal.com, cached, shown on every alert, with
   `tag` / `only_compliant` / `hide_noncompliant` / `off` modes.
 - **Self-learning journal** - log historical winners and losers, download their bars,
@@ -289,7 +297,7 @@ activated.
 |---|---|---|
 | Telegram bot token + chat id | yes (to reach the bot) | alerts and commands |
 | Finviz Elite token | yes | the entire market feed: universe, movers, quotes, news, filings, sector, calendar |
-| AI gateway base URL, key, model ids | recommended | reaction and price forecasts (any OpenAI-compatible endpoint) |
+| AI gateway base URL, key, model id | recommended | the one decision call per alert (any OpenAI-compatible endpoint) |
 | SEC contact (`Name email`) | recommended | SEC EDGAR requests |
 | halalterminal.com API key | optional | Shariah screening |
 | TwelveData | recommended | fresh single-symbol price, volume and 1-minute candles |
@@ -340,44 +348,41 @@ Add the optional keys later (from the configured Telegram chat):
 
 ### Using any OpenAI-compatible provider
 
-The AI panel talks to any OpenAI-compatible `/chat/completions` endpoint
-(the same shape OpenCode's `openai-compatible` provider uses). Base URL and key
-are enough; model ids are whatever your provider advertises.
+The decision call talks to any OpenAI-compatible `/chat/completions` endpoint
+(the same shape OpenCode's `openai-compatible` provider uses). Base URL, key and
+one model id are enough.
 
 ```text
 /set AI_BASE_URL https://your-provider.example/api/v1
 /setkey AI_KEY sk-...
-/models refresh          # list the provider's models and test them
+/set AI_MODEL your-model-id
 ```
 
 `AI_BASE_URL` may be written **with or without** `/v1`, and a pasted
 `/chat/completions` suffix is stripped. Both `{base}/v1` and `{base}` are tried.
 A missing `GET /models` is normal and never fatal.
 
-If `AI_MODELS` still holds the shipped example ids, `/models refresh` detects
-that none of them exist on your provider, adopts the provider's own working
-models, and tells you. You can also set them by hand:
+If `AI_MODEL` still holds the shipped example id, `penny doctor` says so and
+lists what your provider does offer. Set it by hand:
 
 ```text
-/set AI_MODELS model-a,model-b,model-c
+/set AI_MODEL your-model-id
 ```
 
-Changes apply from the next cycle - no restart. `/set AI_MODELS` also updates
-the stored panel, so a corrected list is never shadowed.
+Changes apply from the next cycle - no restart.
 
 Response handling covers the shapes providers really return: `content` as a
 string, `content` as a list of parts, and reasoning models that leave `content`
 null while answering in `reasoning_content`. An empty or unusable completion is
 reported as an error, not a silent success.
 
-A `/check` runs the panel and its fallbacks under one wall-clock budget,
-`AI_DEADLINE` (default 60 s): each call's timeout is clamped to the time left, a
-slow endpoint is dropped instead of retried for every body variant, and the
-fallbacks run in parallel. So a slow provider degrades to a shorter answer
-instead of a command that hangs for minutes.
+There is exactly one call per alert, bounded by `AI_TIMEOUT` (default 45 s): a
+slow endpoint is dropped instead of retried for every body variant, and a
+rejected report degrades to `PASS` rather than to an entry. So a slow provider
+costs you the decision, never the alert.
 
 ```text
-/set AI_DEADLINE 60      # total seconds for panel + fallbacks on a manual check
+/set AI_TIMEOUT 45      # seconds for the one decision call
 ```
 
 **Manual install:**
@@ -410,7 +415,7 @@ time changes - most changes apply from the next cycle without a restart. See
 | **Telegram** | bot token and chat id |
 | **Shariah** | keys, `SHARIAH_MODE`, TTL, monthly call limit |
 | **Backup** | local dir, off-server destination, passphrase, schedule, retention |
-| **AI** | gateway URL/key, panel, fallbacks, cache, shadow sample rate, discovery, multiplier limit |
+| **AI** | gateway URL, key, model id, timeout, token cap |
 | **Behaviour** | price range, alert tiers, re-alert window, warm-up, workers, risk size |
 | **Tuning** | tier thresholds and score weights |
 
@@ -443,11 +448,10 @@ buttons under every reply to drill in without typing.
 /watchlist
 /check SYM               full analysis on demand
 /market                  market context now
-/models                  leaderboard and active panel
-/models refresh          re-read the provider's model list
-/models add ID MULT
-/models remove ID
-/setmodels A,B,C         set the panel manually
+/eod                    today's alert results, alert price to close
+/eod YYYY-MM-DD          the same report for a past day
+/stats                   strategies graded by what they actually produced
+/tracked                 today's tracked alerts, still open
 /set KEY VALUE           change any setting at runtime (alias /setkey)
 /keys                    list settable keys (secrets masked)
 /halal SYM               Shariah status now
@@ -462,7 +466,7 @@ buttons, so a symbol is always one tap away:
 
 - Alerts and `/check` - **Re-check**, **Halal**, **Menu** (a single row).
 - `/top` and `/builds` - up to six symbols packed three per row, plus **Refresh**.
-- `/market`, `/status`, `/models` - **Refresh**, **Menu**.
+- `/market`, `/status`, `/eod` - **Refresh**, **Menu**.
 - The main menu is two rows of three; **More** opens Status, Keys, Backup and Help.
 - Tapping a button edits the message in place instead of posting a new one.
 
@@ -484,7 +488,7 @@ notices (feed health, digests) stay plain text.
 | `penny selftest` | offline self-test (no network, no credentials) |
 | `penny simulate` | offline simulation with a synthetic market |
 | `penny status` | uptime, session, cycle, tokens, backups |
-| `penny models` | model leaderboard; `add` / `remove` / `enable` / `disable` / `apply` / `refresh` |
+| `penny models` | inspect the configured decision model; `refresh` re-reads the provider's list |
 | `penny journal ...` | add/import/list events, download bars, metrics, rule search, discover |
 | `penny backup now\|list\|drill` | create, list and verify backups |
 | `penny restore SOURCE --scope full\|learning\|journal` | restore a backup (destructive) |
@@ -510,20 +514,24 @@ fake Telegram, and asserts the documented acceptance results:
 - the grinder alerts at Early build under +60%, and reaches Confirmed before +100%
 - the burst alerts within 8 minutes of starting and under +50%
 - the fading spike is tagged `FADING` and does not need an alert
-- every alert gets enrichment, a Fibonacci plan and market context in the AI input
-- forecasts are stored for all candidates and evaluated at their horizons
-- the leaderboard ranks the deliberately accurate fake model above the wrong one
-- a model that does not beat the baselines is not activated
+- every alert gets a cause-first Alert 2 and is entered in the tracker
+- a valid Decision Report passes validation; a missing required field, an `ENTER`
+  on a gate that did not pass, an `ENTER` with no rubric, a short entry zone, a
+  `SHORT` verdict and HTML in place of JSON are all rejected
+- a parabolic move, an offering priced below the open and a quote that disagrees
+  with the verified price each block the gate
+- the tracker closes every open alert at the close, marks one that stopped being
+  quoted `invalid` rather than flat, and reports the day once
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **281 passed** (1 skipped).
+Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **333 passed** (1 skipped).
 
 ---
 
 ## Security
 
 - **No secret is ever committed.** `.gitignore` covers `.env`, `config.env`, keys, PEM
-  files, databases, downloaded data and the model catalogue.
+  files, databases and downloaded data.
 - Secrets are entered with hidden input, stored only in the configuration file (mode 600)
   or a restricted key file, and are **never** passed as command-line arguments.
 - Tokens and keys are **scrubbed** from logs, errors and messages.
@@ -546,9 +554,10 @@ src/penny/
   engine.py                poll loop, alert rules, build feed, digests, tracking, end of day
   scoring.py               rolling state, Rise/Volx/Accel/VWAP, tiers, score, phase, builds
    sources/                 finviz, twelvedata, alpaca, finnhub, sec, finra, yahoo
-  ai/                      catalog, gateway, panel, evaluate, leaderboard, runner
+   strategies/             base, candles, primitives, detectors, news_cause, gate
+  ai/                      gateway, decision (the one call), prompts/methodology_v1.md
   shariah.py               halalterminal.com, screening rules, modes, cache
-  enrich.py                parallel enrichment, technicals, Fibonacci, plan
+  enrich.py                parallel enrichment: verification, candles, news, filings, float
   alerts.py                Alert 1 / Alert 2 / build feed formatting + the AI fact bundle
   telegram.py              Telegram client + offline fake
   ui.py                    HTML escaping, inline/reply keyboards, callback codes

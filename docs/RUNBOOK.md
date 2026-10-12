@@ -99,20 +99,17 @@ steps pause until the token changes; alerts continue.
 ### AI models
 
 ```bash
-$PENNY --config $CONFIG models                 # leaderboard
-$PENNY --config $CONFIG models refresh         # re-read the provider's list
-$PENNY --config $CONFIG models add ID 1.5      # confirm a new model and its multiplier
-$PENNY --config $CONFIG models remove ID
-$PENNY --config $CONFIG models apply           # run the automatic selection now
+$PENNY --config $CONFIG models                 # inspect the decision model
+$PENNY --config $CONFIG models refresh         # re-read the provider's model list
+$PENNY --config $CONFIG doctor                 # flag a shipped example id the provider lacks
 ```
 
-Or from Telegram: `/models`, `/models refresh`, `/models add ID MULT`, `/models remove ID`,
-`/setmodels A,B,C`. A listed model that is not in your catalogue is **not used** until you
-confirm it, which prevents unknown cost.
+Or from Telegram: `/eod`, `/eod YYYY-MM-DD`, `/stats` and `/tracked` report on the
+alerts; `/set AI_MODEL your-id` changes the decision model.
 
-`/models refresh` also self-heals the shipped example ids: if none of the configured
-models exist on your provider, it adopts the provider's own working models and reports
-what it changed. `/set AI_MODELS a,b,c` applies from the next cycle without a restart.
+`penny doctor` also flags the shipped example id: if the configured model is not on
+the provider it says so and lists what the provider does offer.
+`/set AI_MODEL your-id` applies from the next cycle without a restart.
 
 ---
 
@@ -180,7 +177,7 @@ $PENNY --config $CONFIG doctor
 Scopes:
 
 - `full` — the two databases, bar files and tuned settings
-- `learning` — journal, forecasts, leaderboard, panel and tuned settings (not bar files)
+- `learning` - journal, tracked alerts and tuned settings (not bar files)
 - `journal` — the journal database only
 
 A **safety snapshot** of whatever exists is taken first (in the local backup directory).
@@ -226,18 +223,23 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 | A stock is clearly running but never alerts or shows in `/builds` | confirm the feed has **Volume**: `FINVIZ_COLUMNS` must include `67`. Without it every `volx` is 0 and no tier or build can fire. The code now merges the required columns and coerces a fixed view, so a stale `config.env` is self-healed; `verify()` must use `FINVIZ_VIEW=152`, not the Overview view `111` |
 | `/check SYM` shows a stale (open-session) price, or "no quote available" for NVDA/AAPL | fixed: `/check` fetches the symbol on demand with the current session and falls back to the cache only if the fetch fails. Confirm `penny update` ran; a stale build reads only the sub-$10 cycle cache |
 | `/check` on a normal stock works but `/builds` is empty | expected: the universe and build feed are sub-$10 only (`MAX_PRICE`). Raise `MAX_PRICE` if you want a wider band |
-| `SETUP: NONE` on a `/check` | not an error: the alert bar is `WATCH` and above. The `SETUP` line names the unmet rule (move, volume, dollars, VWAP). `/check` reports any symbol on demand |
+| `SETUP: NONE` on a `/check` | not an error: `/check` reports any symbol on demand, alert or not. The `SETUP` line names the unmet rule (move, volume, dollars, VWAP) |
+| `STRATEGY: blocked: no_strategy` on an alert | not a bug: with `STRATEGY_GATE=1` the gate refused the setup, so the message documents why. Every line names the rule that failed. `no_catalyst` means no item in the news or filings lined up - treat the move as unconfirmed |
+| Detectors all report `INSUFFICIENT_DATA` | expected until `daily_close` history accumulates (6 prior sessions). The gate refuses rather than guessing; it starts passing on its own from day 7 |
+| `DILUTION` or `EXHAUSTED` blockers | working as intended: an offering priced below the open, or a parabolic move that is already spent. Long-only, so these refuse the entry rather than proposing a short |
+| `/eod` says `no alerts` | expected on a quiet day. `/stats` grades the strategies over the whole history |
+| `/eod` shows `invalidate N` | those symbols stopped being quoted before the close, so there is no close to grade. They are excluded from the day's average rather than counted as flat |
 | Nothing building in `/builds` | expected on a quiet tape; the feed only lists stocks meeting `BUILD_RISE15`/`BUILD_VOLX15`/`BUILD_DOLLAR15` with `BUILD_MIN_MINUTES` of history. Lower `BUILD_MIN_SCORE` to widen it |
 | `/builds` feed too chatty | raise `BUILD_FEED_SECONDS` (default 900) and/or `BUILD_MIN_SCORE`; `BUILD_FEED=0` turns it off entirely |
 | A stock is clearly building but never alerts | tier 2 needs a confirmed move. Use `/builds` to watch it before then; the alert still fires if the gates complete |
 | `regime unknown` in the market line | the regime needs S&P and Nasdaq risk appetite. It now also reads Yahoo index levels (`^GSPC`/`^IXIC`), so it resolves even when the ETF quotes are missing |
-| `AI PANEL: no model answered` | every configured model failed; run `penny doctor` and `/models refresh` |
-| `/check` takes minutes | the AI panel is bounded by `AI_DEADLINE` (default 60 s) and hung endpoints are no longer replayed per body variant. If it is still slow, read the per-stage log lines (`check SYM: <stage> in Ns`) to see whether enrichment, market or the panel is the cost; raise `AI_TIMEOUT` only if the provider genuinely needs longer, and lower `AI_DEADLINE` for snappier checks |
+| `AI unavailable` on the detail message | the one decision call failed or its report was rejected; the alert and the strategy block still stand. `penny doctor` tests the model directly. A rejected report degrades to `PASS`, never to `ENTER` |
+| `/check` takes minutes | there is exactly one decision call, bounded by `AI_TIMEOUT` (default 45 s), and hung endpoints are not replayed per body variant. Read the per-stage log lines (`check SYM: <stage> in Ns`) to see whether enrichment or market context is the cost; lower `AI_TIMEOUT` for snappier checks |
 | Telegram commands ignored | the chat id must match `TELEGRAM_CHAT_ID`; re-run `$PENNY detect-chat` |
-| No AI text on alerts | `$PENNY doctor`; check `AI_BASE_URL`/`AI_KEY`; the usual cause is `AI_MODELS` still holding the shipped example ids, which your provider does not offer |
-| Example model ids still configured | `/models refresh` detects it, adopts the provider's working models and reports them; or set them: `/set AI_MODELS a,b,c` (no restart needed) |
-| Provider cannot list models | that is normal for many OpenAI-compatible gateways; set ids by hand: `/set AI_MODELS a,b,c` or `$PENNY models add ID MULT` |
-| `/set AI_MODELS` had no effect | fixed: `/set` now updates the stored panel too. On an older build, restart the service |
+| No decision on alerts | `$PENNY doctor`; check `AI_BASE_URL`/`AI_KEY`/`AI_MODEL`. The usual cause is `AI_MODEL` still holding the shipped example id, which your provider does not offer |
+| Example model id still configured | `penny doctor` detects it and lists what your provider offers; set it: `/set AI_MODEL your-model-id` (no restart needed) |
+| Provider cannot list models | that is normal for many OpenAI-compatible gateways; set the id by hand: `/set AI_MODEL your-model-id` |
+| `/set AI_MODEL` had no effect | on an older build, restart the service; the current build reads the value on the next cycle |
 | Provider returns `content: null` | reasoning models put the answer in `reasoning_content`; the gateway reads that. An empty completion is now a reported error |
 | "BACKUP OVERDUE" | `$PENNY backup now`; check `BACKUP_REMOTE` and the passphrase |
 | High memory | lower `WORKERS`; check `sizing.log` and the `cycles` table |

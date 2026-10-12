@@ -6,7 +6,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .ai.catalog import ModelCatalog
 from .ai.gateway import AIGateway
 from .backup import BackupManager
 from .commands import CommandHandler
@@ -42,7 +41,6 @@ class Runtime:
     yahoo: Optional[object] = None
     twelvedata: Optional[object] = None
     gateway: Optional[object] = None
-    catalog: Optional[ModelCatalog] = None
     shariah: Optional[ShariahService] = None
     journal: Optional[Journal] = None
     backup: Optional[BackupManager] = None
@@ -82,8 +80,6 @@ def build(cfg: Config, *, with_engine: bool = True, fake: Optional[dict] = None,
     twelvedata = fake.get("twelvedata") or TwelveDataClient(cfg, secrets)
     gateway = fake.get("gateway") or AIGateway(cfg, secrets)
 
-    catalog = ModelCatalog(cfg.catalog_path)
-
     shariah = fake.get("shariah")
     if shariah is None:
         sources = [HalalTerminalSource(cfg, secrets)]
@@ -95,7 +91,7 @@ def build(cfg: Config, *, with_engine: bool = True, fake: Optional[dict] = None,
     runtime = Runtime(cfg=cfg, state=state, journal_db=journal_db, telegram=telegram,
                       finviz=finviz, alpaca=alpaca, finnhub=finnhub,
                       sec=sec, finra=finra, yahoo=yahoo, twelvedata=twelvedata,
-                      gateway=gateway, catalog=catalog,
+                      gateway=gateway,
                       shariah=shariah, journal=journal, backup=backup)
     runtime.components = [c for c in (finviz, alpaca, finnhub, sec, finra, yahoo,
                                       twelvedata)
@@ -105,32 +101,8 @@ def build(cfg: Config, *, with_engine: bool = True, fake: Optional[dict] = None,
         engine = Engine(cfg, state, journal_db, telegram, finviz=finviz,
                         alpaca=alpaca, finnhub=finnhub, sec=sec, finra=finra, yahoo=yahoo,
                         twelvedata=twelvedata,
-                        gateway=gateway, catalog=catalog, shariah=shariah, backup=backup)
-        if engine.runner is not None:
-            from .ai.catalog import INITIAL_FALLBACKS, INITIAL_PANEL
-            # `active_panel`/`fallbacks` are stored so the auto-selector can
-            # change them at runtime. They must still follow `AI_MODELS` /
-            # `AI_FALLBACK_MODELS` when the operator edits the config (e.g. via
-            # Telegram `/set`), otherwise a corrected model list is ignored.
-            panel = cfg.list("AI_MODELS") or INITIAL_PANEL
-            previous = state.kv_get("active_panel")
-            stored_src = state.kv_get("active_panel_source")
-            if not previous or (stored_src and list(stored_src) != list(panel)):
-                state.kv_set("active_panel", panel)
-            state.kv_set("active_panel_source", panel)
-
-            fallbacks = cfg.list("AI_FALLBACK_MODELS") or INITIAL_FALLBACKS
-            prev_fb = state.kv_get("fallbacks")
-            stored_fb_src = state.kv_get("fallbacks_source")
-            if not prev_fb or (stored_fb_src and list(stored_fb_src) != list(fallbacks)):
-                state.kv_set("fallbacks", fallbacks)
-            state.kv_set("fallbacks_source", fallbacks)
-
-            if not state.kv_get("candidates"):
-                state.kv_set("candidates", catalog.pool(cfg.float("AI_MAX_MULTIPLIER", 4),
-                                                        cfg.list("AI_PREMIUM_MODELS")))
+                        gateway=gateway, shariah=shariah, backup=backup)
         runtime.engine = engine
         runtime.commands = CommandHandler(cfg, state, journal, telegram, engine=engine,
-                                          runner=engine.runner, catalog=catalog,
                                           shariah=shariah, backup=backup)
     return runtime

@@ -30,12 +30,9 @@ def _signal(symbol="ABCD", **over):
 
 def test_build_feed_leads_with_the_warning_and_the_stage():
     text = format_build_feed([_signal()])
-    assert text.startswith("<b>BUILDING NOW")
-    assert "not a buy signal" in text
+    assert text.startswith("<b>BUILDS</b>")
+    assert "quiet accumulation" in text
     assert "ABCD" in text
-    assert "accelerating" in text.lower()
-    assert "to alert:" in text
-    assert "not yet alert-tier" in text
 
 
 def test_build_feed_escapes_dynamic_symbol_text():
@@ -47,7 +44,7 @@ def test_build_feed_escapes_dynamic_symbol_text():
 def test_build_feed_plain_and_html_carry_the_same_facts():
     plain = format_build_feed([_signal()], html=False)
     html = format_build_feed([_signal()], html=True)
-    for token in ("BUILDING NOW", "ABCD", "to alert"):
+    for token in ("BUILDS", "ABCD", "quiet accumulation"):
         assert token in plain and token in html
 
 
@@ -64,8 +61,8 @@ def test_build_digest_is_empty_without_signals():
 
 def test_build_digest_names_the_window():
     text = format_build_digest([_signal()], seconds=900)
-    assert "MOMENTUM BUILDS" in text
-    assert "last 15m" in text
+    assert "BUILDS" in text
+    assert "refreshed 900s" in text
     assert "ABCD" in text
 
 
@@ -171,7 +168,7 @@ def test_engine_build_feed_sends_once_then_stays_quiet(cfg, tmp_path):
     engine, telegram, db, journal = _engine(cfg, tmp_path)
     metrics = [_build_metrics()]
     engine._maybe_build_feed("regular", metrics)
-    assert any("MOMENTUM BUILDS" in m for m in telegram.outbox)
+    assert any("BUILDS" in m for m in telegram.outbox)
     before = len(telegram.outbox)
     engine._maybe_build_feed("regular", metrics)  # same names, no new build
     assert len(telegram.outbox) == before

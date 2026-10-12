@@ -509,3 +509,86 @@ Three things that looked like extra work turned out to be part of the same bug:
 
 The fast lane can only *add* alerts; the tier path is untouched, so a mis-set
 `FAST_*` threshold costs extra messages, never a missed one.
+
+---
+
+## C32. Long-only, with a strategy gate the alert actually passes through
+
+**Finding.** The screener ranks movers. It does not know *why* one moved or
+whether the setup is still buyable, so an alert was a statement about price and
+nothing else. Two structural rules fix that without adding a data provider:
+
+- **Long-only.** Exhaustion and distribution can only produce `WAIT` / `PASS` or
+  an exit warning. There is no short branch anywhere in the gate, and no detector
+  returns one. A short entry zone or a `SHORT` verdict from the model is
+  rejected, not repaired.
+- **The gate runs before the alert.** 18 named detectors, split by data cost: the
+  metrics-only primaries run in the poll loop with zero extra fetches, and the
+  enrichment primaries run afterwards on the detail thread where enrichment is
+  already being paid for. The second, richer verdict is the one that counts.
+
+**Blockers, in precedence order:** `DATA_CONFLICT` (quote and verified price
+disagree) -> `DILUTION` (offering priced below today's open) -> `EXHAUSTED` (a
+parabolic move that is spent) -> `no_strategy` -> `below_min_score`. A block is a
+refusal to enter, never a short.
+
+**Where the boundary sits.** `STRATEGY_GATE` defaults to `0` so the old tier path
+keeps running for comparison; the alerts in this write-up are the gate path. The
+alert fires the moment the gate passes, and the 15m/60m windows are out of the
+alert header - those are what made a live burst read like a move that was already
+over.
+
+**Ceiling.** Detectors that need prior sessions (`first_green_day`, `day3_surge`,
+`worg`, `float_rotation`) return `INSUFFICIENT_DATA` until `daily_close` history
+has accumulated, and the gate refuses rather than guessing. They start passing on
+their own from day 7; nothing to configure.
+
+## C33. One AI decision call, strictly validated
+
+**Finding.** The panel sent the same setup to several models, scored their
+agreement, and printed a leaderboard. That cost several calls per alert to produce
+a number nobody acted on differently: the verdict was `ENTER` or it was not, and
+the models rarely disagreed about that in a way that changed the trade.
+
+**What replaced it.** One call, one DECISION REPORT: verdict, rating, findings,
+entry points (LONG), exit points. The methodology lives in
+`prompts/methodology_v1.md` and is loaded, not inlined, so it can be edited and
+versioned on its own.
+
+**Validation rejects rather than repairs.** A missing required field, an `ENTER`
+with an empty `rubrics_applied`, an `ENTER` on a gate that did not pass, a short
+entry zone, a `SHORT` verdict, and HTML in place of JSON are all rejected. A
+rejected report degrades to `PASS`: the setup may be good, but a report that
+contradicts its own gate has not earned an entry. Quietly fixing it would hide a
+real disagreement between the gate and the reader.
+
+**No persona.** The prompt states "do not roleplay" and the validator would reject
+a persona-styled finding that contradicted the gate. One reader, one view of the
+setup, stated plainly.
+
+## C34. Every alert graded to the close, reported once a day
+
+**Finding.** An alert is a prediction. Without measuring it there is no way to
+tell whether the gate is finding winners or just finding things that moved, and a
+strategy library that is never graded only ever feels good.
+
+**Two design decisions worth stating, because both cost something:**
+
+- **Tracking runs off the quotes the engine already polls**, not off re-fetched
+  1m candles. Finviz returns a session high and low on every row, so max gain,
+  drawdown, and the stop/target tests are exact at poll resolution - and the
+  TwelveData quota (8 credits/min on the free tier) is left alone. The cost is
+  that a spike between two polls is invisible; at the 20s cadence that is
+  acceptable.
+- **One message a day, not one per alert.** Per-alert result messages train the
+  reader to ignore results. A single end-of-day report makes the day's alerts as a
+  set, which is how they should be judged: not "did this one work" but "did the
+  gate, today, on this set".
+
+**A missing close is `invalid`, not flat.** A symbol that stops being quoted before
+the close is excluded from the day's average rather than counted as a 0% day.
+`invalid` is the honest label; a fake flat day is the failure mode that would make
+the grade look better than it was.
+
+**Commands.** `/eod` (today or `/eod YYYY-MM-DD`), `/tracked`, `/stats` (the
+strategies ranked by what they actually produced).
