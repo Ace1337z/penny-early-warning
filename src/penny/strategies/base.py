@@ -170,6 +170,10 @@ class Bundle:
     float_max: float = 20_000_000.0
     # Spec 2.0 E: the short-squeeze floor (was 15).
     short_float_min: float = 8.0
+    # How old a headline may be and still be named the cause. Copied from
+    # config once per call (same pattern as dollar_level); the module default
+    # matches the 24h horizon the rest of the system uses.
+    cause_max_age_h: float = 24.0
     sector_leader: Any = None
     # Peer 15m moves as {symbol: pct}, when a peer feed is wired. None means
     # "not fetched" -- sympathy_move reports INSUFFICIENT_DATA, never a guess.

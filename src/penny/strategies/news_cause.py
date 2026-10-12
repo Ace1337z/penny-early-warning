@@ -45,9 +45,14 @@ MECHANISM_HALF_LIFE_MIN = {
 WEIGHTS = {HARD: 1.0, MEDIUM: 0.6, SOFT: 0.25, DILUTION: -1.0}
 
 # A cause must also be recent enough to plausibly have *caused* the move rather
-# than described it. The decay curve is the primary test; this is the outer bound
-# that stops a HARD catalyst at 09:30 being named as the cause of a 15:00 move.
-CAUSE_MAX_AGE_H = 4.0
+# than described it. The decay curve is the ranking; this is the outer bound.
+# It matches the horizon the rest of the system already uses (24h:
+# CATALYST_MAX_AGE_MIN, rank_catalysts' own default, and the "no news in 24h"
+# wording): a pre-market press release is the cause of an all-day move, and the
+# old 4h cut dropped it -- which is how a 07:32 PR on a +14% day came back as
+# "unidentified" while the headline sat in the fetched news. The config key of
+# the same name overrides this (Bundle.cause_max_age_h, set in wiring.py).
+CAUSE_MAX_AGE_H = 24.0
 
 # Feature 15: exponential decay replaces the old flat "24h and still counts"
 # window. A press release at 09:35 and one at 15:00 are not the same setup, and
@@ -264,14 +269,16 @@ def extract_cause(catalysts: list[dict], b, filings: Optional[list] = None) -> C
     is more useful than attaching a plausible-looking PR.
     """
     ranked = catalysts or []
-    max_age_h = CAUSE_MAX_AGE_H
+    # The bundle carries the config value; the module constant is the fallback
+    # for callers that build a Bundle by hand (tests, the simulation).
+    max_age_h = float(getattr(b, "cause_max_age_h", None) or CAUSE_MAX_AGE_H)
     for e in ranked:
         if e["class"] == DILUTION:
             continue
         if e["age_minutes"] > max_age_h * 60:
             continue
-        # The 4h window above is the outer bound and the *class* decides inside
-        # it: a real event -- HARD or MEDIUM -- is nameable for the whole window
+        # The window above is the outer bound and the *class* decides inside it:
+        # a real event -- HARD or MEDIUM -- is nameable for the whole window
         # even after its decayed weight falls. Decay is a ranking signal
         # (`rank_catalysts` sorts on it), not a nameability test. The old flat
         # `weight < 0.6` floor was the MEDIUM base weight, so it dropped every

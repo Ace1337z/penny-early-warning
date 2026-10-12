@@ -263,7 +263,7 @@ DEFAULTS: dict[str, str] = {
     "CATALYST_MIN_DOLLAR_15M": "150000",
     # --- News cause ---
     "CAUSE_ALIGN_WINDOW_MIN": "30",
-    "CAUSE_MAX_AGE_H": "4",
+    "CAUSE_MAX_AGE_H": "24",
     "CAUSE_SINGLE": "1",
     # --- Float rotation ---
     "FLOAT_ROTATION_MIN": "1.5",

@@ -62,6 +62,7 @@ def metrics_to_bundle(m, *, enr=None, cfg=None, now=None, history=None,
         # dollar_level): the mechanism detectors stay pure Bundle functions.
         dollar_level=cfg.float("DOLLAR_LEVEL", 1.00) if cfg else 1.00,
         short_float_min=cfg.float("SHORT_FLOAT_MIN", 8.0) if cfg else 8.0,
+        cause_max_age_h=cfg.float("CAUSE_MAX_AGE_H", 24.0) if cfg else 24.0,
     )
 
     if enr is not None:

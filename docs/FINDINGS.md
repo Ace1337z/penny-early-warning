@@ -335,7 +335,7 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 476 passed, 1 skipped
+### Unit tests (`pytest -q`) — 479 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
 journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
@@ -911,9 +911,10 @@ absence of a named cause is itself a signal - name the mechanism or say
   (updates, presentations) and pure chatter (`social media`, `trending`,
   `stocktwits`, `reddit`, `meme stock`, `buy alert`, ...) are named explicitly in
   `_SOFT`, so the fallback is honest. In `extract_cause`, nameability is the
-  *class*: HARD and MEDIUM are nameable for the whole 4h `CAUSE_MAX_AGE_H` window;
-  only `SOFT` is dropped; the redundant `weight < 0.6` cut is gone. Decay remains
-  a ranking signal (`rank_catalysts` sorts on it), not a nameability test.
+  *class*: HARD and MEDIUM are nameable for the whole `CAUSE_MAX_AGE_H` window
+  (4h here; widened to 24h in C44); only `SOFT` is dropped; the redundant
+  `weight < 0.6` cut is gone. Decay remains a ranking signal (`rank_catalysts`
+  sorts on it), not a nameability test.
 - **Where:** `src/penny/strategies/news_cause.py` (`classify`, `_SOFT`,
   `extract_cause`).
 - **Why it matters:** the cause-first design is only as good as the vocabulary it
@@ -922,3 +923,41 @@ absence of a named cause is itself a signal - name the mechanism or say
   companies -- most likely to be the reason a penny stock moved. The floor made
   the same mistake in time: it asked "how strong is this still" when the question
   is "may we name it at all".
+
+## C44. The 4h naming window dropped a pre-market catalyst, and the headline had nowhere to render
+
+- **Question:** after C43 the GIXI headline is a real event, so why did the alert
+  still read `MECHANISM: unidentified — treat as speculative` with the Finviz PR
+  visible on the ticker page?
+- **Finding:** three faults, all on the naming path.
+  1. `extract_cause` bounded the age at `CAUSE_MAX_AGE_H = 4`. GIXI's PR printed
+     at 07:32 and the alert went out in the afternoon, ~7h later, so the headline
+     was dropped. The 4h bound contradicted the rest of the system, which uses a
+     24h horizon throughout (`CATALYST_MAX_AGE_MIN=1440`, `rank_catalysts`' own
+     default of 1440, the "no news in 24h" mechanism reason, and the "none found
+     in the last 24h" text). A pre-market press release *is* the cause of an
+     all-day move; the 4h cut was calibrated for a same-session catalyst only.
+  2. The `CAUSE_MAX_AGE_H` config key was dead. `extract_cause` read the module
+     constant directly, so setting the key changed nothing.
+  3. When no cause was named, `cause_block` returned only the MECHANISM line. A
+     fetched headline that ranked SOFT or fell outside the window was never
+     rendered anywhere -- the alert looked like the feed had returned nothing
+     while the PR sat in `enr.news`.
+- **Default adopted:** the naming window is 24h (`CAUSE_MAX_AGE_H`, module
+  default and shipped config), copied onto the Bundle (`cause_max_age_h`) by
+  `metrics_to_bundle` so the key is live. When no cause is named, `cause_block`
+  appends one `NEWS (class), <age> ago - outlet: headline` line for the freshest
+  fetched item -- one line, not a dump, class-labelled so the reader can see the
+  system read the headline and judged it background rather than missing it. No
+  headline at all still shows no line. `build_ai_facts` reads the same
+  `cause_block`, so the model sees the fallback headline too.
+- **Where:** `src/penny/strategies/news_cause.py` (`CAUSE_MAX_AGE_H`,
+  `extract_cause`), `src/penny/strategies/base.py` (`Bundle.cause_max_age_h`),
+  `src/penny/strategies/wiring.py` (`metrics_to_bundle`), `src/penny/alerts.py`
+  (`cause_block`, `_news_fallback`), `src/penny/config.py` +
+  `config.env.example` (`CAUSE_MAX_AGE_H=24`).
+- **Why it matters:** "no news" is the most dangerous reading a small-cap alert
+  can give, and the system was producing it while holding the news. A naming
+  window shorter than the horizon the rest of the code reasons about, a config
+  key nothing reads, and a render path with no room for a non-cause headline
+  stacked into the same false negative. Any one alone would have hidden the PR.

@@ -194,6 +194,24 @@ def test_no_cause_names_a_mechanism_instead_of_a_shrug():
     assert "silent accumulation" in lines[0]
 
 
+def test_a_soft_headline_is_still_shown_when_no_cause_is_named():
+    """GIXI regression: news was fetched but the block showed only MECHANISM,
+    so a real headline the feed carried was invisible. A fetched headline is
+    evidence and is shown below the mechanism, one line, class-labelled."""
+    bundle = _bundle(news=[{"title": "Company provides update", "source": "Yahoo",
+                            "url": "u", "age": "5h"}])
+    lines = cause_block(_metrics(), Enrichment(symbol="XYZ"), bundle)
+    news = [l for l in lines if l.startswith("NEWS")]
+    assert news and "Company provides update" in news[0]
+    assert "soft" in news[0]
+
+
+def test_no_news_at_all_shows_no_news_line():
+    bundle = _bundle(news=[], volx={3: 1.0, 5: 1.2, 15: 1.4})
+    lines = cause_block(_metrics(), Enrichment(symbol="XYZ"), bundle)
+    assert not any(l.startswith("NEWS") for l in lines)
+
+
 def test_no_evidence_at_all_is_reported_as_unidentified():
     bundle = _bundle(news=[], volx={3: 1.0, 5: 1.2, 15: 1.4})
     lines = cause_block(_metrics(), Enrichment(symbol="XYZ"), bundle)

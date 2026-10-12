@@ -323,11 +323,46 @@ def cause_block(m: Metrics, enr: Optional[Enrichment], bundle=None) -> list[str]
         if cause.kind != UNEXPLAINED:
             return cause_lines(cause)
         # Spec 2.0 A: no cause named -- name the mechanism that ran the move,
-        # or say honestly that none can be named.
-        return _mechanism_block(src)
+        # or say honestly that none can be named. The mechanism block is the
+        # *reading*; a fetched headline is still evidence, so the freshest one
+        # is shown below it rather than discarded. Without this a real PR that
+        # ranked SOFT or fell outside the naming window vanished entirely, and
+        # the alert looked like the feed had returned nothing.
+        lines = _mechanism_block(src)
+        headline = _news_fallback(ranked)
+        if headline:
+            lines = lines + headline
+        return lines
     except Exception as exc:  # noqa: BLE001
         log.debug("cause block failed for %s: %s", m.symbol, exc)
         return ["CAUSE: could not determine."]
+
+
+def _news_fallback(ranked: list) -> list[str]:
+    """The freshest fetched headline, shown when none was named the cause.
+
+    One line, not a dump: the same discipline the cause block keeps. The class
+    is printed so the reader can see the system read the headline and judged it
+    background (SOFT) or older than the naming window, rather than missing it.
+    """
+    if not ranked:
+        return []
+    top = ranked[0]
+    age = top.get("age_minutes")
+    when = ""
+    if isinstance(age, (int, float)) and age < 9999:
+        when = f", {_age_text(float(age))} ago"
+    src = top.get("source") or "unknown"
+    cls = str(top.get("class") or "").lower()
+    return [f"NEWS ({cls}){when} - {src}: {top.get('headline', '')}"]
+
+
+def _age_text(minutes: float) -> str:
+    if minutes < 60:
+        return f"{minutes:.0f}m"
+    if minutes < 1440:
+        return f"{minutes / 60:.1f}h"
+    return f"{minutes / 1440:.1f}d"
 
 
 def book_line(m: Metrics) -> str:

@@ -508,7 +508,7 @@ def test_a_catalyst_names_its_source_and_url():
 def test_a_hard_catalyst_is_named_inside_the_window_even_after_decay():
     # SKYA regression: a tender offer at 3h decays to ~0.50, below the 0.6
     # floor, and the flat floor silently returned "unidentified" while the
-    # headline sat right there. HARD must stay nameable for the whole 4h window.
+    # headline sat right there. HARD must stay nameable across the window.
     offer = {"title": "SkyAI Plans $201 Million Cash Tender Offer at $3 Per Share",
              "source": "Finviz", "url": "https://example.com/offer", "age": "3h"}
     b = bundle(news=[offer])
@@ -549,12 +549,25 @@ def test_a_real_headline_with_no_known_keywords_is_named():
 
 
 def test_a_medium_catalyst_outside_the_window_is_not_named():
-    """The 4h CAUSE_MAX_AGE_H bound still applies to MEDIUM."""
+    """The CAUSE_MAX_AGE_H bound still applies: past 24h, no naming."""
     item = {"title": "Acme announces partnership with BigCo",
-            "source": "wire", "url": "u", "age": "5h"}
+            "source": "wire", "url": "u", "age": "30h"}
     b = bundle(news=[item])
     _, ranked, _ = rank_catalysts(b)
     assert extract_cause(ranked, b).kind == "UNEXPLAINED"
+
+
+def test_a_premarket_catalyst_is_named_on_the_afternoon_alert():
+    """GIXI regression: a 07:32 PR drove a +14% all-day move, but the old 4h
+    CAUSE_MAX_AGE_H cut dropped it by the afternoon and the alert read
+    'unidentified' while the headline sat in the fetched news."""
+    item = {"title": "Gix Internet Brings Physical AI to Life-Saving Logistics",
+            "source": "GlobeNewswire", "url": "u", "age": "7h"}
+    b = bundle(news=[item])
+    _, ranked, _ = rank_catalysts(b)
+    cause = extract_cause(ranked, b)
+    assert cause.kind == "CATALYST"
+    assert "Physical AI" in cause.text
 
 
 def test_social_only_items_do_not_become_a_cause():
