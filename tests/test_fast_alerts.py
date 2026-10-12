@@ -30,7 +30,7 @@ def _m(**over):
     m = Metrics(symbol="ABCD", ts=time.time(), price=1.12, cum_volume=2_000_000)
     m.prev_close = 1.00
     m.pct_vs_close = 0.12
-    m.rise = {3: 0.021, 5: 0.031, 15: 0.031, 60: 0.09, 240: 0.09}
+    m.rise = {3: 0.06, 5: 0.08, 15: 0.031, 60: 0.09, 240: 0.09}
     m.volx = {3: 6.0, 5: 6.5, 15: 0.9, 60: 0.2, 240: 0.1}
     m.dollar_vol = {3: 9000.0, 5: 14_000.0, 15: 21_000.0, 60: 5000.0, 240: 2000.0}
     m.vwap = 1.05
@@ -96,6 +96,7 @@ def test_the_tier_path_alone_would_have_missed_it(cfg, tmp_path):
     engine, db, journal = _engine(cfg, tmp_path)
     m = _m()
     cfg.set("FAST_ON", 0)                   # fast lane off
+    cfg.set("STRATEGY_GATE", 0)             # tier path alone: no gate waiver
     assert engine._fast_burst(m, "regular") is False
     assert engine._alert_candidate(m, "regular") is False
     db.close()
@@ -126,6 +127,7 @@ def test_a_burst_on_no_dollar_volume_does_not_alert(cfg, tmp_path):
 
 def test_a_burst_that_already_gave_the_move_back_does_not_alert(cfg, tmp_path):
     """The move must be live, not a stock parked 12% under its high."""
+    cfg.set("FAST_MAX_FROM_HIGH", "-6")     # the guard is off at the shipped default
     m = _m()
     m.from_high = -0.12
     assert engine_fires(cfg, tmp_path, m) is False

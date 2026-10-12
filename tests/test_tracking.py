@@ -114,6 +114,26 @@ def test_stop_and_target_hits_are_sticky(db):
     assert not row["hit_t2"]
 
 
+def test_a_trade_plan_object_is_accepted_not_just_a_dict(db):
+    """The gate path hands over a `TradePlan`, not a mapping.
+
+    `.get()` on the dataclass raised, and the broad except in `start` turned
+    that into an alert with no tracking row -- invisible until STRATEGY_GATE=1
+    became the default and the simulation showed 2 tracked for 3 alerts.
+    """
+    from penny.fib import TradePlan
+    tr = _tracker(db)
+    plan = TradePlan(mode="breakout", entry_low=1.00, entry_high=1.02, entry=1.01,
+                     stop=0.95, target1=1.15, target2=1.30, risk_per_share=0.06,
+                     reward_risk=2.5, shares=800)
+    row = _run_one(tr, "GRND", 1.00, [(1.20, 1.22, 1.00), (0.95, 0.96, 0.94)], plan)
+    assert row["hit_t1"] == 1
+    assert row["hit_stop"] == 1
+    assert not row["hit_t2"]
+    assert abs(row["plan_entry_low"] - 1.00) < 1e-6
+    assert abs(row["plan_entry_high"] - 1.02) < 1e-6
+
+
 def test_a_plan_free_alert_still_tracks(db):
     """A gate pass with no plan levels must still produce a graded row."""
     tr = _tracker(db)

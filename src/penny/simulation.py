@@ -448,6 +448,11 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     cfg.set("HALALTERMINAL_API_KEY", "fake")
     cfg.set("WARMUP_CYCLES", "2")
     cfg.set("ALERT_MIN_TIER", "2")
+    # The end-to-end run exercises the tier path; the gate's own acceptance
+    # checks below set STRATEGY_GATE=1 explicitly where they apply. Pinned here
+    # because the shipped default is now gate-on, and a gate pass fires before
+    # the tier reaches Early -- which is the point of the gate, not a regression.
+    cfg.set("STRATEGY_GATE", "0")
     cfg.set("RISK_USD", "50")
     # The periodic build digest is off by default (item 1); this run exists to
     # exercise that subsystem, so it opts in.

@@ -44,10 +44,31 @@ class Tracker:
     def start(self, symbol: str, *, alert_ts: float, alert_price: float,
               day: Optional[str] = None, primary: Optional[str] = None,
               entry_trigger: Optional[str] = None, gate_score: Optional[float] = None,
-              plan: Optional[dict] = None, plan_entry_low: Optional[float] = None,
+              plan=None, plan_entry_low: Optional[float] = None,
               plan_entry_high: Optional[float] = None) -> Optional[int]:
-        """Record an alert. One row per symbol per day; a re-alert refreshes it."""
+        """Record an alert. One row per symbol per day; a re-alert refreshes it.
+
+        `plan` is either a mapping ({"stop","t1","t2"}, the shape the tests and
+        the older tier path used) or a `TradePlan` object (what the gate path
+        hands over, whose fields are target1/target2/entry_low/entry_high). Read
+        both through one resolver so neither caller has to reshape it -- passing
+        the object straight into `.get()` used to raise, and the broad except
+        below turned that into a silently untracked alert.
+        """
+        def _field(name, *attrs):
+            if isinstance(plan, dict):
+                return plan.get(name)
+            for a in attrs:
+                v = getattr(plan, a, None)
+                if v is not None:
+                    return v
+            return None
+
         day = day or to_et().strftime("%Y-%m-%d")
+        if plan_entry_low is None:
+            plan_entry_low = _field("entry_low", "entry_low", "entry")
+        if plan_entry_high is None:
+            plan_entry_high = _field("entry_high", "entry_high", "entry")
         try:
             self.db.execute(
                 "INSERT INTO alert_tracking(symbol, day, alert_ts, alert_price, "
@@ -64,8 +85,8 @@ class Tracker:
                 "plan_t2=excluded.plan_t2, status='open'",
                 (symbol.upper(), day, alert_ts, alert_price, primary, entry_trigger,
                  gate_score, plan_entry_low, plan_entry_high,
-                 (plan or {}).get("stop"), (plan or {}).get("t1"),
-                 (plan or {}).get("t2")))
+                 _field("stop", "stop"), _field("t1", "target1"),
+                 _field("t2", "target2")))
             row = self.db.query_one(
                 "SELECT id FROM alert_tracking WHERE symbol=? AND day=?",
                 (symbol.upper(), day))

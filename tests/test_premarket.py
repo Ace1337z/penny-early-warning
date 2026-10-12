@@ -33,23 +33,23 @@ def _metrics(pct, *, volx=5.0, dollar_vol=20_000.0, tier=TIER_NONE):
     return m
 
 
-def test_a_ten_percent_premarket_move_with_volume_alerts(cfg, tmp_path):
+def test_a_fifteen_percent_premarket_move_with_volume_alerts(cfg, tmp_path):
     engine, _tg, db, journal = _engine(cfg, tmp_path)
-    assert engine._premarket_breakout(_metrics(0.11), "pre") is True
+    assert engine._premarket_breakout(_metrics(0.16), "pre") is True
     db.close()
     journal.close()
 
 
 def test_the_premarket_gate_does_not_fire_in_the_regular_session(cfg, tmp_path):
     engine, _tg, db, journal = _engine(cfg, tmp_path)
-    assert engine._premarket_breakout(_metrics(0.11), "regular") is False
+    assert engine._premarket_breakout(_metrics(0.16), "regular") is False
     db.close()
     journal.close()
 
 
-def test_below_ten_percent_is_not_a_premarket_alert(cfg, tmp_path):
+def test_below_fifteen_percent_is_not_a_premarket_alert(cfg, tmp_path):
     engine, _tg, db, journal = _engine(cfg, tmp_path)
-    assert engine._premarket_breakout(_metrics(0.09), "pre") is False
+    assert engine._premarket_breakout(_metrics(0.14), "pre") is False
     db.close()
     journal.close()
 
@@ -64,6 +64,7 @@ def test_a_move_with_no_volume_behind_it_does_not_alert(cfg, tmp_path):
 
 
 def test_a_low_tier_stock_below_the_gate_does_not_alert_at_all(cfg, tmp_path):
+    cfg.set("STRATEGY_GATE", "0")           # tier path in charge: the bar holds
     engine, _tg, db, journal = _engine(cfg, tmp_path)
     assert engine._alert_candidate(_metrics(0.05, tier=TIER_NONE), "pre") is False
     db.close()

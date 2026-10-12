@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-470%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-471%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -240,8 +240,8 @@ actually produced.
   green day, low-float squeeze, $1 breakout, VWAP reclaim, failed breakout, WORG, day-3
   surge, float rotation, and six entry triggers). A stock has to *match a setup* before
   it becomes an alert, so the alerts that arrive are setups rather than movers. Detector
-  failures are shown, so you can see what the gate examined. Off by default
-  (`STRATEGY_GATE=0`) while you compare it against the old tier path; when set to 1 it
+  failures are shown, so you can see what the gate examined. On by default
+  (`STRATEGY_GATE=1`); set it to 0 to compare against the old tier path. When on it
   vetoes on the verdicts the poll pass can reach (the reality and exhaustion blockers)
   and fails closed - a gate that cannot be evaluated suppresses the alert and `/status`
   counts it, rather than letting it through ungated.
@@ -255,11 +255,11 @@ actually produced.
   the alert price to the close, and the day's alerts are reported once, as a set
   (`/eod`). `/stats` ranks the detectors by what they actually produced.
 - **A reality gate before the alert** - a quote that cannot be filled never becomes an
-  alert. A spread over `SPREAD_MAX_PCT` (1.5%) blocks as `WIDE_SPREAD`; thin 15-minute
-  dollar volume, an average trade size under `MIN_AVG_TRADE_SIZE` ($200) or fewer than
+  alert. A spread over `SPREAD_MAX_PCT` (0.8%) blocks as `WIDE_SPREAD`; thin 15-minute
+  dollar volume, an average trade size under `MIN_AVG_TRADE_SIZE` ($500) or fewer than
   `MIN_TRADES_15M` prints blocks as `ILLIQUID`; a feed with no bid/ask is
   `INSUFFICIENT_DATA`, never a pass. The exit is checked too: a $500 exit that needs more
-  than `EXIT_LIQ_500_MAX_SEC` (300s) or slips over `EXIT_LIQ_MAX_SLIP_PCT` (1.0%) blocks
+  than `EXIT_LIQ_500_MAX_SEC` (60s) or slips over `EXIT_LIQ_MAX_SLIP_PCT` (0.5%) blocks
   as `ILLIQUID`.
 - **One ABORT per alert** - after the alert, six invalidation triggers watch the quotes:
   a 5-minute close under the alert VWAP, a break of the alert candle's low, a halt, a
@@ -320,7 +320,7 @@ actually produced.
 - **Two-stage alerts** - instant Alert 1, then a fact-rich Alert 2 enriched in parallel.
 - **AI decision support** - one model, one call per alert, on any OpenAI-compatible endpoint. It never places an order.
 - **Catalyst research** - news, SEC filings, short interest/volume, float, insiders.
-- **Internal entry gate** - reward:risk is checked against `MIN_RR` (default 2:1)
+- **Internal entry gate** - reward:risk is checked against `MIN_RR` (default 2.5:1)
   before a level set may back an `ENTER`, but the levels live inside the decision
   block rather than in a separate plan block, so the alert stays lean.
 - **Shariah screening** - halalterminal.com, cached, shown on every alert, with
@@ -594,7 +594,7 @@ fake Telegram, and asserts the documented acceptance results:
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
 Current status: `selftest` **ALL PASS** (85 checks), `simulate` **ALL PASS** (54 checks),
-`pytest` **470 passed** (1 skipped).
+`pytest` **471 passed** (1 skipped).
 
 ---
 

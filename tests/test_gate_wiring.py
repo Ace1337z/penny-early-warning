@@ -167,6 +167,7 @@ def test_an_unevaluable_gate_fails_closed(cfg, tmp_path):
 
 def test_the_advisory_gate_never_vetoes(cfg, tmp_path):
     """STRATEGY_GATE=0 keeps the tier path in charge; the gate is a report."""
+    cfg.set("STRATEGY_GATE", "0")
     engine = _engine(cfg, tmp_path)
     assert engine._gate_is_mandatory() is False
 
@@ -232,6 +233,7 @@ def test_the_tier_bar_is_waived_when_the_gate_is_mandatory(cfg, tmp_path):
 
 def test_the_tier_bar_holds_when_the_gate_is_only_a_report(cfg, tmp_path):
     """With the gate off, the tier path decides and the fallbacks stay weak."""
+    cfg.set("STRATEGY_GATE", "0")
     engine = _engine(cfg, tmp_path)
     quiet = Metrics(symbol="QUIET", ts=time.time(), price=1.10, session="regular")
     quiet.tier = TIER_NONE

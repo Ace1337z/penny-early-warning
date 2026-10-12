@@ -133,7 +133,7 @@ DEFAULTS: dict[str, str] = {
     # --- Behaviour ---
     "MAX_PRICE": "10",
     "MIN_PRICE": "0.10",
-    "ALERT_MIN_TIER": "2",
+    "ALERT_MIN_TIER": "3",
     "REALERT_SECONDS": "3600",
     "ALERT_EXTENDED": "0",
     "EXTENDED_PCT": "100",
@@ -142,7 +142,7 @@ DEFAULTS: dict[str, str] = {
     "RISK_USD": "50",
     # Minimum reward:risk for a plan to be actionable. Below this the plan still
     # renders but is marked no-trade, and the AI panel must not recommend ENTER.
-    "MIN_RR": "2.0",
+    "MIN_RR": "2.5",
     "BASELINE_FALLBACK": "300",
     "BASELINE_MIN_PER_MIN": "20",
     "FINVIZ_MAX_PER_MIN": "30",
@@ -181,23 +181,23 @@ DEFAULTS: dict[str, str] = {
     # message lands. Cleared to 0 to fall back to the tier gates alone.
     # FAST_ON=0 is the single switch that turns the whole lane off.
     "FAST_ON": "1",
-    "FAST_RISE3": "2",
+    "FAST_RISE3": "5",
     "FAST_VOLX3": "5",
     "FAST_DOLLAR3": "3000",
-    "FAST_RISE5": "3",
+    "FAST_RISE5": "7",
     "FAST_VOLX5": "5",
-    "FAST_MAX_FROM_HIGH": "-6",
-    "FAST_MIN_VOLUME": "50000",
+    "FAST_MAX_FROM_HIGH": "2",
+    "FAST_MIN_VOLUME": "100000",
     # Pre-market gate: alert as soon as the move clears PREMARKET_PCT with the
     # volume to back it, rather than waiting for the tier's 15-minute rise window
     # to catch up (which historically meant the alert arrived at ~+20%).
-    "PREMARKET_PCT": "10",
+    "PREMARKET_PCT": "15",
     "PREMARKET_VOLX15": "3",
     "PREMARKET_DOLLAR15": "5000",
     # --- Strategy gate (long-only) ---------------------------------------
     # STRATEGY_GATE=0 keeps every stock that clears the fast lane. 1 routes
     # alerts through the strategy detectors instead.
-    "STRATEGY_GATE": "0",
+    "STRATEGY_GATE": "1",
     "GATE_MIN_SCORE": "55",
     # Cause is a label, not a gate (Spec 2.0 A): CAUSE_REQUIRED=1 restores the
     # old behaviour of refusing every alert without a named catalyst, which
@@ -208,10 +208,10 @@ DEFAULTS: dict[str, str] = {
     # --- Reality gate: spread + liquidity (Feature 1) ---
     # A setup you cannot fill is not a setup. The spread ceiling is the hard
     # one; the three volume numbers describe whether anyone is actually here.
-    "SPREAD_MAX_PCT": "1.5",
+    "SPREAD_MAX_PCT": "0.8",
     "MIN_DOLLAR_VOL_15M": "300000",
-    "MIN_AVG_TRADE_SIZE": "200",
-    "MIN_TRADES_15M": "30",
+    "MIN_AVG_TRADE_SIZE": "500",
+    "MIN_TRADES_15M": "40",
     # --- Invalidation / abort alerts (Feature 4) ---
     "INVALIDATION_ALERTS": "1",
     "INVALIDATION_CHECK_SECONDS": "30",
@@ -231,8 +231,8 @@ DEFAULTS: dict[str, str] = {
     "SECTOR_TOP_N": "3",
     "SECTOR_HEATMAP_REFRESH_SECONDS": "300",
     # --- Exit liquidity (Feature 10) ---
-    "EXIT_LIQ_500_MAX_SEC": "300",
-    "EXIT_LIQ_MAX_SLIP_PCT": "1.0",
+    "EXIT_LIQ_500_MAX_SEC": "60",
+    "EXIT_LIQ_MAX_SLIP_PCT": "0.5",
     # --- Post-mortems (Feature 14) ---
     "POSTMORTEM_ENABLED": "1",
     "POSTMORTEM_IN_EOD": "1",

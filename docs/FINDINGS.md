@@ -335,7 +335,7 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 470 passed, 1 skipped
+### Unit tests (`pytest -q`) — 471 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
 journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
@@ -846,3 +846,44 @@ absence of a named cause is itself a signal - name the mechanism or say
 - **Why it matters:** the floor conflated "how strongly does this still pull"
   with "may we name it at all". Those are different questions, and collapsing them
   turns the one feed that knew about a $201M tender offer back into "no news".
+
+## C41. Turning the gate on by default exposed a tracker that silently dropped the plan
+
+- **Question:** flipping the shipped defaults to `STRATEGY_GATE=1` failed the
+  end-to-end simulation with "every alert is entered in the per-alert tracker:
+  2 tracked vs 3 alerts". No code on the alert path changed. Where did a row go?
+- **Finding:** `Engine._fire_alert` passes `bundle.plan` -- a `TradePlan` dataclass
+  -- into `Tracker.start`, which did `(plan or {}).get("stop")`. `TradePlan` has no
+  `.get`, so it raised `AttributeError`, and the broad `except` in `start` logged it
+  at debug and returned `None`. Every alert under the gate fired with no tracking
+  row: no outcome, no EOD grading, no calibration sample. The tier path had always
+  passed a plain dict, and `STRATEGY_GATE=0` had been the default, so the mismatch
+  never ran in the shipped configuration.
+- **Default adopted:** `Tracker.start` takes either shape. A small `_field` resolver
+  reads a mapping by key and an object by attribute (`stop`/`target1`/`target2`,
+  `entry_low`/`entry_high`), and `plan_entry_low`/`plan_entry_high` are filled from
+  the plan when the caller does not pass them. Neither caller reshapes its input.
+- **Where:** `src/penny/tracking.py` (`Tracker.start`).
+- **Why it matters:** an exception swallowed inside a "best effort" tracker is the
+  worst kind -- the alert looks fine, the message is sent, and the only symptom is a
+  missing row that nothing reads until someone counts them. The broad except stays
+  (a tracking failure must never cost the alert) but the input is now honest.
+
+## C42. Shipped defaults tightened (gate on, stricter liquidity and burst bars)
+
+- **Question:** the operator asked for a stricter default profile. What changes?
+- **Default adopted:** `STRATEGY_GATE=1`, `ALERT_MIN_TIER=3` (CONFIRMED),
+  `SPREAD_MAX_PCT=0.8`, `MIN_AVG_TRADE_SIZE=500`, `MIN_TRADES_15M=40`,
+  `EXIT_LIQ_500_MAX_SEC=60`, `EXIT_LIQ_MAX_SLIP_PCT=0.5`, `FAST_RISE3=5`,
+  `FAST_RISE5=7`, `FAST_MAX_FROM_HIGH=2`, `FAST_MIN_VOLUME=100000`,
+  `PREMARKET_PCT=15`, `MIN_RR=2.5`. `BUILD_FEED` stays 0.
+- **Note on `FAST_MAX_FROM_HIGH=2`:** the guard only engages on a *negative* value
+  (`if from_high < 0 and ...`), so a positive one disables the from-high check
+  entirely. Set as asked; the effect is that a spent burst is no longer rejected on
+  the give-back alone.
+- **Where:** `src/penny/config.py` (DEFAULTS), `config.env.example`.
+- **Why it matters:** the tier and fast-lane tests encode the old bars, and the
+  simulation run exercised the tier path. Those were updated to pin the mode they
+  test rather than inherit the new default; the shipped behaviour is the new one.
+  The tracker bug above is what turning the gate on surfaced -- the defaults were
+  not the only thing that had been hidden by `STRATEGY_GATE=0`.
