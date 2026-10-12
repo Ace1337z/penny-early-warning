@@ -53,7 +53,7 @@ def metrics_to_bundle(m, *, enr=None, cfg=None, now=None, history=None,
         vwap=m.vwap,
         from_high=m.from_high,
         minutes_since_low=m.minutes_since_low,
-        minutes_tracked=_num(m.minutes_tracked) or 0.0,
+        minutes_tracked=_minutes_tracked(m),
         session=getattr(m, "session", "regular"),
         now_et=now or now_et(),
         float_shares=m.float_shares,
@@ -88,6 +88,23 @@ def _num(value) -> Optional[float]:
         return float(str(value).replace("%", "").replace(",", "").strip())
     except (TypeError, ValueError):
         return None
+
+
+def _minutes_tracked(m) -> float:
+    """How long the rolling state has held this symbol, in minutes.
+
+    `Metrics` carries `age_seconds` (seconds since the symbol was first seen
+    this session); `Bundle.minutes_tracked` is that expressed in minutes.
+
+    Read with `getattr` on purpose: this wiring is handed lightweight stand-ins
+    in tests and any future Metrics variant, and an AttributeError here takes
+    the whole gate down with it. That is exactly how the bug this replaces went
+    unnoticed -- `_run_gate` catches the exception, logs a warning and returns
+    no gate at all, so with the gate mandatory the failure looked like a quiet
+    day, and with it advisory it simply vanished.
+    """
+    age = _num(getattr(m, "age_seconds", None))
+    return (age / 60.0) if age else 0.0
 
 
 def _short_pct(enr) -> Optional[float]:

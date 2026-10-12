@@ -32,6 +32,12 @@ log = logging.getLogger(__name__)
 EXCLUDED_SUFFIXES = {"W", "WS", "WT", "U", "UN", "R", "RT", "P", "PR", "A", "B", "C"}
 SPLIT_ARTIFACT_PCT = 400.0
 
+# Gate verdicts the poll-loop pass cannot reach, because the Bundle it builds
+# carries no candles and no news (see Engine._run_gate). They are reported by
+# the detectors honestly -- "no 1m bars", "news not fetched" -- but as a verdict
+# they are a missing input, not a decision, so they must not veto here.
+POLL_UNDECIDABLE = frozenset({"no_strategy", "no_catalyst"})
+
 
 def alert_menu(symbol: str) -> dict:
     """Inline buttons under an alert so a symbol is one tap away."""
@@ -241,8 +247,7 @@ class Engine:
             # with no extra fetch. The enrichment primaries run later, in
             # _fire_alert, where a fetch is already being paid for.
             gate, bundle = self._run_gate(m, metrics_list)
-            if gate is not None and not gate.passed and self._gate_is_mandatory():
-                self._note_gate_reject(m, gate)
+            if self._gate_vetoes(m, gate, stats):
                 continue
             self._fire_alert(m, session, pct_rank, fast=fast, gate=gate, bundle=bundle)
             stats["alerts"] += 1
@@ -337,18 +342,20 @@ class Engine:
     def _reached_alert_bar(self, m: Metrics, session: str, fast: bool) -> bool:
         """Has this stock actually reached the alert bar yet?
 
-        Spec 1.1: the alert fires the moment the strategy gate passes, and the 15m
-        and 60m windows come out of the alert path entirely. Under the gate that
-        is exactly what `cycle()` does -- the gate ran before we got here. The old
-        tier path still waits, because those windows are the only thing it reads.
+        Spec 1.1 wanted the 15m and 60m windows out of the alert path under the
+        gate, because the gate would decide instead. It cannot yet: this runs
+        before `_run_gate`, and the gate's Bundle is built without enrichment,
+        so its `no_strategy` and `no_catalyst` verdicts are missing inputs
+        rather than decisions (see POLL_UNDECIDABLE). Waiving the tier bar on
+        that basis left the alert path with no filter at all -- the gate could
+        not say no, and nothing else was asked. The tier bar therefore stays as
+        the candidate filter, and the gate adds the verdicts it can actually
+        reach: the reality and exhaustion blockers. Removing this bypass is what
+        Spec 1.1 needs to become safe, not what it costs.
 
-        This can only remove the "came early" fallback that the tier check used
-        to grant. It can never gate in something on its own: `_fast_burst` and the
-        pre-market rule are both *weaker* than the tier they replace, and they are
-        only consulted when the tier path is still in charge.
+        The `fast` and pre-market fallbacks below are only consulted when the
+        tier path is in charge, and both are weaker than the tier they replace.
         """
-        if self._gate_is_mandatory():
-            return True
         min_tier = max(TIER_EARLY, self.cfg.int("ALERT_MIN_TIER", 2))
         if m.tier >= min_tier:
             return True
@@ -984,6 +991,36 @@ class Engine:
         """STRATEGY_GATE=0 leaves the old tier path running, for comparison."""
         return self.cfg.bool("STRATEGY_GATE", False)
 
+    def _gate_vetoes(self, m: Metrics, gate, stats: dict) -> bool:
+        """Does the mandatory gate stop this alert? Extracted so it can be tested.
+
+        Three rules, in the order they matter:
+
+          - The advisory gate never vetoes. With STRATEGY_GATE=0 the tier path
+            is still the filter and the gate is a report.
+          - An evaluation that failed is not a gate that passed. Returning
+            "no gate to enforce" used to send the alert out ungated, a silent
+            bypass of the one filter the system is built around, so this fails
+            closed and counts itself. A skipped alert costs an opportunity; a
+            bypassed gate costs the premise.
+          - `no_strategy` and `no_catalyst` rest on inputs this pass does not
+            have (no 1m candles, no news), so they are missing data rather than
+            decisions and must not veto: enforcing them would reject every
+            candidate before `_fire_alert` could enrich it, muting the system
+            instead of filtering it. The rest -- the reality and exhaustion
+            blockers, decidable from price and volume alone -- vetoes now, and
+            the enriched pass settles what is left.
+        """
+        if not self._gate_is_mandatory():
+            return False
+        if gate is None:
+            stats["gate_errors"] = stats.get("gate_errors", 0) + 1
+            return True
+        if not gate.passed and gate.blocked_by not in POLL_UNDECIDABLE:
+            self._note_gate_reject(m, gate)
+            return True
+        return False
+
     def _run_gate(self, m: Metrics, metrics_list: Optional[list] = None):
         """Evaluate the metrics-only gate for one symbol.
 
@@ -998,7 +1035,11 @@ class Engine:
             gate, bundle = run_gate(m, cfg=self.cfg, now=to_et(),
                                     history=self._daily_history(m.symbol))
         except Exception as exc:  # noqa: BLE001
-            log.warning("gate error for %s: %s", m.symbol, exc)
+            # Loud on purpose: with the gate mandatory this error now means
+            # alerts are being suppressed (cycle() fails closed), so a quiet
+            # warning would look identical to a quiet market.
+            log.exception("gate error for %s -- alerts for it are suppressed: %s",
+                          m.symbol, exc)
             return None, None
         self._gates[m.symbol] = gate
         return gate, bundle
@@ -1247,7 +1288,12 @@ class Engine:
             "primary": gate.primary,
             "score": round(gate.gate_score, 1),
             "price": m.price,
-            "failed_on": [f for r in gate.strategies if r.failed_on][:4],
+            # Flat list of the failed conditions, capped at four. It reads like
+            # `[f for r in ... if r.failed_on]`, which named `f` without ever
+            # binding it and raised NameError on the first rejection -- so the
+            # record that was supposed to explain a held-back setup was itself
+            # taking the cycle down. Strings keep the row reportable.
+            "failed_on": [f for r in gate.strategies for f in r.failed_on][:4],
         }
 
     def _maybe_build_feed(self, session: str, metrics: list[Metrics]) -> None:
@@ -1474,7 +1520,11 @@ class Engine:
             f"trading day {is_trading_day()}\n"
             f"symbols {s.get('symbols', 0)} | cycle {s.get('ms', 0):.0f} ms | "
             f"quotes {s.get('quotes', 0)} | memory {rss:.0f} MB\n"
-            f"alerts this cycle {s.get('alerts', 0)} | strategy gate {gate_state}\n"
+            f"alerts this cycle {s.get('alerts', 0)} | strategy gate {gate_state}"
+            # A fail-closed gate that cannot be evaluated drops alerts on
+            # purpose; say so rather than let the bot look like a quiet morning.
+            + (f" | gate errors {s['gate_errors']}" if s.get('gate_errors') else "")
+            + f"\n"
             f"decisions {decisions} (rejected {rejected}) | last backup: {backup_txt}")
 
     def run_forever(self, poll: Optional[float] = None) -> None:

@@ -668,3 +668,43 @@ the ban is on the header's rise line (Spec 11.1) and now reads that line.
 **Commands.** `/model` (show or change the decision model, no restart) and
 `/postmortem SYM [DATE]`. `/models` remains a legacy alias; the CLI's
 `penny models` is unchanged.
+
+## C36. The gate's wiring was broken four ways, and nothing could see it
+
+**Finding.** `/check` answered every request with
+`Check failed: 'Metrics' object has no attribute 'minutes_tracked'`. The
+metrics-only pass in `strategies/wiring.py` read `m.minutes_tracked`, a field
+`Metrics` has never had in any commit - the strategy tests build a `Bundle`
+directly, so the seam was never exercised, and `_run_gate` caught the exception,
+logged it and returned *no gate at all*. Three defects followed from one
+untested seam, all of them invisible to the 403 tests:
+
+1. **`/check` died.** The command calls `run_gate` directly, unguarded, so the
+   AttributeError reached the reader as "Check failed: ...".
+2. **A mandatory gate failed open.** With `STRATEGY_GATE=1`, the crashed gate
+   read as "no gate to enforce", and `cycle()` let the alert out ungated - the
+   one filter the system is built around, silently bypassed. An evaluation that
+   failed is now fail-closed, counted as `gate errors` and shown in `/status`,
+   because a skipped alert costs an opportunity while a bypassed gate costs the
+   premise.
+3. **The rejection record raised too.** `_note_gate_reject` wrote
+   `[f for r in gate.strategies if r.failed_on]`, which names `f` without ever
+   binding it: the first gate rejection raised NameError and took the cycle
+   down. It records a flat list of failure strings now.
+4. **The gate could never pass.** The poll loop builds its Bundle without
+   candles or news, so `no_strategy` and `no_catalyst` are missing inputs, not
+   verdicts - and enforcing them rejected 63 of 63 candidates: switching the
+   gate on muted the system outright. Those two now defer to the enriched pass,
+   the reality blockers (`WIDE_SPREAD`, `ILLIQUID`, `DILUTION`, `EXHAUSTED`,
+   `DATA_CONFLICT`) veto on the poll, and the tier bar stays as the candidate
+   filter instead of being waived - waiving it left the path with no filter at
+   all, which is what STRATEGY_GATE=1 had actually been doing all along: the
+   gate crashed, nothing else was asked, and every candidate alerted.
+
+The full simulation now passes with the gate mandatory (49/49) as well as
+advisory, and `tests/test_gate_wiring.py` pins each rule: the seam, the
+rejection record, fail-closed, the undecidable verdicts, and the tier bar.
+`/check` is covered end to end for the first time.
+
+**Rule.** A safety filter that cannot run must fail closed, and a verdict
+resting on data that was never fetched is missing data - not a decision.

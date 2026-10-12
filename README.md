@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-403%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-422%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -235,7 +235,10 @@ actually produced.
   surge, float rotation, and six entry triggers). A stock has to *match a setup* before
   it becomes an alert, so the alerts that arrive are setups rather than movers. Detector
   failures are shown, so you can see what the gate examined. Off by default
-  (`STRATEGY_GATE=0`) while you compare it against the old tier path.
+  (`STRATEGY_GATE=0`) while you compare it against the old tier path; when set to 1 it
+  vetoes on the verdicts the poll pass can reach (the reality and exhaustion blockers)
+  and fails closed - a gate that cannot be evaluated suppresses the alert and `/status`
+  counts it, rather than letting it through ungated.
 - **One AI decision per alert** - a single call returns one DECISION REPORT: the verdict
   (`ENTER` / `WAIT` / `PASS`), the rating, the findings, and the entry and exit levels.
   No panel, no leaderboard, no agreement score, no persona. A report that claims `ENTER`
@@ -580,7 +583,7 @@ fake Telegram, and asserts the documented acceptance results:
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
 Current status: `selftest` **ALL PASS** (79 checks), `simulate` **ALL PASS** (49 checks),
-`pytest` **403 passed** (1 skipped).
+`pytest` **422 passed** (1 skipped).
 
 ---
 
