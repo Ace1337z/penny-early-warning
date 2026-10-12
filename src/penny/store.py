@@ -152,6 +152,56 @@ CREATE TABLE IF NOT EXISTS backups (
     note TEXT
 );
 
+
+-- Per-alert tracking, from alert time to the close. Updated from the quotes the
+-- engine already polls every cycle; no extra fetch. (high_after/low_after are a
+-- running high/low over the quotes seen since the alert, which is what max gain,
+-- drawdown and the stop/target tests actually need.)
+CREATE TABLE IF NOT EXISTS alert_tracking (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    day TEXT NOT NULL,
+    alert_ts REAL NOT NULL,
+    alert_price REAL NOT NULL,
+    primary_strategy TEXT,
+    entry_trigger TEXT,
+    gate_score REAL,
+    ai_rating TEXT,
+    ai_verdict TEXT,
+    plan_entry_low REAL,
+    plan_entry_high REAL,
+    plan_stop REAL,
+    plan_t1 REAL,
+    plan_t2 REAL,
+    high_after REAL,
+    low_after REAL,
+    last_price REAL,
+    close_price REAL,
+    max_gain_pct REAL,
+    max_drawdown_pct REAL,
+    close_pct REAL,
+    hit_stop INTEGER DEFAULT 0,
+    hit_t1 INTEGER DEFAULT 0,
+    hit_t2 INTEGER DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open',
+    UNIQUE(symbol, day)
+);
+
+-- Completed sessions' OHLCV per symbol. Written from the same quote rows, so it
+-- fills in as the system runs rather than backfilled. Without it the detectors
+-- that read prior sessions (first green day, day-3 surge, WORG) have no prior
+-- close to compare against and can only report INSUFFICIENT_DATA.
+CREATE TABLE IF NOT EXISTS daily_close (
+    symbol TEXT NOT NULL,
+    day TEXT NOT NULL,
+    open REAL,
+    high REAL,
+    low REAL,
+    close REAL,
+    volume REAL,
+    PRIMARY KEY (symbol, day)
+);
+
 CREATE TABLE IF NOT EXISTS suppressed (
     ts REAL NOT NULL,
     symbol TEXT NOT NULL,

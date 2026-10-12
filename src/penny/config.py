@@ -201,6 +201,95 @@ DEFAULTS: dict[str, str] = {
     "PREMARKET_PCT": "10",
     "PREMARKET_VOLX15": "3",
     "PREMARKET_DOLLAR15": "5000",
+    # --- Strategy gate (long-only) ---------------------------------------
+    # STRATEGY_GATE=0 keeps every stock that clears the fast lane. 1 routes
+    # alerts through the strategy detectors instead.
+    "STRATEGY_GATE": "0",
+    "GATE_MIN_SCORE": "55",
+    "GATE_REQUIRE_CATALYST": "1",
+    "GATE_MAX_PRIMARY": "3",
+    # --- First green day ---
+    "FGD_LOOKBACK_DAYS": "5",
+    "FGD_MIN_PCT": "15",
+    "FGD_MIN_VOLX": "3.0",
+    "FGD_MIN_LOW_AGE": "30",
+    "FGD_MIN_HISTORY_DAYS": "6",
+    # --- Low float squeeze ---
+    "FLOAT_MAX": "20000000",
+    "SHORT_FLOAT_MIN": "15",
+    "SHORT_RATIO_MIN": "3.0",
+    "SQUEEZE_MIN_VOLX": "5.0",
+    # --- $1 breakout ---
+    "DOLLAR_LEVEL": "1.00",
+    "DOLLAR_HOLD_MINUTES": "15",
+    "DOLLAR_MIN_VOLX": "4.0",
+    "DOLLAR_MIN_DOLLAR_15M": "250000",
+    # --- Catalyst ---
+    "CATALYST_MAX_AGE_MIN": "1440",
+    "CATALYST_MIN_VOLX": "3.0",
+    "CATALYST_MIN_DOLLAR_15M": "150000",
+    # --- News cause ---
+    "CAUSE_ALIGN_WINDOW_MIN": "30",
+    "CAUSE_MAX_AGE_H": "4",
+    "CAUSE_SINGLE": "1",
+    # --- Float rotation ---
+    "FLOAT_ROTATION_MIN": "1.5",
+    "FLOAT_ROTATION_STRONG": "3.0",
+    "FLOAT_ROTATION_MAX_FLOAT": "20000000",
+    # --- Gap and go ---
+    "GAP_MIN_PCT": "5.0",
+    "GAP_PREMARKET_RVOL": "2.0",
+    # --- First pullback ---
+    "PULLBACK_VWAP_TOLERANCE": "0.005",
+    "PULLBACK_MAX_DEPTH": "0.50",
+    "PULLBACK_RECLAIM_VOLX": "1.5",
+    # --- Bull flag ---
+    "BULLFLAG_MIN_POLE_PCT": "15",
+    "BULLFLAG_CONSOLIDATION_MIN": "3",
+    "BULLFLAG_CONSOLIDATION_MAX": "8",
+    "BULLFLAG_BREAKOUT_VOLX": "2.0",
+    # --- Red to green ---
+    "R2G_MAX_MORNING_MINUTES": "30",
+    "R2G_MIN_LOW_AGE": "15",
+    "R2G_CROSS_VOLX": "2.0",
+    # --- WORG ---
+    "WORG_PRIOR_CLOSE_STRENGTH": "0.90",
+    "WORG_MULTIWEEK_BREAKOUT": "1",
+    # --- VWAP reclaim ---
+    "VWAP_RECLAIM_MIN_BELOW": "10",
+    "VWAP_RECLAIM_VOLX": "2.0",
+    "VWAP_RECLAIM_HOLD_CANDLES": "3",
+    # --- Day 3 surge ---
+    "DAY3_MIN_DAY1_PCT": "20",
+    "DAY3_MIN_DAY2_VOL_RATIO": "0.40",
+    "DAY3_PREMARKET_VOL_MULT": "1.0",
+    # --- Sympathy ---
+    "SYMPATHY_LEADER_MIN_MCAP": "500000000",
+    "SYMPATHY_LEADER_MIN_PCT": "15",
+    "SYMPATHY_PEER_MAX_PCT": "15",
+    "SYMPATHY_PEER_MIN_PCT": "5",
+    "SYMPATHY_MIN_ROTATION": "5.0",
+    # --- Failed breakout ---
+    "FAILED_BREAKOUT_VOLX": "2.0",
+    "FAILED_BREAKOUT_RECLAIM_CANDLES": "5",
+    # --- MSS / liquidity grab ---
+    "MSS_LOOKBACK": "8",
+    "LIQUIDITY_GRAB_VOLX": "1.5",
+    # --- Dead-cat bounce trigger ---
+    "V_REVERSAL_MIN_DROP": "6.0",
+    "V_REVERSAL_RECLAIM_VOLX": "1.5",
+    # --- Exhaustion blocker (long-only safety) ---
+    "EXHAUSTION_HIGH_PROXIMITY": "0.05",
+    "EXHAUSTION_MIN_MINUTES": "20",
+    "EXHAUSTION_VOLUME_DECLINE": "0.70",
+    # --- Time-of-day filter ---
+    "TIME_FILTER_ENABLED": "1",
+    # --- Tracking and EOD ---
+    "EOD_REPORT_TIME": "16:05",
+    "EOD_REPORT_ENABLED": "1",
+    "STATS_WINDOW_DAYS": "30",
+    "TRACKER_ENABLED": "1",
+
     # --- Score weights (6.5) ---
     "SCORE_W_RISE": "30",
     "SCORE_W_VOLX": "30",
@@ -247,6 +336,28 @@ GROUPS: dict[str, list[str]] = {
                   "FINVIZ_MAX_PER_MIN", "RETENTION_DAYS"],
     "Fast alerts": ["FAST_ON", "FAST_RISE3", "FAST_VOLX3", "FAST_DOLLAR3", "FAST_RISE5",
                     "FAST_VOLX5", "FAST_MAX_FROM_HIGH", "FAST_MIN_VOLUME"],
+    "Strategy gate": ["STRATEGY_GATE", "GATE_MIN_SCORE", "GATE_REQUIRE_CATALYST",
+                      "GATE_MAX_PRIMARY", "TIME_FILTER_ENABLED"],
+    "Strategies": ["FGD_LOOKBACK_DAYS", "FGD_MIN_PCT", "FGD_MIN_VOLX", "FGD_MIN_LOW_AGE",
+                   "FGD_MIN_HISTORY_DAYS", "FLOAT_MAX", "SHORT_FLOAT_MIN", "SHORT_RATIO_MIN",
+                   "SQUEEZE_MIN_VOLX", "DOLLAR_LEVEL", "DOLLAR_HOLD_MINUTES", "DOLLAR_MIN_VOLX",
+                   "DOLLAR_MIN_DOLLAR_15M", "CATALYST_MAX_AGE_MIN", "CATALYST_MIN_VOLX",
+                   "CATALYST_MIN_DOLLAR_15M", "CAUSE_ALIGN_WINDOW_MIN", "CAUSE_MAX_AGE_H",
+                   "CAUSE_SINGLE", "FLOAT_ROTATION_MIN", "FLOAT_ROTATION_STRONG",
+                   "FLOAT_ROTATION_MAX_FLOAT", "GAP_MIN_PCT", "GAP_PREMARKET_RVOL",
+                   "PULLBACK_VWAP_TOLERANCE", "PULLBACK_MAX_DEPTH", "PULLBACK_RECLAIM_VOLX",
+                   "BULLFLAG_MIN_POLE_PCT", "BULLFLAG_CONSOLIDATION_MIN",
+                   "BULLFLAG_CONSOLIDATION_MAX", "BULLFLAG_BREAKOUT_VOLX", "R2G_MAX_MORNING_MINUTES",
+                   "R2G_MIN_LOW_AGE", "R2G_CROSS_VOLX", "WORG_PRIOR_CLOSE_STRENGTH",
+                   "WORG_MULTIWEEK_BREAKOUT", "VWAP_RECLAIM_MIN_BELOW", "VWAP_RECLAIM_VOLX",
+                   "VWAP_RECLAIM_HOLD_CANDLES", "DAY3_MIN_DAY1_PCT", "DAY3_MIN_DAY2_VOL_RATIO",
+                   "DAY3_PREMARKET_VOL_MULT", "SYMPATHY_LEADER_MIN_MCAP",
+                   "SYMPATHY_LEADER_MIN_PCT", "SYMPATHY_PEER_MAX_PCT", "SYMPATHY_PEER_MIN_PCT",
+                   "SYMPATHY_MIN_ROTATION", "FAILED_BREAKOUT_VOLX",
+                   "FAILED_BREAKOUT_RECLAIM_CANDLES", "MSS_LOOKBACK", "LIQUIDITY_GRAB_VOLX",
+                   "V_REVERSAL_MIN_DROP", "V_REVERSAL_RECLAIM_VOLX", "EXHAUSTION_HIGH_PROXIMITY",
+                   "EXHAUSTION_MIN_MINUTES", "EXHAUSTION_VOLUME_DECLINE"],
+    "Tracking": ["TRACKER_ENABLED", "EOD_REPORT_ENABLED", "EOD_REPORT_TIME", "STATS_WINDOW_DAYS"],
     "Build feed": ["BUILD_FEED", "BUILD_FEED_SECONDS", "BUILD_TOP_N", "BUILD_MIN_SCORE",
                    "BUILD_RISE15", "BUILD_VOLX15", "BUILD_DOLLAR15", "BUILD_MIN_MINUTES"],
     "Install": ["PENNY_URL", "PENNY_VERSION", "INSTALL_DIR", "PENNY_HOME", "LOG_LEVEL"],
