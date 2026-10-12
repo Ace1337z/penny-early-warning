@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-456%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-466%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -156,8 +156,9 @@ you can act on a symbol without typing anything.
                             v
         ALERT 1 (Telegram, instant, no AI)
                             v
-   parallel enrichment: Finviz verification - candles (TwelveData/Alpaca/Yahoo) - news -
-   filings (SEC, Finviz) - short interest/volume - market context
+   parallel enrichment: Finviz verification - candles (TwelveData/Alpaca/Yahoo) - news
+   (Finviz first, wires as fallback) - filings (SEC, Finviz) - short interest/volume -
+   market context
                             v
         ALERT 2 (cause first, "AI unavailable" placeholder)
                             v
@@ -351,7 +352,7 @@ actually produced.
 | SEC contact (`Name email`) | recommended | SEC EDGAR requests |
 | halalterminal.com API key | optional | Shariah screening |
 | TwelveData | recommended | fresh single-symbol price, volume and 1-minute candles |
-| Alpaca / Finnhub | optional | candle fallback, extra news |
+| Alpaca / Finnhub | optional | candle fallback, extra news (fallback only: Finviz news is the source) |
 | Backup passphrase + destination | optional | encrypted off-server backups |
 
 ---
@@ -593,7 +594,7 @@ fake Telegram, and asserts the documented acceptance results:
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
 Current status: `selftest` **ALL PASS** (85 checks), `simulate` **ALL PASS** (54 checks),
-`pytest` **456 passed** (1 skipped).
+`pytest` **466 passed** (1 skipped).
 
 ---
 

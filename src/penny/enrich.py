@@ -6,7 +6,8 @@ import concurrent.futures as futures
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Optional
 
 from .fib import FibLevels, TradePlan, fib_levels, trade_plan
@@ -83,7 +84,7 @@ class Enricher:
         after the alert, and nothing else in the enrichment.
         """
         try:
-            items, _ = self._news(symbol)
+            items, _ = self._news(symbol, fast=False)
             return items
         except Exception as exc:  # noqa: BLE001
             log.debug("news failed for %s: %s", symbol, exc)
@@ -230,8 +231,17 @@ class Enricher:
                 best, best_age = bars, age
         return best
 
-    def _news(self, symbol: str) -> tuple[list[dict], int]:
-        """Merge several sources, de-duplicate, newest first, up to 8 items (6.8)."""
+    def _news(self, symbol: str, *, fast: bool = True) -> tuple[list[dict], int]:
+        """Merge several sources, de-duplicate, newest first, up to 8 items (6.8).
+
+        Finviz is asked first: it is the fastest source and the one feed already
+        being polled for the quote, so a headline it carries costs no extra round
+        trip. The per-symbol feeds (Alpaca, Finnhub, Google News) are slower, so
+        on the alert path (`fast=True`) they are skipped once Finviz named the
+        symbol. The invalidation watcher passes `fast=False`: it must still see a
+        dilutive PR that only the wires carry, and missing one is the whole risk
+        that watcher exists to cover.
+        """
         items: list[dict] = []
 
         def add(source_items, name):
@@ -247,33 +257,42 @@ class Enricher:
                     "summary": (item.get("summary") or "")[:200],
                 })
 
-        if self.alpaca and getattr(self.alpaca, "configured", False):
-            try:
-                add(self.alpaca.news([symbol]), "alpaca")
-            except Exception as exc:  # noqa: BLE001
-                log.debug("alpaca news failed: %s", exc)
-        if self.finnhub and getattr(self.finnhub, "configured", False):
-            try:
-                add(self.finnhub.company_news(symbol), "finnhub")
-            except Exception as exc:  # noqa: BLE001
-                log.debug("finnhub news failed: %s", exc)
         if self.finviz:
             try:
                 rows = self.finviz.news("1")
-                for row in rows[:20]:
+                sym = symbol.upper()
+                for row in rows[:60]:
                     title = row_get(row, "Title", "Headline") or ""
-                    if symbol.upper() in title.upper() or len(items) < 3:
-                        add([{"title": title, "source": "finviz",
-                              "published": row_get(row, "Date") or ""}], "finviz")
+                    # Only a headline that names the symbol is *its* news; the
+                    # Finviz news export is market-wide, so an unrelated headline
+                    # must not be attached to the move.
+                    if sym not in title.upper():
+                        continue
+                    add([{"title": title,
+                          "source": row_get(row, "Source") or "finviz",
+                          "url": row_get(row, "Url", "URL") or "",
+                          "published": row_get(row, "Date") or ""}], "finviz")
             except FinvizTokenRejected:
                 pass
             except Exception as exc:  # noqa: BLE001
                 log.debug("finviz news failed: %s", exc)
-        if self.yahoo:
-            try:
-                add(self.yahoo.google_news(symbol), "google-news")
-            except Exception as exc:  # noqa: BLE001
-                log.debug("google news failed: %s", exc)
+
+        if not (fast and items):
+            if self.alpaca and getattr(self.alpaca, "configured", False):
+                try:
+                    add(self.alpaca.news([symbol]), "alpaca")
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("alpaca news failed: %s", exc)
+            if self.finnhub and getattr(self.finnhub, "configured", False):
+                try:
+                    add(self.finnhub.company_news(symbol), "finnhub")
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("finnhub news failed: %s", exc)
+            if self.yahoo:
+                try:
+                    add(self.yahoo.google_news(symbol), "google-news")
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("google news failed: %s", exc)
 
         seen: set[str] = set()
         merged: list[dict] = []
@@ -292,20 +311,47 @@ class Enricher:
 
     @staticmethod
     def _age_of(published) -> str:
+        """Elapsed time since a feed timestamp, as "18m" / "2h" / "3d".
+
+        The timestamp's zone is undocumented and differs per feed. Finviz's news
+        export and most wires publish UTC, Alpaca carries an explicit `Z`, Google
+        News carries `GMT`; only some are ET. Reading a UTC stamp as ET put a
+        fresh headline hours into the future, which `age_str` then clamped to
+        "0s" -- rendered as "0m ago" for every recent item. So a naive value is
+        read as ET first and re-read as UTC when that lands in the future, which
+        is the only other zone these feeds use.
+        """
         if not published:
             return ""
-        text = str(published)
-        for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%a, %d %b %Y %H:%M:%S %Z"):
+        text = str(published).strip()
+        now = time.time()
+        for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
             try:
-                dt = datetime.strptime(text[:len(fmt) + 6], fmt).replace(tzinfo=ET)
-                return age_str(time.time() - dt.timestamp())
+                dt = datetime.strptime(text[:len(fmt) + 6], fmt)
             except ValueError:
                 continue
+            return age_str(now - dt.replace(tzinfo=timezone.utc).timestamp())
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(text[:len(fmt) + 6], fmt)
+            except ValueError:
+                continue
+            et = dt.replace(tzinfo=ET).timestamp()
+            if et > now + 60:
+                et = dt.replace(tzinfo=timezone.utc).timestamp()
+            return age_str(now - et)
+        try:  # RSS pubDate ("Mon, 13 Oct 2026 11:30:00 GMT") carries its zone.
+            dt = parsedate_to_datetime(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return age_str(now - dt.timestamp())
+        except (TypeError, ValueError):
+            pass
         if text.isdigit():
             ts = int(text)
             if ts > 10_000_000_000:
                 ts //= 1000
-            return age_str(time.time() - ts)
+            return age_str(now - ts)
         return ""
 
     def _filings(self, symbol: str) -> list[dict]:

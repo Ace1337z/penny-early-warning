@@ -335,7 +335,7 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 456 passed, 1 skipped
+### Unit tests (`pytest -q`) — 466 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
 journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
@@ -349,7 +349,9 @@ clamp, the post-mortem clause mapping, the three new EOD sections), `test_phase2
 catalyst decay) and `test_phase2_commands.py` (`/model`, `/postmortem`). Spec 2.0 adds
 `test_mechanisms.py` (the three tape-mechanism detectors, the `[NO-NEWS]` tag, the
 `MECHANISM:` block, the provenance buckets and the rules-only DECISION block) and rewrites
-`test_decision.py` for the adversarial v2 schema.
+`test_decision.py` for the adversarial v2 schema. `test_news_age.py` pins the news-source
+order (Finviz first, the slow per-symbol feeds only as fallback) and the timezone-correct
+headline age.
 
 ### Offline self-test (`penny selftest`) — ALL PASS
 Configuration defaults and round-trip; owner-only permissions; state and journal schemas
@@ -766,3 +768,30 @@ simulation passes (54/54) with the gate advisory and mandatory.
 **Rule.** A gate may require evidence; it must never require a *headline*. The
 absence of a named cause is itself a signal - name the mechanism or say
 `unidentified`, but never treat "no press release" as "no setup".
+
+---
+
+## C38. Every headline read "0m ago", and the slowest feed decided the news
+
+- **Question:** why does every headline show an age of `0m`, and can the news come
+  from Finviz, which is faster than Alpaca/Finnhub/Google News?
+- **Finding:** two separate faults. The age was always wrong because
+  `Enricher._age_of` stamped *every* timestamp as ET. Finviz's news export and the
+  wires publish UTC and Alpaca appends `Z`, so a fresh headline parsed as ET landed
+  hours in the future; `age_str` clamps a negative age to `0s`, and the cause line
+  renders that as `0m ago`. Separately, `_news` asked Alpaca, Finnhub and Google
+  News *before* Finviz, so the slow feeds - extra round trips for the same move -
+  decided the news, and the Finviz block padded unrelated market headlines onto
+  every symbol (`or len(items) < 3`).
+- **Default adopted:** Finviz is asked first and is the source; the per-symbol
+  feeds are the fallback, skipped once Finviz named the symbol (`_news(fast=True)`
+  on the alert path). The invalidation watcher passes `fast=False` so it still sees
+  a dilutive PR only a wire carries - missing one is the risk that watcher exists to
+  cover. Finviz rows carry their `Source` and `Url`. `_age_of` reads `Z`/`GMT` and
+  RSS `pubDate` in their own zone, reads a naive value as ET, and re-reads it as UTC
+  only when ET would put it in the future. Only a headline that names the symbol is
+  attached to the move.
+- **Where:** `src/penny/enrich.py` (`_news`, `_age_of`).
+- **Why it matters:** an age that always reads "just now" makes a stale catalyst
+  look live, which is the one thing the age is there to prevent; and the news source
+  should be the feed that is already in hand, not the three that cost a round trip.
