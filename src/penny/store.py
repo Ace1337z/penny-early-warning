@@ -169,6 +169,10 @@ CREATE TABLE IF NOT EXISTS alert_tracking (
     ai_rating TEXT,
     ai_verdict TEXT,
     ai_key_findings TEXT,
+    -- Spec 2.0 C/D: provenance of the decision block, so /stats can measure
+    -- whether the AI earns its call: ai | ai_rejected | rules.
+    ai_source TEXT,
+    cause_present INTEGER DEFAULT 0,
     plan_entry_low REAL,
     plan_entry_high REAL,
     plan_stop REAL,

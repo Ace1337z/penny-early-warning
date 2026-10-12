@@ -8,7 +8,7 @@ import time
 from datetime import timedelta
 from typing import Optional
 
-from .ai.decision import decide, render as render_decision
+from .ai.decision import decide, render as render_decision, render_rules_fallback
 from .strategies.wiring import run_gate
 from .tracking import eod_report, stats_report, summary_line
 from .alerts import format_build_feed, tier_name
@@ -598,12 +598,23 @@ class CommandHandler:
                                    time_to_horizon=self.engine._time_to_horizons(),
                                    gate=gate, bundle=bundle)
             decision = decide(getattr(self.engine, "gateway", None), facts,
-                              model=self.cfg.raw("AI_MODEL") or "")
+                              model=self.cfg.raw("AI_MODEL") or "",
+                              gate_passed=(gate.passed if gate is not None else None),
+                              min_additive=self.cfg.bool("AI_MIN_ADDITIVE", True))
             mark("ai decision")
             log.info("check %s: total %.1fs", symbol, time.monotonic() - started)
+            decision_text = render_decision(decision)
+            if not decision_text:
+                # Spec 2.0 C: a missing provider and a rejected report both get
+                # the full rules-only block, each stating its own provenance.
+                decision_text = render_rules_fallback(
+                    m, gate, bundle,
+                    source=(decision.source if decision is not None else "rules"),
+                    reason=(decision.error if decision is not None else "no decision"),
+                    cfg=self.cfg)
             text = format_alert2(m, enr, market, shariah_lines=shariah_lines,
                                  gate=gate, bundle=bundle,
-                                 decision=render_decision(decision),
+                                 decision=decision_text,
                                  fast=self.engine.fast_burst(m, session), html=True)
             self._reply(text, markup=self._check_menu(symbol), html=True)
         except Exception as exc:  # noqa: BLE001

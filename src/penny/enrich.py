@@ -39,6 +39,10 @@ class Enrichment:
     technicals: Optional[Technicals] = None
     fib: Optional[FibLevels] = None
     plan: Optional[TradePlan] = None
+    # Peer 15m moves as {symbol: pct}, when a peer feed provides them. No
+    # source fills this yet -- sympathy_move reports INSUFFICIENT_DATA until
+    # one is wired -- but the field exists so the wiring is honest, not guessed.
+    sector_peers: Optional[dict] = None
     errors: list[str] = field(default_factory=list)
 
     def news_key(self) -> str:

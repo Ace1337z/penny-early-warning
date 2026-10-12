@@ -29,9 +29,16 @@ log = logging.getLogger(__name__)
 UNRATED = "unrated"
 
 
-def bucket_key(rating: Optional[str], primary: Optional[str]) -> str:
-    """The (rating, strategy) key. Unknown values collapse to one bucket each."""
-    return "%s|%s" % (str(rating or UNRATED).upper(), str(primary or UNRATED))
+def bucket_key(rating: Optional[str], primary: Optional[str],
+               cause_present: Optional[bool] = None) -> str:
+    """The (rating, strategy, cause) key (Spec 2.0 D1).
+
+    Split by cause because a MODERATE rating on a named catalyst and the same
+    rating on a cause-free tape move are different bets, not one bucket.
+    Unknown values collapse to one bucket each.
+    """
+    return "%s|%s|%s" % (str(rating or UNRATED).upper(), str(primary or UNRATED),
+                         "cause" if cause_present else "no_cause")
 
 
 def build_table(rows: Sequence[dict], *, window_days: int = 90,
@@ -50,7 +57,8 @@ def build_table(rows: Sequence[dict], *, window_days: int = 90,
             continue
         if r.get("status") != "closed":
             continue
-        groups.setdefault(bucket_key(r.get("ai_rating"), r.get("primary_strategy")),
+        groups.setdefault(bucket_key(r.get("ai_rating"), r.get("primary_strategy"),
+                                     bool(r.get("cause_present"))),
                           []).append(r)
 
     table: dict = {}
@@ -74,9 +82,10 @@ def _median(values) -> Optional[float]:
     return vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2.0
 
 
-def prior_for(table: dict, rating: Optional[str], primary: Optional[str]) -> Optional[dict]:
+def prior_for(table: dict, rating: Optional[str], primary: Optional[str],
+              cause_present: Optional[bool] = None) -> Optional[dict]:
     """The sufficient-sample prior for a bucket, or None."""
-    entry = (table or {}).get(bucket_key(rating, primary))
+    entry = (table or {}).get(bucket_key(rating, primary, cause_present))
     if not entry or not entry.get("sufficient"):
         return None
     return entry

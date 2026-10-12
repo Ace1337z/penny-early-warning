@@ -131,20 +131,19 @@ class _SlowGateway(FakeGateway):
 
 def _facts():
     return {"symbol": "TEST", "price": 1.0, "metrics": {}, "news": [],
-            "gate": {"passed": True, "blocked_by": "", "score": 70,
-                     "primary": ["low_float_squeeze"], "triggers": [],
-                     "blockers": []},
-            "cause": {"kind": "CATALYST", "headline": "x", "source": "s",
-                      "url": "u", "age": "2m", "confidence": 0.8}}
+            "cause": ["CAUSE: x"],
+            "cause_detail": {"headline": "x", "outlet": "s",
+                             "age_minutes": 2.0, "class": "HARD", "url": "u"}}
 
 
 def _passing_report() -> dict:
-    return {"key_findings": ["reclaimed VWAP on 9x volume"],
+    return {"catalyst_quality": "real",
+            "strongest_risk": "volume rests on one print, not the tape",
+            "key_findings": ["reclaimed VWAP on 9x volume"],
             "rating": {"grade": "MODERATE", "confidence": 0.6},
             "trends": {"direction": "rising", "momentum": "3m accel"},
             "entry_points": [{"zone": "1.00-1.02"}],
-            "exit_points": {"stop": "0.95", "t1": "1.10"}, "verdict": "ENTER",
-            "rubrics_applied": ["catalyst + volume"], "gate": {"passed": True}}
+            "exit_points": {"stop": "0.95", "t1": "1.10"}, "verdict": "ENTER"}
 
 
 def test_the_deadline_clamps_the_per_request_timeout(cfg, monkeypatch):

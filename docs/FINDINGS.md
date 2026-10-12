@@ -335,7 +335,7 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 403 passed, 1 skipped
+### Unit tests (`pytest -q`) — 456 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
 journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
@@ -346,7 +346,10 @@ blocker's four conditions and the `WIDE_SPREAD`/`ILLIQUID` labels, the $500 exit
 Alert 1 book line), `test_phase2_tracking.py` (T1-T6, one-abort-ever, the calibration
 clamp, the post-mortem clause mapping, the three new EOD sections), `test_phase2_context.py`
 (analog K-NN and min_k suppression, the AI-only multi-timeframe block, the sector heatmap,
-catalyst decay) and `test_phase2_commands.py` (`/model`, `/postmortem`).
+catalyst decay) and `test_phase2_commands.py` (`/model`, `/postmortem`). Spec 2.0 adds
+`test_mechanisms.py` (the three tape-mechanism detectors, the `[NO-NEWS]` tag, the
+`MECHANISM:` block, the provenance buckets and the rules-only DECISION block) and rewrites
+`test_decision.py` for the adversarial v2 schema.
 
 ### Offline self-test (`penny selftest`) — ALL PASS
 Configuration defaults and round-trip; owner-only permissions; state and journal schemas
@@ -365,7 +368,11 @@ $500 exit walk, a 5-minute close under VWAP invalidating a setup once, the confi
 clamp at hit rate + 15 points (and no prior below 30 samples), analogs suppressed below
 `ANALOG_MIN_K`, the AI-only multi-timeframe block, the hot/cold sector line, the
 post-mortem clause mapping, the HARD/DILUTION decay curves, and every Phase 2
-configuration key existing in the defaults.
+configuration key existing in the defaults. Spec 2.0 adds: the rules-only
+DECISION block with its `SOURCE:` line, the adversarial v2 schema (non-additive
+rejection, the honest null, the server-side ENTER-on-a-blocked-gate check, facts
+that never carry the gate verdict), the `[NO-NEWS]` tag and `MECHANISM:` line,
+and the provenance buckets `/stats` reports.
 
 ### Offline simulation (`penny simulate`) — ALL PASS
 Synthetic market: a grinder, a burst, a spike that fades and 60 noise stocks, with
@@ -388,6 +395,10 @@ wide spread blocks as `WIDE_SPREAD` and a thin market as `ILLIQUID`, a feed with
 `ILLIQUID` while a deep book exits within the limit, a 5-minute close under the alert VWAP
 invalidates the setup exactly once, the multi-timeframe block is AI-only and says
 `unknown` without daily history, and a hot sector gets a line while a cold one gets none.
+Spec 2.0 adds: a no-news tape setup clears the gate on a named mechanism and is tagged
+`[NO-NEWS]`, the alert renders `MECHANISM: silent accumulation` rather than `none found`,
+and `/stats` splits closed alerts `BY SOURCE` (`agreement`/`disagreement`/`rules_only`/
+`ai_rejected`).
 
 ### Not yet run (need live accounts / a VPS)
 Acceptance tests 2 (token change), 3 (installer on a fresh VPS), 4 (`doctor` all PASS),
@@ -569,8 +580,9 @@ the models rarely disagreed about that in a way that changed the trade.
 
 **What replaced it.** One call, one DECISION REPORT: verdict, rating, findings,
 entry points (LONG), exit points. The methodology lives in
-`prompts/methodology_v1.md` and is loaded, not inlined, so it can be edited and
-versioned on its own.
+`prompts/methodology_v2.md` and is loaded, not inlined, so it can be edited and
+versioned on its own. (Spec 2.0 replaces the v1 verdict-first prompt with the
+adversarial v2 schema; see C37.)
 
 **Validation rejects rather than repairs.** A missing required field, an `ENTER`
 with an empty `rubrics_applied`, an `ENTER` on a gate that did not pass, a short
@@ -708,3 +720,49 @@ rejection record, fail-closed, the undecidable verdicts, and the tier bar.
 
 **Rule.** A safety filter that cannot run must fail closed, and a verdict
 resting on data that was never fetched is missing data - not a decision.
+
+## C37. The gate required a cause, so it could never alert on the moves it was built for
+
+**Finding.** Spec 1.x treated a named catalyst as a *precondition* of the gate:
+`evaluate_gate` refused any setup whose news feed named nothing, and
+`GATE_REQUIRE_CATALYST=1` made that mandatory. That is exactly backwards for this
+tool. A mechanical squeeze has no press release. An accumulation ran because
+someone was working an order, not because a headline printed. A sympathy move is
+a peer's headline, not this name's. Every one of those is the *reason* the move
+is early - and the cause-first gate filtered all of them out, leaving only the
+promotional names that print a press release, which are the ones a reader is
+least early on.
+
+The AI half had the mirror problem. It was handed the gate's verdict and asked
+for a second opinion, so "agree with the gate" carried no information, and a
+report that merely restated the tier threshold passed as a valid judgment.
+
+Spec 2.0 decouples both:
+
+1. **Cause is a label, not a gate** (`CAUSE_REQUIRED=0`). Three tape-mechanism
+   detectors - `silent_accumulation`, `sympathy_move`, `short_squeeze_mechanics`
+   - fire only when no cause was *named* (`_no_named_cause`, and `news is None`
+   is unknown, never absent), so a cause-free setup clears the gate and the
+   alert is tagged `[NO-NEWS]` with a `MECHANISM:` line where `none found` used
+   to be. The squeeze floor drops 15% -> 8% (`SHORT_FLOAT_MIN`) so the
+   mechanical detector fires before the crowd is committed.
+2. **The AI is adversarial** (methodology v2). The gate verdict is removed from
+   the facts entirely, so it cannot be echoed; the report leads with
+   `CATALYST QUALITY` and `STRONGEST RISK`; a report that restates the gate
+   (`tier`, `gate score`, `detector`, ...) is rejected as non-additive; the
+   honest null (`unknown` + `none identified`) is accepted and marked, but
+   `ENTER` on top of it is refused. An `ENTER` on a blocked gate is caught
+   server-side, from what the caller knows, not from the payload.
+3. **Provenance is explicit.** Every DECISION block ends with
+   `SOURCE: ai` / `ai_rejected` / `rules`, and an unavailable or rejected AI
+   degrades to a full rules-only block (`render_rules_fallback`) - never a
+   placeholder, never a silent `PASS`. `/stats` buckets every closed alert
+   `BY SOURCE` (`agreement` / `disagreement` / `rules_only` / `ai_rejected`) so
+   the model's contribution is measured rather than assumed.
+
+Seven acceptance criteria were added to `simulate` and `selftest`; the full
+simulation passes (54/54) with the gate advisory and mandatory.
+
+**Rule.** A gate may require evidence; it must never require a *headline*. The
+absence of a named cause is itself a signal - name the mechanism or say
+`unidentified`, but never treat "no press release" as "no setup".

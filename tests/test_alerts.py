@@ -117,21 +117,27 @@ def test_build_ai_facts_has_core_fields():
     enr.float_shares = 20_000_000
     facts = build_ai_facts(_metrics(), enr, None, session="regular")
     for key in ("symbol", "price", "rise3", "rise5", "rise15", "volx15", "above_vwap",
-                "tier"):
+                "avg_trade_size", "float_rotation", "cause_detail"):
         assert key in facts
     assert facts["symbol"] == "XYZ"
 
 
-def test_build_ai_facts_carries_the_gate_and_the_cause():
-    """The AI sees the gate verdict and the one named cause, not a headline dump."""
-    bundle = _bundle()
+def test_build_ai_facts_carries_the_cause_not_the_gate():
+    """Spec 2.0 B: the AI judges the setup, so the gate verdict is not in the
+    bundle -- feeding it back produced the mirror. The one named cause travels
+    as the same rendered lines the reader sees."""
+    bundle = _bundle(news=[{"title": "Acme Corp awarded $12M contract",
+                            "source": "Benzinga", "url": "https://example.invalid/a",
+                            "age": "2m"}])
     facts = build_ai_facts(_metrics(), Enrichment(symbol="XYZ"), None,
                            session="regular", gate=evaluate_gate(bundle),
                            bundle=bundle)
-    assert "passed" in facts["gate"]
+    assert "gate" not in facts and "tier" not in facts
     # The cause is carried as rendered lines, so the AI reads the same sentence
     # the reader does rather than ranking the headlines a second time.
     assert facts["cause"][0].startswith("CAUSE:")
+    assert facts["cause_detail"]["headline"] == "Acme Corp awarded $12M contract"
+    assert facts["cause_detail"]["outlet"] == "Benzinga"
 
 
 # --- the lean read ----------------------------------------------------------
@@ -167,7 +173,9 @@ def test_market_backdrop_is_labelled_and_explained():
 
 def test_cause_leads_why_it_moved_and_names_one_reason():
     """Cause-first: exactly one cause, with outlet, age and confidence."""
-    bundle = _bundle()
+    bundle = _bundle(news=[{"title": "Acme Corp awarded $12M contract",
+                            "source": "Benzinga", "url": "https://example.invalid/a",
+                            "age": "2m"}])
     text = format_alert2(_metrics(), Enrichment(symbol="XYZ"), None, bundle=bundle)
     assert "WHY IT MOVED" in text
     assert "CAUSE:" in text
@@ -176,12 +184,21 @@ def test_cause_leads_why_it_moved_and_names_one_reason():
     assert text.count("CAUSE:") == 1
 
 
-def test_no_cause_says_none_found_instead_of_inventing_one():
-    """A news dump is not a cause. Saying so beats attaching a plausible PR."""
+def test_no_cause_names_a_mechanism_instead_of_a_shrug():
+    """Spec 2.0 A: a news dump is not a cause, and 'none found' is a hole. The
+    block names the tape mechanism, or says honestly that none can be named."""
     bundle = _bundle(news=[{"title": "Company provides update", "source": "Yahoo",
                             "url": "u", "age": "5h"}])
     lines = cause_block(_metrics(), Enrichment(symbol="XYZ"), bundle)
-    assert lines[0].startswith("CAUSE: none found")
+    assert lines[0].startswith("MECHANISM:")
+    assert "silent accumulation" in lines[0]
+
+
+def test_no_evidence_at_all_is_reported_as_unidentified():
+    bundle = _bundle(news=[], volx={3: 1.0, 5: 1.2, 15: 1.4})
+    lines = cause_block(_metrics(), Enrichment(symbol="XYZ"), bundle)
+    assert lines[0].startswith("MECHANISM: unidentified")
+    assert "speculative" in lines[0]
 
 
 def test_a_fresh_hard_catalyst_is_the_named_cause():

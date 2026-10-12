@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from .ai.decision import decide, render as render_decision
+from .ai.decision import decide, render as render_decision, render_rules_fallback
 from .alerts import (build_ai_facts, format_alert1, format_alert2, format_build_digest,
                      tier_name)
 from .context.sector_heatmap import SectorHeatmap
@@ -38,6 +38,13 @@ SPLIT_ARTIFACT_PCT = 400.0
 # they are a missing input, not a decision, so they must not veto here.
 POLL_UNDECIDABLE = frozenset({"no_strategy", "no_catalyst"})
 
+# How long a gate-refused symbol goes without a second enrichment attempt
+# (Spec 1.1 enriches candidates ahead of Alert 1, so a refusing setup would
+# otherwise be re-fetched on every cycle it stays a candidate). Ceiling: the
+# cooldown also delays a setup whose news arrives inside it; move it to config
+# when a live deployment needs to tune that trade-off.
+GATE_REFUSE_COOLDOWN_S = 300.0
+
 
 def alert_menu(symbol: str) -> dict:
     """Inline buttons under an alert so a symbol is one tap away."""
@@ -46,6 +53,33 @@ def alert_menu(symbol: str) -> dict:
          button("\U0001F54C Halal", cb("halal", symbol)),
          button("\U0001F3E0 Menu", cb("menu"))],
     ])
+
+
+def _no_news_tag(gate) -> bool:
+    """Spec 2.0 A: the [NO-NEWS] tag, true when a tape mechanism fired.
+
+    Only an enriched gate can decide this -- the mechanism detectors need the
+    news *fetched* before "no headline" is a fact rather than a gap -- so an
+    advisory or poll-time gate never tags, and neither invents certainty.
+    """
+    from .strategies.detectors import MECHANISM_NAMES
+    if gate is None:
+        return False
+    return any(getattr(r, "verdict", "") == "PASS"
+               and r.name in MECHANISM_NAMES
+               for r in getattr(gate, "strategies", None) or [])
+
+
+def _cause_present(bundle) -> bool:
+    """Spec 2.0 D: was a cause named? The (cause_present, rating) bucket half."""
+    if bundle is None or getattr(bundle, "news", None) is None:
+        return False
+    try:
+        from .strategies.news_cause import extract_cause, rank_catalysts
+        _, ranked, _ = rank_catalysts(bundle)
+        return extract_cause(ranked, bundle).kind != "UNEXPLAINED"
+    except Exception:  # noqa: BLE001
+        return False
 
 
 class Engine:
@@ -249,8 +283,8 @@ class Engine:
             gate, bundle = self._run_gate(m, metrics_list)
             if self._gate_vetoes(m, gate, stats):
                 continue
-            self._fire_alert(m, session, pct_rank, fast=fast, gate=gate, bundle=bundle)
-            stats["alerts"] += 1
+            if self._fire_alert(m, session, pct_rank, fast=fast, gate=gate, bundle=bundle):
+                stats["alerts"] += 1
 
         self._update_tracker(metrics_list)
         self._check_invalidations(metrics_list)
@@ -342,20 +376,20 @@ class Engine:
     def _reached_alert_bar(self, m: Metrics, session: str, fast: bool) -> bool:
         """Has this stock actually reached the alert bar yet?
 
-        Spec 1.1 wanted the 15m and 60m windows out of the alert path under the
-        gate, because the gate would decide instead. It cannot yet: this runs
-        before `_run_gate`, and the gate's Bundle is built without enrichment,
-        so its `no_strategy` and `no_catalyst` verdicts are missing inputs
-        rather than decisions (see POLL_UNDECIDABLE). Waiving the tier bar on
-        that basis left the alert path with no filter at all -- the gate could
-        not say no, and nothing else was asked. The tier bar therefore stays as
-        the candidate filter, and the gate adds the verdicts it can actually
-        reach: the reality and exhaustion blockers. Removing this bypass is what
-        Spec 1.1 needs to become safe, not what it costs.
+        Spec 1.1: the alert fires the moment the strategy gate passes, and the
+        15m and 60m windows come out of the alert path entirely. With the gate
+        mandatory, the gate IS the bar: it decides on the full picture ahead of
+        Alert 1 (see `_fire_alert`, where enrichment now runs first), so the
+        tier windows leave the path as designed. Candidacy here is deliberately
+        broad -- the poll pass still prunes the reality blockers cheaply, and
+        everything else is the gate's call, not the tiers'.
 
-        The `fast` and pre-market fallbacks below are only consulted when the
-        tier path is in charge, and both are weaker than the tier they replace.
+        With the gate off the tier path is in charge: the tier, the fast-burst
+        fallback and the pre-market rule decide, and both fallbacks are weaker
+        than the tier they replace.
         """
+        if self._gate_is_mandatory():
+            return True
         min_tier = max(TIER_EARLY, self.cfg.int("ALERT_MIN_TIER", 2))
         if m.tier >= min_tier:
             return True
@@ -495,7 +529,30 @@ class Engine:
         return result
 
     def _fire_alert(self, m: Metrics, session: str, pct_rank: dict,
-                    fast: bool = False, gate=None, bundle=None) -> None:
+                    fast: bool = False, gate=None, bundle=None) -> bool:
+        # Spec 1.1: with the gate mandatory, the alert fires the moment the
+        # gate passes -- and the gate can only pass on candles, news and float,
+        # which the poll pass does not have (POLL_UNDECIDABLE). Enrichment
+        # therefore moves ahead of Alert 1: the fetch the detail thread used to
+        # pay for is paid here, for candidates only, and the gate decides
+        # before anything is sent. A refused setup costs one API call; an
+        # ungated alert costs the premise.
+        enr = None
+        if self._gate_is_mandatory() and gate is not None:
+            refused = self._gate_rejects.get(m.symbol)
+            if refused and self.clock() - refused["ts"] < GATE_REFUSE_COOLDOWN_S:
+                return False
+            try:
+                enr = self.enricher.enrich(m.symbol, self._quote_for(m), m)
+            except Exception as exc:  # noqa: BLE001
+                # Cannot decide -- the alert does not go. Fail closed.
+                log.exception("enrichment failed for %s -- alert suppressed: %s",
+                              m.symbol, exc)
+                return False
+            gate, bundle = self._recheck_gate(m, gate, bundle, enr)
+            if not gate.passed:
+                return False
+
         st = self.scorer.state(m.symbol)
         rank = pct_rank.get(m.symbol)
         resumed = st.halt_resume_pending
@@ -507,7 +564,8 @@ class Engine:
             shariah_line = self.shariah.one_line(shariah_status)
 
         text1 = format_alert1(m, shariah_line=shariah_line, pct_rank=rank, resumed=resumed,
-                              fast=fast, html=True, gate=gate)
+                              fast=fast, html=True, gate=gate,
+                              no_news=_no_news_tag(gate))
         msg_id = None
         try:
             msg_id = self.telegram.send(text1, markup=alert_menu(m.symbol), html=True)
@@ -536,10 +594,13 @@ class Engine:
         self._register_invalidation(m, bundle=bundle)
         log.info("ALERT %s tier %d score %.1f", m.symbol, m.tier, m.score)
 
+        # The enrichment (when the gate is mandatory) is already in hand: hand
+        # it to the detail thread so Alert 2 does not pay for the same fetch.
         threading.Thread(target=self._alert_detail_worker,
                          args=(m, alert_id, msg_id, session, rank, shariah_status, fast,
-                               gate, bundle),
+                               gate, bundle, enr),
                          daemon=True, name=f"detail-{m.symbol}").start()
+        return True
 
     def _save_alert(self, m: Metrics, msg_id: Optional[int], shariah_status) -> int:
         combined = (shariah_status or {}).get("combined")
@@ -554,16 +615,17 @@ class Engine:
     # -- detail + AI --------------------------------------------------------
     def _alert_detail_worker(self, m: Metrics, alert_id: int, msg_id, session: str,
                              rank, shariah_status, fast: bool = False,
-                             gate=None, bundle=None) -> None:
+                             gate=None, bundle=None, enr=None) -> None:
         try:
             self._send_detail(m, alert_id, msg_id, session, rank, fast=fast,
-                              gate=gate, bundle=bundle)
+                              gate=gate, bundle=bundle, enr=enr)
         except Exception as exc:  # noqa: BLE001
             log.exception("detail worker failed for %s: %s", m.symbol, exc)
 
     def _send_detail(self, m: Metrics, alert_id: int, msg_id, session: str, rank,
-                     fast: bool = False, gate=None, bundle=None) -> None:
-        enr = self.enricher.enrich(m.symbol, self._quote_for(m), m)
+                     fast: bool = False, gate=None, bundle=None, enr=None) -> None:
+        if enr is None:
+            enr = self.enricher.enrich(m.symbol, self._quote_for(m), m)
         market = self.market.get()
 
         # Now that the symbol has been enriched, re-run the gate with the inputs
@@ -579,7 +641,8 @@ class Engine:
             try:
                 self.telegram.edit(msg_id, format_alert1(
                     m, shariah_line=self.shariah.one_line(shariah), pct_rank=rank,
-                    fast=fast, html=True), markup=alert_menu(m.symbol), html=True)
+                    fast=fast, html=True, no_news=_no_news_tag(gate)),
+                    markup=alert_menu(m.symbol), html=True)
             except Exception:  # noqa: BLE001
                 pass
         if alert_id and shariah.get("combined"):
@@ -614,11 +677,22 @@ class Engine:
         try:
             decision = decide(self.gateway, facts,
                               model=self.cfg.raw("AI_MODEL") or "",
-                              deadline=self.clock() + self.cfg.float("AI_TIMEOUT", 45.0))
+                              deadline=self.clock() + self.cfg.float("AI_TIMEOUT", 45.0),
+                              gate_passed=(gate.passed if gate is not None else None),
+                              min_additive=self.cfg.bool("AI_MIN_ADDITIVE", True))
             decision_text = render_decision(decision)
             self.tokens_used += 1
         except Exception as exc:  # noqa: BLE001
             log.warning("AI decision failed for %s: %s", m.symbol, exc)
+        if not decision_text:
+            # Spec 2.0 C: the pipeline still has a view. An unavailable call or
+            # a rejected report degrades to the rules-only block -- never to a
+            # placeholder, never to a silent PASS.
+            decision_text = render_rules_fallback(
+                m, gate, bundle,
+                source=(decision.source if decision is not None else "rules"),
+                reason=(decision.error if decision is not None else "no decision"),
+                cfg=self.cfg)
 
         text2 = format_alert2(m, enr, market, shariah_lines=shariah_lines, gate=gate,
                               bundle=bundle, decision=decision_text,
@@ -653,7 +727,19 @@ class Engine:
                 self.tracker.write_decision(
                     m.symbol, rating=getattr(decision, "rating", "") or "",
                     verdict=getattr(decision, "verdict", "") or "",
-                    findings=getattr(decision, "key_findings", None) or [])
+                    findings=getattr(decision, "key_findings", None) or [],
+                    source="ai", cause_present=_cause_present(bundle))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("decision write failed for %s: %s", m.symbol, exc)
+        elif decision is not None:
+            # Spec 2.0 D: provenance is recorded even when the AI did not
+            # deliver -- a rules-only or rejected report has a hit rate too, and
+            # /stats can only separate the buckets if the row says which spoke.
+            try:
+                self.tracker.write_decision(
+                    m.symbol, rating="", verdict=decision.verdict,
+                    findings=[], source=decision.source,
+                    cause_present=_cause_present(bundle))
             except Exception as exc:  # noqa: BLE001
                 log.debug("decision write failed for %s: %s", m.symbol, exc)
 
@@ -1009,7 +1095,8 @@ class Engine:
             candidate before `_fire_alert` could enrich it, muting the system
             instead of filtering it. The rest -- the reality and exhaustion
             blockers, decidable from price and volume alone -- vetoes now, and
-            the enriched pass settles what is left.
+            the enriched pass (Spec 1.1: it runs ahead of Alert 1) settles
+            what is left.
         """
         if not self._gate_is_mandatory():
             return False
@@ -1162,7 +1249,12 @@ class Engine:
         observation each.
         """
         table = self._calibration_table()
-        groups = [v for k, v in table.items() if k.endswith("|" + str(primary or ""))]
+        # Key shape is RATING|primary|cause (Spec 2.0 D1), so the strategy is
+        # the middle segment; matching on both pipes pools across the cause
+        # split, which is what a pre-call prior wants -- the cause is knowable
+        # before the call, the rating is not.
+        groups = [v for k, v in table.items()
+                  if f"|{str(primary or '')}|" in k]
         groups = [g for g in groups if g.get("sufficient")]
         if not groups:
             return None

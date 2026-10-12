@@ -437,24 +437,30 @@ class FakeGateway:
 
         price = self._price_from_prompt(messages)
         bias = self._bias_for(model)
-        passed = bool((self._facts_from_prompt(messages).get("gate") or {}).get("passed"))
-        # A gated-in setup answers ENTER; anything the gate rejected answers PASS.
-        # The bias only moves the confidence, never the verdict, so a test cannot
-        # smuggle an entry through a gate that said no.
-        verdict = "ENTER" if passed else "PASS"
+        facts = self._facts_from_prompt(messages)
+        # Spec 2.0 B: the fake models the v2 adversarial report. It is not told
+        # the gate's verdict -- the facts no longer carry it -- so it judges the
+        # setup from what it can see: a named cause is real, a cause-free tape
+        # move is honestly unknown, and the risk sentence is always specific.
+        cause = facts.get("cause_detail") or {}
+        quality = "real" if cause.get("headline") else "unknown"
+        verdict = "ENTER" if cause else "WAIT"
         confidence = {"accurate": 0.75, "wrong": 0.25}.get(bias, 0.55)
-        direction = "rising" if passed else "fading"
+        direction = "rising" if cause else "fading"
         payload = {
+            "catalyst_quality": quality,
+            "strongest_risk": ("volume is concentrated in two prints, so the "
+                               "move rests on one buyer, not the tape"),
+            "invalidation_beyond_rules": "",
             "key_findings": ["fake finding one", "fake finding two"],
-            "rating": {"grade": "MODERATE" if passed else "WEAK",
+            "rating": {"grade": "MODERATE" if cause else "WEAK",
                        "confidence": confidence},
-            "trends": {"direction": direction, "momentum": "steady"},
+            "trends": {"direction": "rising" if cause else "fading",
+                       "momentum": "steady"},
             "entry_points": [{"zone": f"{price * 0.99:.2f}-{price:.2f}"}],
             "exit_points": {"stop": f"{price * 0.92:.2f}", "t1": f"{price * 1.15:.2f}",
                             "t2": f"{price * 1.30:.2f}"},
             "verdict": verdict,
-            "rubrics_applied": ["fake rubric: volume + float"] if passed else [],
-            "gate": {"passed": passed},
         }
         return ChatResult(model=model, text=json.dumps(payload), tokens=420,
                           latency_ms=300.0, ok=True)

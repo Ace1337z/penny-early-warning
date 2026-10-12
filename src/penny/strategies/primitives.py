@@ -111,15 +111,13 @@ def low_float_squeeze(b: Bundle) -> StrategyResult:
     if b.pct < 10.0:
         return failed("low_float_squeeze", [], [f"move {b.pct:+.1f}% < +10%"],
                       {"pct": b.pct})
-    if b.news is None:
-        return insufficient("low_float_squeeze", "news not fetched")
-    # A thin float and a crowded short explain why a stock *can* move; without a
-    # catalyst it is usually just a stock that already ran. The squeeze needs a
-    # reason, not only the fuel.
-    _, catalysts, _ = rank_catalysts(b)
-    if not catalysts:
-        return failed("low_float_squeeze", [], ["no catalyst in the last 24h"],
-                      {"short_pct": b.short_pct, "float": b.float_shares})
+
+    # Spec 2.0 A: the implicit cause check is gone. This used to demand a
+    # ranked catalyst, which made a real squeeze (thin float, crowded short,
+    # volume) invisible whenever the news feed had nothing -- the exact case
+    # the detector exists for. The fuel is the setup; cause is a label, not a
+    # precondition. (Dilution still blocks: rank_catalysts raises it and the
+    # gate refuses before scoring.)
 
     score = 30.0 + (20_000_000 - b.float_shares) / 20_000_000 * 20.0
     score += min(25.0, b.short_pct or 0.0) + min(15.0, (b.volx_of(5) - 5.0) * 2.0)

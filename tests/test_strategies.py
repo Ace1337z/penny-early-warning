@@ -97,9 +97,16 @@ def test_a_catalyst_without_volume_fails():
     assert any("volx" in f for f in r.failed_on)
 
 
-def test_a_move_with_no_news_fails_when_a_catalyst_is_required():
+def test_a_move_with_no_news_now_clears_the_gate_on_a_mechanism():
+    """Spec 2.0 A: cause is a label, not a gate.
+
+    The same tape that used to fail on "no catalyst" now passes because the
+    mechanism detectors name what ran the move -- here silent accumulation.
+    """
     gate = evaluate_gate(bundle(news=[]))
-    assert gate.passed is False
+    assert gate.passed is True
+    assert gate.primary in ("silent_accumulation", "short_squeeze_mechanics",
+                            "sympathy_move")
 
 
 def test_hard_catalysts_outrank_soft_ones():
@@ -140,10 +147,16 @@ def test_squeeze_passes_with_a_thin_float_and_a_crowded_short():
     assert r.verdict == "PASS"
 
 
-def test_squeeze_fails_without_a_catalyst():
+def test_squeeze_now_passes_without_a_catalyst():
+    """Spec 2.0 A: the implicit cause check is gone from low_float_squeeze.
+
+    A thin float, a crowded short and real volume are the setup. The news feed
+    having nothing is exactly the case the detector exists for, so cause
+    absence no longer blocks it.
+    """
     b = bundle(float_shares=8_000_000, short_pct=22.0, short_ratio=4.1,
                volx={3: 6.0, 5: 6.0, 15: 5.0}, news=[])
-    assert evaluate_gate(b).by_name("low_float_squeeze").verdict == "FAIL"
+    assert evaluate_gate(b).by_name("low_float_squeeze").verdict == "PASS"
 
 
 def test_squeeze_fails_when_the_float_is_large():

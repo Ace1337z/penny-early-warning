@@ -34,6 +34,7 @@ from .enrich import Enricher
 from .scoring import (PHASE_EXTENDED, PHASE_FADING, TIER_CONFIRMED, TIER_EARLY,
                       TIER_NONE, TIER_WATCH, Metrics)
 from .strategies import cause_lines, extract_cause, gate_summary_lines, rank_catalysts
+from .strategies.news_cause import UNEXPLAINED
 from .util import compact, money, num, pct, safe_div
 
 log = logging.getLogger(__name__)
@@ -178,12 +179,127 @@ def _pulse(m: Metrics) -> str:
 # cause-first news
 # --------------------------------------------------------------------------
 
-def cause_block(m: Metrics, enr: Optional[Enrichment], bundle=None) -> list[str]:
-    """The WHY IT MOVED body: exactly one cause, or an honest 'none found'.
+def _mechanism_block(src, gate=None) -> list[str]:
+    """The MECHANISM line for a move with no named cause (Spec 2.0 A).
 
-    `bundle` is the gate's Bundle for this symbol. When present it carries the
-    same news the detectors ranked, so the cause and the gate cannot disagree
-    about which headline was the catalyst.
+    Exactly one mechanism, or the honest "unidentified": a tape mechanism is
+    what the detectors can prove without a headline, and it replaces the old
+    "CAUSE: none found" hole. The gate's own results are preferred -- they are
+    the verdict the reader already saw -- and a fresh run of the mechanism
+    detectors covers the no-gate path.
+    """
+    from .strategies.detectors import MECHANISM_NAMES, silent_accumulation, \
+        sympathy_move, short_squeeze_mechanics
+    mech = None
+    if gate is not None:
+        for r in getattr(gate, "strategies", None) or []:
+            if getattr(r, "verdict", "") == "PASS" and r.name in MECHANISM_NAMES:
+                mech = r
+                break
+    elif src is not None:
+        for fn in (silent_accumulation, sympathy_move, short_squeeze_mechanics):
+            try:
+                r = fn(src)
+            except Exception:  # noqa: BLE001
+                r = None
+            if r is not None and r.verdict == "PASS":
+                mech = r
+                break
+    label = MECHANISM_LABELS.get(mech.name, mech.name) if mech is not None else ""
+    if mech is not None:
+        detail = ", ".join((mech.reasons or [])[:2]) or "no news 24h"
+        return [f"MECHANISM: {label} ({detail})"]
+    return ["MECHANISM: unidentified \u2014 treat as speculative"]
+
+
+MECHANISM_LABELS = {
+    "silent_accumulation": "silent accumulation",
+    "sympathy_move": "sympathy move",
+    "short_squeeze_mechanics": "short squeeze mechanics",
+}
+
+
+def _news_checked(m: Metrics, enr: Optional[Enrichment], bundle=None) -> bool:
+    """Was the news actually fetched for this symbol? (Not-checked stays quiet.)"""
+    if bundle is not None and getattr(bundle, "news", None) is not None:
+        return True
+    return enr is not None and enr.news is not None
+
+
+def _avg_trade_size(m: Metrics) -> Optional[float]:
+    """Dollars per print over the last 15m -- retail churn vs real size."""
+    trades = getattr(m, "trades_15m", None)
+    if not trades or trades <= 0:
+        return None
+    return round((m.dollar_vol.get(15, 0.0) or 0.0) / trades, 0)
+
+
+def _float_rotation(m: Metrics, enr: Optional[Enrichment]) -> Optional[dict]:
+    """Float turnover so far, and whether the pace is still rising."""
+    if enr is None or not enr.float_shares or enr.float_shares <= 0 or not m.cum_volume:
+        return None
+    rot = m.cum_volume / enr.float_shares
+    vol15_shares = ((m.dollar_vol.get(15, 0.0) / m.price) if m.price else 0.0)
+    rot_15m_ago = max(0.0, rot - (vol15_shares / enr.float_shares))
+    return {"rate": round(rot, 2), "rising": bool(rot > rot_15m_ago)}
+
+
+def _news_checked(m: Metrics, enr: Optional[Enrichment], bundle=None) -> bool:
+    """Was the news actually fetched for this symbol? (Not-checked stays quiet.)"""
+    if bundle is not None and getattr(bundle, "news", None) is not None:
+        return True
+    return enr is not None and enr.news is not None
+
+
+def _cause_bundle(m: Metrics, enr: Optional[Enrichment], news: list):
+    """A minimal Bundle for cause ranking, matching what the gate reads."""
+    from .strategies.base import Bundle
+    src = Bundle(symbol=m.symbol, price=m.price, prev_close=m.prev_close,
+                 open_price=(enr.finviz_row or {}).get("Open") if enr and enr.finviz_row else None,
+                 float_shares=enr.float_shares if enr is not None else None,
+                 short_pct=None, news=news,
+                 vwap=m.vwap, volx=dict(m.volx or {}), rise=dict(m.rise or {}),
+                 dollar_vol=dict(m.dollar_vol or {}))
+    try:
+        src.open_price = float(src.open_price)
+    except (TypeError, ValueError):
+        src.open_price = None
+    return src
+
+
+def named_cause(m: Metrics, enr: Optional[Enrichment], bundle=None) -> Optional[dict]:
+    """The named cause as a plain dict, or None (Spec 2.0 B: AI facts).
+
+    {"headline", "outlet", "age_minutes", "class"} -- the raw fields the model
+    needs to judge the driver, without the renderer's opinion attached.
+    """
+    news = None
+    if bundle is not None and getattr(bundle, "news", None) is not None:
+        news = bundle.news
+    elif enr is not None:
+        news = enr.news
+    if news is None:
+        return None
+    try:
+        src = bundle if bundle is not None else _cause_bundle(m, enr, news)
+        _, ranked, _ = rank_catalysts(src)
+        cause = extract_cause(ranked, src, filings=enr.filings if enr else None)
+    except Exception:  # noqa: BLE001
+        return None
+    if cause.kind == UNEXPLAINED:
+        return None
+    return {"headline": cause.text, "outlet": cause.source,
+            "age_minutes": cause.age_minutes, "class": cause.cls,
+            "url": cause.url}
+
+
+def cause_block(m: Metrics, enr: Optional[Enrichment], bundle=None) -> list[str]:
+    """The WHY IT MOVED body: exactly one cause, or exactly one mechanism.
+
+    Spec 2.0 A: cause is a label, not a gate. A move with no named catalyst is
+    not unexplained -- the detectors name the mechanism that ran it
+    (accumulation, sympathy, squeeze), and when even that cannot be said, the
+    block says so honestly instead of the old "none found" shrug.
     """
     news = None
     if bundle is not None and getattr(bundle, "news", None) is not None:
@@ -199,21 +315,16 @@ def cause_block(m: Metrics, enr: Optional[Enrichment], bundle=None) -> list[str]
         # filters apply the same way they do inside the gate. It has to carry the
         # news: without it there is nothing to rank and every alert would read
         # "none found" on a stock that had just been handed a catalyst.
-        from .strategies.base import Bundle
-        src = Bundle(symbol=m.symbol, price=m.price, prev_close=m.prev_close,
-                     open_price=(enr.finviz_row or {}).get("Open") if enr.finviz_row else None,
-                     float_shares=enr.float_shares, short_pct=None, news=news,
-                     vwap=m.vwap, volx=dict(m.volx or {}),
-                     rise=dict(m.rise or {}))
-        try:
-            src.open_price = float(src.open_price)
-        except (TypeError, ValueError):
-            src.open_price = None
+        src = _cause_bundle(m, enr, news)
 
     try:
         _, ranked, _ = rank_catalysts(src)
         cause = extract_cause(ranked, src, filings=enr.filings if enr else None)
-        return cause_lines(cause)
+        if cause.kind != UNEXPLAINED:
+            return cause_lines(cause)
+        # Spec 2.0 A: no cause named -- name the mechanism that ran the move,
+        # or say honestly that none can be named.
+        return _mechanism_block(src)
     except Exception as exc:  # noqa: BLE001
         log.debug("cause block failed for %s: %s", m.symbol, exc)
         return ["CAUSE: could not determine."]
@@ -243,10 +354,15 @@ def book_line(m: Metrics) -> str:
 
 def format_alert1(m: Metrics, *, shariah_line: str = "Shariah: checking...",
                   pct_rank: Optional[int] = None, resumed: bool = False,
-                  fast: bool = False, html: bool = False, gate=None) -> str:
+                  fast: bool = False, html: bool = False, gate=None,
+                  no_news: bool = False) -> str:
     """Instant Alert 1: no AI, no enrichment. The trigger and nothing else."""
     msg = _Msg(html)
     head = f"{tier_name(m.tier)}  {m.symbol}  {money(m.price)}{phase_tag(m)}"
+    if no_news:
+        # Spec 2.0 A: a cause-free alert says so in the headline. The reader
+        # decides in the first second whether to open a tape-driven setup.
+        head += "  [NO-NEWS]"
     if resumed:
         head += "  RESUMED FROM HALT"
     elif fast:
@@ -339,7 +455,11 @@ def format_alert2(m: Metrics, enr: Optional[Enrichment], market, *,
     # -- headline -----------------------------------------------------------
     msg.line(("b", f"DETAIL  {arrow_for(pv)} {m.symbol}  {money(m.price)}  "
                    f"{_pct(m.pct_vs_close)} vs close{phase_tag(m)}"))
-    msg.line(_pulse(m))
+    pulse = _pulse(m)
+    if _news_checked(m, enr, bundle) and named_cause(m, enr, bundle) is None:
+        # Spec 2.0 A: the cause-free move says so on the pulse line.
+        pulse += ", no catalyst \u2014 tape-driven"
+    msg.line(pulse)
     setup = "SETUP: FAST" if fast else f"SETUP: {tier_name(m.tier)}"
     reason = _setup_reason(m)
     if fast:
@@ -517,10 +637,19 @@ def build_ai_facts(m: Metrics, enr: Optional[Enrichment], market, *,
         "from_high": _pct(m.from_high),
         "minutes_since_low": (int(m.minutes_since_low)
                               if m.minutes_since_low is not None else None),
-        "tier": tier_name(m.tier),
         "session": session,
-        "gate": gate.as_dict() if gate is not None else None,
+        # Spec 2.0 B: the tier and the gate verdict are gone on purpose. The
+        # model judges the setup, not the gate's opinion of the setup -- feeding
+        # the verdict back is what produced the mirror (criterion 7).
         "cause": cause_block(m, enr, bundle),
+        "cause_detail": named_cause(m, enr, bundle),
+        # The inputs the adversarial judgment needs and the rules do not show:
+        # who is actually trading, how fast the float is turning over, and what
+        # the rest of the sector is doing.
+        "avg_trade_size": _avg_trade_size(m),
+        "float_rotation": _float_rotation(m, enr),
+        "sector_peers": (getattr(enr, "sector_peers", None)
+                         if enr is not None else None),
         "market": (market.headline() if market is not None else "unknown"),
         "float_shares": (enr.float_shares if enr is not None else None),
         "sector": (enr.sector if enr is not None else ""),

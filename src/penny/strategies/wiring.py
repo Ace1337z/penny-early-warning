@@ -58,7 +58,10 @@ def metrics_to_bundle(m, *, enr=None, cfg=None, now=None, history=None,
         now_et=now or now_et(),
         float_shares=m.float_shares,
         market_cap=m.market_cap,
+        # Thresholds copied from config once per call (same pattern as
+        # dollar_level): the mechanism detectors stay pure Bundle functions.
         dollar_level=cfg.float("DOLLAR_LEVEL", 1.00) if cfg else 1.00,
+        short_float_min=cfg.float("SHORT_FLOAT_MIN", 8.0) if cfg else 8.0,
     )
 
     if enr is not None:
@@ -71,6 +74,7 @@ def metrics_to_bundle(m, *, enr=None, cfg=None, now=None, history=None,
         b.plan = enr.plan
         b.short_pct = _short_pct(enr)
         b.short_ratio = _short_ratio(enr)
+        b.sector_peers = getattr(enr, "sector_peers", None)
 
     if history:
         b.daily_history = history
@@ -144,7 +148,7 @@ def run_gate(m, *, enr=None, cfg=None, now=None, history=None) -> tuple[Strategy
     gate = evaluate_gate(
         b,
         min_score=cfg.float("GATE_MIN_SCORE", 55.0) if cfg else 55.0,
-        require_catalyst=cfg.bool("GATE_REQUIRE_CATALYST", True) if cfg else True,
+        require_catalyst=cfg.bool("CAUSE_REQUIRED", False) if cfg else False,
         time_filter=cfg.bool("TIME_FILTER_ENABLED", True) if cfg else True,
         **gate_limits(cfg),
     )

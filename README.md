@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-422%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-456%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -91,16 +91,16 @@ SHORT/FLOAT: short float 8.4% (finviz 2026-10-05) | float 18,500,000
 Shariah: COMPLIANT (halalterminal)
 
 ── AI DECISION ─────
-VERDICT: ENTER
-RATING: MODERATE | confidence 0.62
-KEY FINDINGS:
-  - reclaimed VWAP on 9x volume and held it for 12 minutes
-  - float still tight at 18.5M with the ATM removed
-ENTRY POINTS (LONG)
-  1.4200-1.4600   first pullback that holds VWAP
-EXIT POINTS
-  stop 1.3157 | T1 1.5972 | T2 1.7457
-APPLIED: catalyst + volume; float < 20M
+CATALYST QUALITY: real
+STRONGEST RISK: the $12M raise is priced at a discount, so the float just grew
+INVALIDATION BEYOND RULES: two 1m closes under the 10:40 trendline
+VERDICT: ENTER  (MODERATE, confidence 0.62)
+REASON: reclaimed VWAP on 9x volume and held it for 12 minutes
+- float still tight at 18.5M with the ATM removed
+TREND: rising - 3m accel
+ENTRY 1: 1.4200-1.4600  (first pullback that holds VWAP)
+STOP: 1.3157 | T1: 1.5972 | T2: 1.7457
+SOURCE: ai
 
 Screener and decision support only. No orders are placed. Not investment advice.
 ```
@@ -108,9 +108,14 @@ Screener and decision support only. No orders are placed. Not investment advice.
 Reading it fast:
 
 - **WHY IT MOVED** names exactly **one** cause, with its outlet, age and
-  confidence - or says `none found` rather than inventing one.
+  confidence - or, when there is no headline, the **mechanism** the tape ran on
+  (`MECHANISM: silent accumulation`), and `unidentified` rather than `none found`
+  when even that cannot be said.
 - **AI DECISION** is the only place the verdict appears: `ENTER` / `WAIT` /
-  `PASS`, with the entry and exit levels that justify it.
+  `PASS`, led by the model's own judgment fields (`CATALYST QUALITY`,
+  `STRONGEST RISK`), not by a restatement of the gate. Every block ends with a
+  `SOURCE:` line - `ai`, `ai_rejected` or `rules` - so the reader always knows
+  whether the AI spoke or the rules did.
 - **STRATEGY** names the detector setups that passed, with the entry trigger
   when one has not fired yet.
 - **SETUP** tells you why this is an alert - or, when the tier is `NONE`, exactly
@@ -146,7 +151,7 @@ you can act on a symbol without typing anything.
             scoring engine (rolling windows, tiers, score)
                             | ranked
                             v
-   LONG-ONLY STRATEGY GATE (18 detectors, cause-first)
+   LONG-ONLY STRATEGY GATE (20 detectors, cause is a label)
                             | gate passes
                             v
         ALERT 1 (Telegram, instant, no AI)
@@ -578,12 +583,17 @@ fake Telegram, and asserts the documented acceptance results:
 - a wide spread blocks as `WIDE_SPREAD`, a thin market or an unfilled $500 exit
   as `ILLIQUID`, and a feed with no book is `INSUFFICIENT_DATA`, never a pass
 - a 5-minute close under the alert VWAP invalidates the setup exactly once
+- a cause-free tape setup alerts `[NO-NEWS]`, clears the gate on a named
+  mechanism (silent accumulation / sympathy move / squeeze mechanics) and
+  renders a `MECHANISM:` line rather than `none found`
+- the rules-only DECISION block stands in when the AI is unavailable or its
+  report is rejected, and `/stats` splits closed alerts `BY SOURCE`
 - the multi-timeframe block is AI-only and says `unknown` without daily history;
   a hot sector gets a line and a cold sector gets none
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS** (79 checks), `simulate` **ALL PASS** (49 checks),
-`pytest` **422 passed** (1 skipped).
+Current status: `selftest` **ALL PASS** (85 checks), `simulate` **ALL PASS** (54 checks),
+`pytest` **456 passed** (1 skipped).
 
 ---
 
@@ -619,7 +629,7 @@ src/penny/
                            multi_timeframe, sector_heatmap (context blocks)
   tracking.py              per-alert tracking, aborts, calibrated confidence, EOD sections
   tracking_invalidation.py the six invalidation triggers (T1-T6)
-  ai/                      gateway, decision (the one call), prompts/methodology_v1.md
+  ai/                      gateway, decision (the one call), prompts/methodology_v2.md
   shariah.py               halalterminal.com, screening rules, modes, cache
   enrich.py                parallel enrichment: verification, candles, news, filings, float
   alerts.py                Alert 1 / Alert 2 / build feed formatting + the AI fact bundle

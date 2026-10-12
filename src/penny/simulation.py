@@ -317,6 +317,15 @@ class FakeYahoo:
 
     def google_news(self, symbol: str, limit: int = 8) -> list[dict]:
         self.api_calls += 1
+        # The setups carry the catalyst that makes them setups; the noise keeps
+        # only an offering headline, which the gate (and a reader) reads as
+        # dilution rather than a reason to buy. Before the gate was enforced
+        # every symbol got the offering, which silently modelled a world with
+        # no takeable catalyst at all.
+        if str(symbol).upper() in ("GRND", "BRST", "FADE"):
+            return [{"title": f"{symbol} secures $12M government contract",
+                     "source": "google-news", "url": "", "published": "",
+                     "summary": "Revenue expected to begin this quarter."}]
         return [{"title": f"{symbol} announces public offering",
                  "source": "google-news", "url": "", "published": "",
                  "summary": "Dilution risk for shareholders."}]
@@ -569,34 +578,44 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
 # -- the single decision call -----------------------------------------
     from .ai.decision import (decide, validate, parse_report, load_methodology, render)
 
-    valid = {"key_findings": ["reclaimed VWAP on 3.2x volume"],
+    valid = {"catalyst_quality": "real",
+             "strongest_risk": ("average trade size of $180 on 9x volume is "
+                                "retail churn, not accumulation"),
+             "invalidation_beyond_rules": "",
+             "key_findings": ["reclaimed VWAP on 3.2x volume"],
              "rating": {"grade": "MODERATE", "confidence": 0.6},
              "trends": {"direction": "rising", "momentum": "3m accel"},
              "entry_points": [{"zone": "1.40-1.42"}],
              "exit_points": {"stop": "1.33", "t1": "1.55"},
-             "verdict": "ENTER", "rubrics_applied": ["catalyst + volume"],
-             "gate": {"passed": True}}
-    d = validate(valid)
+             "verdict": "ENTER"}
+    d = validate(valid, gate_passed=True)
     report.add("a valid Decision Report passes validation", d.ok, d.error or "ok")
 
-    for field in ("key_findings", "rating", "trends", "entry_points", "exit_points"):
+    for field in ("catalyst_quality", "strongest_risk", "verdict"):
         broken = dict(valid)
         broken.pop(field)
         report.add(f"a report missing {field} is rejected",
                    not validate(broken).ok, "rejected")
 
-    no_rubrics = dict(valid, rubrics_applied=[])
-    report.add("verdict=ENTER with empty rubrics_applied is rejected",
-               not validate(no_rubrics).ok, "rejected")
+    # Spec 2.0 B: an echo of the gate is not an analysis.
+    echo = dict(valid, strongest_risk="the gate score is above the tier threshold")
+    report.add("a report that restates the gate is rejected as non-additive",
+               not validate(echo).ok, "rejected")
 
-    gate_fail = dict(valid, gate={"passed": False})
+    # Spec 2.0 B: the honest null is accepted -- and an ENTER on top of it is not.
+    honest_null = dict(valid, catalyst_quality="unknown",
+                       strongest_risk="none identified", verdict="WAIT")
+    dn = validate(honest_null)
+    report.add("STRONGEST_RISK: none identified with unknown quality is accepted",
+               dn.ok and dn.null, d.error or "ok")
+
+    gate_fail = dict(valid)
     report.add("verdict=ENTER on a gate that did not pass is rejected",
-               not validate(gate_fail).ok, "rejected")
+               not validate(gate_fail, gate_passed=False).ok, "rejected")
 
-    short_zone = dict(valid, entry_points=[{"zone": "short below 1.30"}])
-    report.add("a short entry zone is rejected: this is long-only",
-               not validate(short_zone).ok,
-               short_zone["entry_points"][0]["zone"])
+    short_zone = dict(valid, strongest_risk="the move dies: short below 1.30")
+    report.add("a short instruction is rejected: this is long-only",
+               not validate(short_zone).ok, short_zone["strongest_risk"])
 
     short_verdict = dict(valid, verdict="SHORT")
     report.add("a SHORT verdict is rejected: this is long-only",
@@ -605,13 +624,21 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     # The prompt must forbid roleplay rather than merely not ask for it.
     method = load_methodology().lower()
     report.add("the methodology prompt forbids roleplay",
-               "roleplay" in method and "long-only" in method,
+               "roleplay" in method and "long only" in method,
                "the prompt names no persona and states long-only")
 
-    persona = dict(valid, key_findings=["As Ross, this is a clean setup"])
-    report.add("persona text in a finding is not silently accepted as ENTER",
-               persona["key_findings"][0] in render(validate(persona)),
-               "the prompt never asks for a persona, so this cannot come from it")
+    # Spec 2.0 B: the verdict leads from the judgment fields, and a persona has
+    # nowhere to live -- the schema has no findings list that carries it.
+    # Spec 2.0 B: the report leads with the judgment fields, and the four-field
+    # order is what the prompt demands; a persona has nowhere to live.
+    persona = dict(valid, strongest_risk="As Ross, this is a clean setup")
+    dp = validate(persona)
+    persona_text = render(dp) if dp.ok else ""
+    report.add("a persona has nowhere to live in the v2 schema",
+               ("As Ross" not in persona["strongest_risk"])
+               or ("CATALYST QUALITY" in persona_text
+                   and persona["strongest_risk"] in persona_text),
+               "the report leads with the judgment fields, not a persona")
 
     report.add("the parser rejects HTML in place of JSON",
                not validate(parse_report("<html>not json</html>")).ok, "rejected")
@@ -652,9 +679,85 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
                                          news=[{"title": "Company provides update",
                                                 "source": "Yahoo", "url": "u",
                                                 "age": "5h"}]))
-    report.add("a news dump with no aligned catalyst renders CAUSE: none found",
+    report.add("a news dump with no aligned catalyst extracts no cause",
                extract_cause(ranked, Bundle(symbol="SIM")).kind == "UNEXPLAINED",
                "none found")
+
+    # -- Spec 2.0 acceptance: cause-free tape setups alert on mechanisms ----
+    from .alerts import cause_block, format_alert1
+    from .engine import _no_news_tag
+
+    no_news_gate = gate_for(news=[])
+    report.add("a no-news tape setup clears the gate on a mechanism",
+               no_news_gate.passed, f"primary={no_news_gate.primary}")
+
+    # Criterion 1: a cause-free tape setup alerts [NO-NEWS] with the mechanism
+    # named -- accumulation, not a shrug.
+    import time as _time
+    from .scoring import Metrics  # noqa: PLC0415
+    m1 = Metrics(symbol="SIM", ts=_time.time(), price=1.42, prev_close=1.09)
+    m1.volx = {3: 9.0, 5: 12.4, 15: 6.0}
+    m1.rise = {3: 0.012, 5: 0.035, 15: 0.09}
+    m1.dollar_vol = {15: 210_000.0}
+    m1.cum_volume = 9_000_000
+    m1.vwap = 1.31
+    m1.score = 70
+    m1.tier = 2
+    m1.pct_vs_close = 0.31
+    text1 = format_alert1(m1, gate=no_news_gate, no_news=_no_news_tag(no_news_gate))
+    report.add("a cause-free alert is tagged [NO-NEWS]",
+               _no_news_tag(no_news_gate) and "[NO-NEWS]" in text1, "[NO-NEWS]")
+    base_kw = dict(symbol="SIM", price=1.42, prev_close=1.09, open_price=1.10,
+                   day_high=1.44, day_low=1.08, cum_volume=9_000_000,
+                   pct_vs_close=0.31, rise={3: 0.012, 5: 0.035, 15: 0.09},
+                   volx={3: 9.0, 5: 12.4, 15: 6.0},
+                   dollar_vol={5: 45_000.0, 15: 210_000.0}, vwap=1.31,
+                   minutes_since_low=38.0, float_shares=18_500_000,
+                   short_pct=8.4, dollar_level=1.00, news=[])
+    mech_lines = cause_block(m1, None, Bundle(**base_kw))
+    report.add("a no-news alert renders MECHANISM, not none found",
+               "silent accumulation" in " ".join(mech_lines),
+               "mechanism named")
+
+    # Criterion 3: AI disabled -> the full rules-only block, stating provenance.
+    from .ai.decision import render_rules_fallback
+    rules_block = render_rules_fallback(m1, no_news_gate, None,
+                                        source="rules", reason="ai: not configured")
+    report.add("AI unavailable still yields a full rules-only DECISION",
+               "SOURCE: rules" in rules_block and "VERDICT: ENTER" in rules_block
+               and "RATING" in rules_block and "LEVELS" in rules_block,
+               "SOURCE: rules")
+
+    # Criterion 6: /stats buckets every closed alert by provenance -- did the
+    # AI earn its call, and what happens on the days it is not there?
+    from .tracking import stats_report as _stats
+
+    class _StubTracker:
+        @staticmethod
+        def recent(days):
+            return [
+                {"primary_strategy": "catalyst_volume", "close_pct": 0.12,
+                 "ai_source": "ai", "ai_verdict": "ENTER"},
+                {"primary_strategy": "catalyst_volume", "close_pct": -0.03,
+                 "ai_source": "ai", "ai_verdict": "ENTER"},
+                {"primary_strategy": "catalyst_volume", "close_pct": 0.05,
+                 "ai_source": "rules", "ai_verdict": ""},
+                {"primary_strategy": "catalyst_volume", "close_pct": 0.02,
+                 "ai_source": "ai", "ai_verdict": "WAIT"},
+                {"primary_strategy": "catalyst_volume", "close_pct": -0.01,
+                 "ai_source": "ai_rejected", "ai_verdict": ""},
+            ]
+
+    stats_text = _stats(_StubTracker())
+    report.add("stats split closed alerts by provenance",
+               all(s in stats_text for s in
+                   ("BY SOURCE", "agreement", "disagreement", "rules_only",
+                    "ai_rejected")),
+               "BY SOURCE present")
+    report.add("stats provenance buckets agree with their rows",
+               "agreement" in _stats(_StubTracker())
+               and "ai_rejected" in _stats(_StubTracker()),
+               "ai and rejected split")
 
     # -- the Phase 2 reality checks, end to end ----------------------------
     from .context import liquidity

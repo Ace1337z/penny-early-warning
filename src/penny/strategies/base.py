@@ -168,7 +168,12 @@ class Bundle:
     # never reads config directly (and stays trivially testable).
     dollar_level: float = 1.00
     float_max: float = 20_000_000.0
+    # Spec 2.0 E: the short-squeeze floor (was 15).
+    short_float_min: float = 8.0
     sector_leader: Any = None
+    # Peer 15m moves as {symbol: pct}, when a peer feed is wired. None means
+    # "not fetched" -- sympathy_move reports INSUFFICIENT_DATA, never a guess.
+    sector_peers: Optional[dict] = None
 
     # blocker survives even if that detector did not itself reach a verdict.
     dilution: str = ""

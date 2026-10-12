@@ -82,7 +82,9 @@ def test_a_working_model_produces_one_decision(cfg):
     gateway = FakeGateway(cfg, models=["provider-a", "provider-b"])
 
     facts = {"symbol": "TEST", "price": 1.0, "news": [],
-             "gate": {"passed": True, "primary": [], "triggers": [], "blockers": []}}
+             "cause_detail": {"headline": "Acme wins $12M contract",
+                              "outlet": "Benzinga", "age_minutes": 2.0,
+                              "class": "HARD", "url": ""}}
     d = decide(gateway, facts, model=cfg.raw("AI_MODEL"))
 
     assert d.ok, d.error

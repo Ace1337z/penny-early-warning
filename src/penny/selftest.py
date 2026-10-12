@@ -180,33 +180,96 @@ def _parser_checks(report) -> None:
 
 
 def _ai_checks(report) -> None:
-    from .ai.decision import build_messages, load_methodology, parse_report, validate
+    from .ai.decision import (build_messages, load_methodology, parse_report,
+                              render, validate)
     valid = {
+        "catalyst_quality": "real",
+        "strongest_risk": ("average trade size of $180 on 9x volume is retail "
+                           "churn, not accumulation"),
+        "invalidation_beyond_rules": "two 1m closes under the 10:40 trendline",
         "key_findings": ["reclaimed VWAP on 9x volume"],
         "rating": {"grade": "MODERATE", "confidence": 0.6},
         "trends": {"direction": "rising", "momentum": "3m accel"},
         "entry_points": [{"zone": "1.40-1.42"}],
         "exit_points": {"stop": "1.33", "t1": "1.55"},
-        "verdict": "ENTER", "rubrics_applied": ["catalyst + volume"],
-        "gate": {"passed": True},
+        "verdict": "ENTER",
     }
     report.add("the decision validator accepts a valid report",
-               validate(valid).ok, validate(valid).error or "ok")
+               validate(valid, gate_passed=True).ok,
+               validate(valid).error or "ok")
     report.add("the decision parser strips code fences",
-               validate(parse_report(f"```json\n{json.dumps(valid)}\n```")).ok)
+               validate(parse_report(f"```json\n{json.dumps(valid)}\n```"),
+                        gate_passed=True).ok)
     report.add("the decision parser rejects HTML",
                not validate(parse_report("<html>no</html>")).ok)
     report.add("ENTER on a gate that did not pass is rejected",
-               not validate(dict(valid, gate={"passed": False})).ok)
-    report.add("a short entry zone is rejected: long-only",
-               not validate(dict(valid, entry_points=[{"zone": "short below 1.30"}])).ok)
+               not validate(dict(valid), gate_passed=False).ok)
+    report.add("a short instruction is rejected: long-only",
+               not validate(dict(valid, strongest_risk="dies here: sell short")).ok)
     method = load_methodology().lower()
     report.add("the methodology prompt states long-only and forbids roleplay",
-               "long-only" in method and "roleplay" in method)
-    messages = build_messages({"symbol": "X", "price": 1.23456789, "news": [],
-                               "gate": {"passed": True}})
+               "long only" in method and "roleplay" in method)
+    messages = build_messages({"symbol": "X", "price": 1.23456789, "news": []})
     report.add("prompt stays within the character cap",
                len(messages[1]["content"]) <= 7000, f"{len(messages[1]['content'])} chars")
+
+    # Spec 2.0 B/C: the adversarial contract.
+    echo = dict(valid, strongest_risk="the gate score is above the tier threshold")
+    report.add("a report that restates the gate is rejected as non-additive",
+               not validate(echo).ok, "rejected")
+    honest = validate(dict(valid, catalyst_quality="unknown",
+                           strongest_risk="none identified", verdict="WAIT"))
+    report.add("STRONGEST_RISK: none identified with unknown quality is accepted",
+               honest.ok and honest.null, honest.error or "ok")
+    from .ai.decision import render_rules_fallback
+    from .strategies import Bundle, evaluate_gate
+
+    def mech_bundle(**over):
+        base = dict(symbol="STRAT", price=1.20, prev_close=1.00, open_price=1.01,
+                    day_high=1.21, day_low=0.99, cum_volume=400_000,
+                    pct_vs_close=0.20, rise={3: 0.012, 5: 0.035, 15: 0.05},
+                    volx={3: 9.0, 5: 12.4, 15: 10.0},
+                    dollar_vol={5: 900.0, 15: 12_000.0}, vwap=1.10,
+                    minutes_since_low=38.0, float_shares=8_000_000,
+                    short_pct=22.0, dollar_level=1.00, news=[])
+        base.update(over)
+        return Bundle(**base)
+
+    class _Plan:
+        stop = 1.14
+        target1 = 1.40
+        target2 = 1.26
+
+    g = evaluate_gate(mech_bundle())
+    b = mech_bundle()
+    b.plan = _Plan()
+    block = render_rules_fallback(None, g, b, source="rules", reason="ai: not configured")
+    report.add("with the AI disabled the block is rules-only with SOURCE: rules",
+               "DECISION (rules-only)" in block and "SOURCE: rules" in block
+               and "VERDICT: ENTER" in block and "LEVELS" in block,
+               "rules-only fallback")
+    rejected_block = render_rules_fallback(
+        None, g, None, source="ai_rejected", reason="non-additive report")
+    report.add("a rejected report degrades to rules-only with its reason",
+               "SOURCE: ai_rejected" in rejected_block
+               and "REASON: non-additive report" in rejected_block, "ai_rejected")
+    report.add("the rules-only block never claims an adversarial check",
+               "no adversarial check" in block)
+
+    # Criterion 7: the fact bundle never leaks the gate.
+    from .alerts import build_ai_facts
+    from .scoring import Metrics
+    m = Metrics(symbol="X", ts=time.time(), price=1.20, prev_close=1.00)
+    m.volx = {3: 9.0, 5: 12.4, 15: 10.0}
+    m.dollar_vol = {15: 12_000.0}
+    m.cum_volume = 400_000
+    m.vwap = 1.10
+    facts = build_ai_facts(m, None, None, session="regular")
+    blob = json.dumps(facts).lower()
+    report.add("the AI fact bundle carries no tier, score or gate verdict",
+               all(f'"{w}"' not in blob for w in
+                   ("gate", "gate_score", "tier", "blocked_by", "passed")),
+               "tier/gate/score absent from the facts")
 
 
 def _fib_checks(report) -> None:
@@ -300,12 +363,11 @@ def _strategy_checks(report) -> None:
                len(ran.strategies) >= 10, f"{len(ran.strategies)} detectors")
 
     parabolic = evaluate_gate(bundle(rise={3: 0.05, 5: 0.12, 15: 0.31},
-                                     volx={3: 30.0, 5: 40.0, 15: 30.0},
+                                     volx={3: 1.2, 5: 1.4, 15: 1.1},
                                      dollar_vol={5: 40_000.0, 15: 300_000.0},
                                      price=2.40, vwap=1.60, from_high=-0.005))
     report.add("an exhausted parabolic move is blocked, never shorted",
-               not parabolic.passed
-               and parabolic.blocked_by in ("EXHAUSTED", "no_strategy"),
+               not parabolic.passed and parabolic.blocked_by == "EXHAUSTED",
                f"blocked_by={parabolic.blocked_by}")
 
     offering = evaluate_gate(bundle(news=[

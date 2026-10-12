@@ -119,6 +119,14 @@ DEFAULTS: dict[str, str] = {
     "AI_MODEL": "deepseek-v4.1-flash",
     "AI_TIMEOUT": "45",
     "AI_MAX_TOKENS": "1800",
+    # Spec 2.0 B/E: the AI is adversarial, not a second vote on the gate.
+    # AI_MIN_ADDITIVE=0 accepts reports that merely restate the gate;
+    # RULES_FALLBACK_VERDICT=0 strips the rules-only fallback down to WAIT.
+    # AI_ADVERSARIAL records which prompt is in force (v2 is the only prompt
+    # today); it is listed so /keys shows the posture, not to switch prompts.
+    "AI_ADVERSARIAL": "1",
+    "AI_MIN_ADDITIVE": "1",
+    "RULES_FALLBACK_VERDICT": "1",
     "MARKET_SYMBOLS": "SPY,QQQ,IWM",
     "TOKEN_NOTIFY_DAILY": "0",
     "TOKEN_LIMIT_DAILY": "0",
@@ -191,7 +199,11 @@ DEFAULTS: dict[str, str] = {
     # alerts through the strategy detectors instead.
     "STRATEGY_GATE": "0",
     "GATE_MIN_SCORE": "55",
-    "GATE_REQUIRE_CATALYST": "1",
+    # Cause is a label, not a gate (Spec 2.0 A): CAUSE_REQUIRED=1 restores the
+    # old behaviour of refusing every alert without a named catalyst, which
+    # filtered out the mechanical and social moves this tool exists to catch.
+    # Dilution and DATA_CONFLICT still block regardless of this key.
+    "CAUSE_REQUIRED": "0",
     "GATE_MAX_PRIMARY": "3",
     # --- Reality gate: spread + liquidity (Feature 1) ---
     # A setup you cannot fill is not a setup. The spread ceiling is the hard
@@ -236,9 +248,10 @@ DEFAULTS: dict[str, str] = {
     "FGD_MIN_HISTORY_DAYS": "6",
     # --- Low float squeeze ---
     "FLOAT_MAX": "20000000",
-    "SHORT_FLOAT_MIN": "15",
+    # Spec 2.0 E: the squeeze floor drops from 15% to 8% so the mechanical
+    # short-squeeze detector fires before the crowd is already committed.
+    "SHORT_FLOAT_MIN": "8.0",
     "SHORT_RATIO_MIN": "3.0",
-    "SQUEEZE_MIN_VOLX": "5.0",
     # --- $1 breakout ---
     "DOLLAR_LEVEL": "1.00",
     "DOLLAR_HOLD_MINUTES": "15",
@@ -346,6 +359,7 @@ GROUPS: dict[str, list[str]] = {
                "BACKUP_TELEGRAM", "BACKUP_KEEP_HOURLY", "BACKUP_KEEP_DAILY",
                "BACKUP_KEEP_WEEKLY", "BACKUP_KEEP_MONTHLY", "BACKUP_MAX_AGE_HOURS"],
     "AI": ["AI_BASE_URL", "AI_KEY", "AI_MODEL", "AI_TIMEOUT", "AI_MAX_TOKENS",
+           "AI_ADVERSARIAL", "AI_MIN_ADDITIVE", "RULES_FALLBACK_VERDICT",
            "MARKET_SYMBOLS", "TOKEN_NOTIFY_DAILY", "TOKEN_LIMIT_DAILY"],
     "Behaviour": ["MAX_PRICE", "MIN_PRICE", "ALERT_MIN_TIER", "REALERT_SECONDS", "ALERT_EXTENDED",
                   "EXTENDED_PCT", "WARMUP_CYCLES", "WORKERS", "RISK_USD", "MIN_RR", "BASELINE_FALLBACK",
@@ -353,10 +367,12 @@ GROUPS: dict[str, list[str]] = {
                   "FINVIZ_MAX_PER_MIN", "RETENTION_DAYS"],
     "Fast alerts": ["FAST_ON", "FAST_RISE3", "FAST_VOLX3", "FAST_DOLLAR3", "FAST_RISE5",
                     "FAST_VOLX5", "FAST_MAX_FROM_HIGH", "FAST_MIN_VOLUME"],
-    "Strategy gate": ["STRATEGY_GATE", "GATE_MIN_SCORE", "GATE_REQUIRE_CATALYST",
+    "Strategy gate": ["STRATEGY_GATE", "GATE_MIN_SCORE", "CAUSE_REQUIRED",
                       "GATE_MAX_PRIMARY", "TIME_FILTER_ENABLED",
                       "SPREAD_MAX_PCT", "MIN_DOLLAR_VOL_15M", "MIN_AVG_TRADE_SIZE",
                       "MIN_TRADES_15M", "EXIT_LIQ_500_MAX_SEC", "EXIT_LIQ_MAX_SLIP_PCT",
+                      "SHORT_FLOAT_MIN", "AI_ADVERSARIAL", "AI_MIN_ADDITIVE",
+                      "RULES_FALLBACK_VERDICT",
                       "HALF_LIFE_HARD", "HALF_LIFE_MEDIUM", "HALF_LIFE_SOFT"],
     "Strategies": ["FGD_LOOKBACK_DAYS", "FGD_MIN_PCT", "FGD_MIN_VOLX", "FGD_MIN_LOW_AGE",
                    "FGD_MIN_HISTORY_DAYS", "FLOAT_MAX", "SHORT_FLOAT_MIN", "SHORT_RATIO_MIN",

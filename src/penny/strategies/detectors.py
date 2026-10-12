@@ -8,6 +8,8 @@ already earned the fetch by clearing the cheap gate.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from .base import Bundle, StrategyResult, clamp, failed, insufficient, passed, triggered
 from .candles import (FIVE_MIN, aggregate, avg_volume, clean_bars, held_above, is_green,
                       lower_highs, minutes_below, sweep_level)
@@ -218,6 +220,141 @@ def day3_surge(b: Bundle) -> StrategyResult:
     return passed("day3_surge", score,
                   [f"day-1 +{d1_pct:.0f}%", "day-2 held", f"retesting {d1.get('high', 0):.2f}"],
                   {"day1_pct": d1_pct})
+
+
+# -- mechanism detectors (Spec 2.0 A): fire when NO cause is named -----------
+
+MECHANISM_NAMES = ("silent_accumulation", "sympathy_move", "short_squeeze_mechanics")
+
+# The same ceiling the reality gate uses; a detector reads only its Bundle, so
+# the spread ceiling is baked rather than plumbed through evaluate_gate twice.
+MECHANISM_SPREAD_MAX_PCT = 1.5
+
+
+def _no_named_cause(b: Bundle) -> Optional[bool]:
+    """Is there a named cause in the news? True/False when news was fetched.
+
+    A mechanism fires *because* no cause was named -- so a report the detectors
+    cannot read (news=None) is unknown, not absent, and the mechanism stays
+    silent rather than claiming the move is unexplained.
+    """
+    if b.news is None:
+        return None
+    from .news_cause import rank_catalysts, extract_cause, UNEXPLAINED
+    try:
+        _, ranked, _ = rank_catalysts(b)
+        return extract_cause(ranked, b).kind == UNEXPLAINED
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def silent_accumulation(b: Bundle) -> StrategyResult:
+    """The tape explains the move without a headline (Spec 2.0 A).
+
+    Rotation that keeps accelerating while price holds above VWAP is someone
+    working an order, and a press-release-only filter suppresses exactly that
+    forever. Fires only when no cause was named -- with a headline on the tape
+    this is catalyst_volume's territory, and a mechanism must not outscore a
+    named event.
+
+    "Rotation rising" is read as acceleration: the 5m window moving more volume
+    than the 15m window means the float is turning over faster now than it was
+    across the hour's run.
+    """
+    if b.news is None:
+        return insufficient("silent_accumulation", "news not fetched")
+    if b.float_shares is None or b.float_shares <= 0 or not b.cum_volume:
+        return insufficient("silent_accumulation", "float unknown")
+    if _no_named_cause(b) is False:
+        return failed("silent_accumulation", [], ["a cause is named"], {})
+    if not b.above_vwap:
+        return failed("silent_accumulation", [], ["price below VWAP"], {})
+    volx5 = b.volx_of(5)
+    if volx5 < 3.0:
+        return failed("silent_accumulation", [], [f"volx {volx5:.1f}x < 3.0"],
+                      {"volx5": volx5})
+    rot = b.cum_volume / b.float_shares
+    # Rotation rate rising: the newest 15m added more rotation than the window
+    # before it. dollar_vol_15 / price is the share count of the last 15m, so
+    # the rotation added recently is that over the float.
+    vol15_shares = (b.dollars_of(15) / b.price) if b.price else 0.0
+    rot_15m_ago = max(0.0, rot - (vol15_shares / b.float_shares))
+    if rot <= rot_15m_ago:
+        return failed("silent_accumulation", [],
+                      [f"rotation flat or falling ({rot:.2f}x vs {rot_15m_ago:.2f}x)"],
+                      {"rotation": rot})
+    score = 40.0 + min(25.0, (volx5 - 3.0) * 4.0) + min(15.0, rot * 15.0)
+    return passed("silent_accumulation", score,
+                  [f"float rotation {rot:.2f}x, rising",
+                   "no news in 24h", f"volx {volx5:.1f}x", "above VWAP"],
+                  {"rotation": rot, "volx5": volx5})
+
+
+def sympathy_move(b: Bundle) -> StrategyResult:
+    """A sector peer is running and this name is lagging behind it (2.0 A).
+
+    Fires without a named cause of its own: the peer's move *is* the context
+    the press-release filter cannot see. Needs peer moves, which the
+    enrichment carries when a peer feed is wired; without it this honestly
+    reports INSUFFICIENT_DATA.
+    """
+    peers = b.sector_peers
+    if peers is None:
+        return insufficient("sympathy_move", "peer moves not fetched")
+    if b.news is None:
+        return insufficient("sympathy_move", "news not fetched")
+    if _no_named_cause(b) is False:
+        return failed("sympathy_move", [], ["a cause is named"], {})
+    target15 = (b.rise_of(15) or 0.0) * 100.0
+    up = sorted((p for p in peers.values() if p is not None), reverse=True)
+    if not up:
+        return failed("sympathy_move", [], ["no sector peer moved"], {})
+    if not (up and max(up) >= 2.0 * max(target15, 1.0)):
+        return failed("sympathy_move", [],
+                      [f"best peer {max(up or [0]):+.1f}% not >= 2x the target's "
+                       f"{target15:+.1f}% 15m move"], {})
+    if (sum(up) / len(up)) <= 0:
+        return failed("sympathy_move", [], ["sector median not positive"], {})
+    score = 35.0 + min(20.0, max(up) - target15) + min(15.0, b.volx_of(5) * 3.0)
+    return passed("sympathy_move", score,
+                  [f"peer {max(up):+.1f}% vs +{target15:.1f}% 15m",
+                   f"sector median {sum(up) / len(up):+.1f}%"],
+                  {"peer_pct": max(up), "target_15m": target15})
+
+
+def short_squeeze_mechanics(b: Bundle) -> StrategyResult:
+    """Crowded short, heavy volume, no headline: the squeeze IS the cause (2.0 A).
+
+    Distinct from low_float_squeeze, which needs a thin float and a big move:
+    this fires on the crowd and the tape alone, before the float numbers
+    arrive, because a mechanical squeeze has no press release to wait for.
+    """
+    if b.news is None:
+        return insufficient("short_squeeze_mechanics", "news not fetched")
+    if _no_named_cause(b) is False:
+        return failed("short_squeeze_mechanics", [], ["a cause is named"], {})
+    if b.short_pct is None:
+        return insufficient("short_squeeze_mechanics", "no short data")
+    floor = getattr(b, "short_float_min", 8.0)
+    if b.short_pct < floor:
+        return failed("short_squeeze_mechanics", [],
+                      [f"short float {b.short_pct:.1f}% < {floor:.0f}%"],
+                      {"short_pct": b.short_pct})
+    volx = max(b.volx_of(5), b.volx_of(15))
+    if volx < 5.0:
+        return failed("short_squeeze_mechanics", [],
+                      [f"volx {volx:.1f}x < 5.0"], {"volx5": volx})
+    if b.spread_pct is None:
+        return insufficient("short_squeeze_mechanics", "spread unknown")
+    if b.spread_pct > MECHANISM_SPREAD_MAX_PCT:
+        return failed("short_squeeze_mechanics", [],
+                      [f"spread {b.spread_pct:.1f}% > {MECHANISM_SPREAD_MAX_PCT}%"],
+                      {"spread_pct": b.spread_pct})
+    score = 40.0 + min(25.0, b.short_pct) + min(15.0, (volx - 5.0) * 2.0)
+    return passed("short_squeeze_mechanics", score,
+                  [f"short float {b.short_pct:.1f}%", f"no headline, volx {volx:.1f}x",
+                   f"spread {b.spread_pct:.1f}%"],
+                  {"short_pct": b.short_pct, "volx5": volx})
 
 
 def sympathy_play(b: Bundle) -> StrategyResult:

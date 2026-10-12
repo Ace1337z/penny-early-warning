@@ -29,6 +29,18 @@ SOFT = "SOFT"
 DILUTION = "DILUTION"
 UNEXPLAINED = "UNEXPLAINED"
 
+# Spec 2.0 A: mechanism classes. A tape mechanism is what the pipeline names
+# when the news names nothing -- it is a label on the same evidence the
+# detectors read, not a cause -- but it still decays, because a
+# quiet-accumulation read from three hours ago is weaker evidence than a
+# three-minute-old one. Each decays faster than a HARD catalyst (180m): the
+# tape that proves a mechanism can reverse in minutes; an FDA approval cannot.
+MECHANISM_HALF_LIFE_MIN = {
+    "SILENT_ACCUMULATION": 60.0,
+    "SYMPATHY": 45.0,
+    "SQUEEZE": 90.0,
+}
+
 WEIGHTS = {HARD: 1.0, MEDIUM: 0.6, SOFT: 0.25, DILUTION: -1.0}
 
 # A cause must also be recent enough to plausibly have *caused* the move rather
@@ -159,6 +171,8 @@ def effective_weight(base_weight: float, cls: str, age_minutes: Optional[float],
     half = (half_life or HALF_LIFE_MIN)
     if cls == DILUTION or age_minutes is None or float(age_minutes) < 0:
         return float(base_weight)
+    if cls in MECHANISM_HALF_LIFE_MIN:
+        half = MECHANISM_HALF_LIFE_MIN
     hl = float(half.get(cls, 0) or 0)
     if hl <= 0:
         return float(base_weight)

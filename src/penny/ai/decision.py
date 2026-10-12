@@ -8,8 +8,12 @@ a way that changed the trade.
 
 What is kept is the part that helped: one reader, given one view of the setup,
 stating what they would do and why. The methodology lives in
-`prompts/methodology_v1.md` and is loaded rather than inlined, so it can be
+`prompts/methodology_v2.md` and is loaded rather than inlined, so it can be
 edited without touching the code and versioned on its own.
+
+Spec 2.0 makes the reader adversarial: the gate verdict is not in the facts, so
+the report leads with its own judgment (catalyst quality, strongest risk) rather
+than echoing the gate, and every block carries a `SOURCE:` line.
 
 Validation is strict and rejects rather than repairs. A report that claims
 ENTER on a gate that did not pass is a contradiction, and quietly fixing it
@@ -27,13 +31,30 @@ from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
-PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "methodology_v1.md"
+log = logging.getLogger(__name__)
+
+PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "methodology_v2.md"
 
 VERDICTS = ("ENTER", "WAIT", "PASS")
 RATINGS = ("STRONG", "MODERATE", "WEAK", "AVOID")
 DIRECTIONS = ("rising", "flat", "fading")
 
-REQUIRED = ("key_findings", "rating", "trends", "entry_points", "exit_points", "verdict")
+# Spec 2.0 B: the four fields, in the order the prompt demands them. VERDICT is
+# downstream of the three judgments above it -- a model that cannot name its
+# risk and its catalyst quality has nothing to add, and the honest answer is
+# CATALYST_QUALITY: unknown / STRONGEST_RISK: none identified, not a confident
+# echo of whatever the gate already said.
+CATALYST_QUALITIES = ("dilution", "promotional", "real", "mechanical", "unknown")
+HONEST_NULL = "none identified"
+REQUIRED = ("catalyst_quality", "strongest_risk", "verdict")
+
+# The terms a report uses when it is restating the gate rather than judging the
+# setup. One match in STRONGEST_RISK (the field that is supposed to carry the
+# model's own judgment) is enough: "the gate score is above the tier threshold"
+# adds nothing the reader did not already read in the STRATEGY block.
+_ECHO = re.compile(r"\b(tier|gate score|gate_score|detector|strategy gate|blocked_by)\b",
+                   re.I)
+NULL_RISK = "none identified"
 
 
 def load_methodology() -> str:
@@ -49,8 +70,19 @@ class Decision:
     """A validated decision report, or the reason it was rejected."""
 
     verdict: str = "PASS"
-    rating: str = "WEAK"
+    rating: str = ""
     confidence: float = 0.0
+    # Spec 2.0 B: the adversarial judgment fields.
+    catalyst_quality: str = ""
+    strongest_risk: str = ""
+    invalidation_beyond_rules: str = ""
+    # The honest-null case: quality unknown, no risk identified. Accepted, but
+    # rendered as "AI: no additional information beyond the gate".
+    null: bool = False
+    # Spec 2.0 C: provenance. "ai" = a valid additive report; "ai_rejected" =
+    # the model answered but its report failed validation or added nothing;
+    # "rules" = the call never happened or failed.
+    source: str = "rules"
     key_findings: list[str] = field(default_factory=list)
     direction: str = "flat"
     momentum: str = ""
@@ -111,12 +143,15 @@ def parse_report(text: str) -> dict:
     return {}
 
 
-def validate(data: dict, *, gate_passed: Optional[bool] = None) -> Decision:
-    """Check the report against the schema and the long-only rules.
+def validate(data: dict, *, gate_passed: Optional[bool] = None,
+             min_additive: bool = True) -> Decision:
+    """Check the report against the v2 schema and the long-only rules.
 
     Returns a Decision whose `.error` is set when the report is rejected. Every
     rejection is a reason the report contradicts the setup, not a formatting
-    nit, so they are surfaced rather than patched.
+    nit, so they are surfaced rather than patched. Rejections carry
+    `source="ai_rejected"`: the model answered, its answer just did not earn a
+    place over the rules.
     """
     d = Decision()
     if not isinstance(data, dict) or not data:
@@ -128,49 +163,14 @@ def validate(data: dict, *, gate_passed: Optional[bool] = None) -> Decision:
         d.error = f"missing required field(s): {', '.join(missing)}"
         return d
 
-    findings = data.get("key_findings")
-    if not isinstance(findings, list) or len(findings) > 4:
-        d.error = "key_findings must be a list of at most 4 items"
+    quality = str(data.get("catalyst_quality", "")).strip().lower()
+    if quality not in CATALYST_QUALITIES:
+        d.error = (f"catalyst_quality must be one of {', '.join(CATALYST_QUALITIES)}")
         return d
 
-    rating = data.get("rating") or {}
-    grade = str(rating.get("grade", "")).upper()
-    if grade not in RATINGS:
-        d.error = f"rating.grade must be one of {', '.join(RATINGS)}"
-        return d
-    try:
-        confidence = float(rating.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        d.error = "rating.confidence must be a number"
-        return d
-    if not 0.0 <= confidence <= 1.0:
-        d.error = "rating.confidence must be within 0..1"
-        return d
-
-    trends = data.get("trends") or {}
-    direction = str(trends.get("direction", "")).lower()
-    if direction not in DIRECTIONS:
-        d.error = f"trends.direction must be one of {', '.join(DIRECTIONS)}"
-        return d
-
-    entries = data.get("entry_points")
-    if not isinstance(entries, list) or not entries:
-        d.error = "entry_points must list at least one LONG zone"
-        return d
-    if len(entries) > 2:
-        entries = entries[:2]
-    # Long-only, enforced on the payload rather than trusted from the prompt.
-    for e in entries:
-        blob = json.dumps(e).lower()
-        if any(w in blob for w in ("short entry", "sell short", "go short", "short below",
-                                   "short above", "short zone", "fade", "going short")):
-            d.error = "entry_points contains a short or fade zone; this is long-only"
-            return d
-
-    exits = data.get("exit_points") or {}
-    stop = exits.get("stop")
-    if not stop:
-        d.error = "exit_points.stop is required: an entry without a stop is not a plan"
+    risk = str(data.get("strongest_risk") or "").strip()
+    if not risk:
+        d.error = "strongest_risk must be a sentence or 'none identified'"
         return d
 
     verdict = str(data.get("verdict", "")).upper()
@@ -178,75 +178,143 @@ def validate(data: dict, *, gate_passed: Optional[bool] = None) -> Decision:
         d.error = f"verdict must be one of {', '.join(VERDICTS)}"
         return d
 
-    rubrics = data.get("rubrics_applied") or []
-    if not isinstance(rubrics, list):
-        rubrics = []
-    if verdict == "ENTER" and not rubrics:
-        d.error = "verdict=ENTER requires at least one rubric_applied"
+    # Long-only, enforced on the payload rather than trusted from the prompt.
+    # Trade instructions only: a risk note that says the move "looks like a
+    # fade" is commentary; "sell short here" is a trade and is rejected.
+    blob = json.dumps(data).lower()
+    if any(w in blob for w in ("short entry", "sell short", "go short", "short below",
+                               "short above", "short zone", "going short", "shorting")):
+        d.error = "report proposes a short; this is long-only"
         return d
 
-    reported_gate = (data.get("gate") or {}).get("passed")
-    effective_gate = reported_gate if reported_gate is not None else gate_passed
-    if verdict == "ENTER" and effective_gate is False:
+    # The honest null (Spec 2.0 B): no risk the model can name, no judgment on
+    # the catalyst. Accepted -- it is informative, and exactly what a pure tape
+    # move deserves -- but an ENTER on top of it claims the model has something
+    # to add while saying it has nothing.
+    d.catalyst_quality = quality
+    d.strongest_risk = risk
+    d.invalidation_beyond_rules = str(data.get("invalidation_beyond_rules") or "").strip()
+    d.null = (risk.lower() == NULL_RISK and quality == "unknown")
+    if d.null and verdict == "ENTER":
+        d.error = ("verdict=ENTER with STRONGEST_RISK 'none identified' and "
+                   "CATALYST_QUALITY unknown: nothing to add, and it did not")
+        return d
+
+    # Spec 2.0 B: a report that restates the gate without adding a judgment is
+    # non-additive. Acceptance criterion 4.
+    if min_additive:
+        echo = _ECHO.search(risk)
+        if echo:
+            d.error = (f"non-additive report: STRONGEST_RISK restates the gate "
+                       f"({echo.group(0)}) instead of a setup-specific risk")
+            return d
+
+    # Spec 2.0 B: an ENTER can never survive on a symbol the gate blocked. The
+    # model is not told the verdict, so this is enforced from what the caller
+    # knows, not from an echo in the payload.
+    if verdict == "ENTER" and gate_passed is False:
         d.error = "verdict=ENTER but the strategy gate did not pass"
         return d
 
-    if verdict == "ENTER" and not entries:
-        d.error = "verdict=ENTER requires an entry zone"
-        return d
+    # Optional legacy fields, honoured when a model still sends them.
+    findings = data.get("key_findings")
+    if findings is not None:
+        if not isinstance(findings, list) or len(findings) > 4:
+            d.error = "key_findings must be a list of at most 4 items"
+            return d
+        d.key_findings = [str(f) for f in findings][:4]
+
+    rating = data.get("rating")
+    if isinstance(rating, dict) and rating:
+        grade = str(rating.get("grade", "")).upper()
+        if grade and grade not in RATINGS:
+            d.error = f"rating.grade must be one of {', '.join(RATINGS)}"
+            return d
+        d.rating = grade
+        try:
+            d.confidence = float(rating.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            d.error = "rating.confidence must be a number"
+            return d
+        if not 0.0 <= d.confidence <= 1.0:
+            d.error = "rating.confidence must be within 0..1"
+            return d
 
     d.verdict = verdict
-    d.rating = grade
-    d.confidence = confidence
-    d.key_findings = [str(f) for f in findings][:4]
-    d.direction = direction
-    d.momentum = str(trends.get("momentum", ""))
-    d.entries = [e if isinstance(e, dict) else {"zone": str(e)} for e in entries]
-    d.stop = stop
-    d.t1 = exits.get("t1")
-    d.t2 = exits.get("t2")
-    d.exit_note = str(exits.get("note", ""))
+    d.catalyst_quality = quality
+    d.strongest_risk = risk
     d.verdict_reason = str(data.get("verdict_reason", ""))
-    d.rubrics = [str(r) for r in rubrics]
     d.risk_notes = str(data.get("risk_notes", ""))
-    d.confidence_calibrated = confidence
+    d.key_findings = d.key_findings or [d.strongest_risk]
+    # Legacy fields stay optional so a model that keeps the old shape is still
+    # readable, but none of them gate the verdict any more: levels belong to
+    # the rules plan, not to a model that was never given the gate.
+    entries = data.get("entry_points")
+    if isinstance(entries, list) and entries:
+        d.entries = [e if isinstance(e, dict) else {"zone": str(e)} for e in entries][:2]
+    exits = data.get("exit_points") or {}
+    if isinstance(exits, dict):
+        d.stop = exits.get("stop")
+        d.t1 = exits.get("t1")
+        d.t2 = exits.get("t2")
+        d.exit_note = str(exits.get("note", ""))
+    trends = data.get("trends") or {}
+    if isinstance(trends, dict):
+        d.direction = str(trends.get("direction", "flat"))
+        d.momentum = str(trends.get("momentum", ""))
+    d.rubrics = [str(r) for r in (data.get("rubrics_applied") or [])]
+    d.confidence_calibrated = d.confidence
     return d
 
 
 def render(d: Decision) -> str:
     """The DECISION block as it appears in the alert.
 
-    Verdict first, because that is what the reader is looking for. Findings next,
-    because they are the evidence for it. The rest is reference.
+    Spec 2.0 B: the adversarial fields lead, in the prompt's order, and the
+    verdict is downstream of them. Every block ends with its provenance line
+    (Spec 2.0 C), so the reader always knows who is talking.
     """
     if not d.ok:
         return ""
-    shown = d.confidence_calibrated or d.confidence
-    lines = [
-        f"VERDICT: {d.verdict}  ({d.rating}, confidence {shown:.2f})",
-    ]
-    if d.verdict_reason:
-        lines.append(f"REASON: {d.verdict_reason}")
-    for f in d.key_findings:
-        lines.append(f"- {f}")
-    lines.append(f"TREND: {d.direction} - {d.momentum}" if d.momentum
-                 else f"TREND: {d.direction}")
-    for i, e in enumerate(d.entries, 1):
-        zone = e.get("zone", "?")
-        note = e.get("note")
-        lines.append(f"ENTRY {i}: {zone}" + (f"  ({note})" if note else ""))
-    exits = [f"STOP: {d.stop}"]
-    if d.t1:
-        exits.append(f"T1: {d.t1}")
-    if d.t2:
-        exits.append(f"T2: {d.t2}")
-    lines.append(" | ".join(exits))
-    if d.exit_note:
-        lines.append(f"EXIT NOTE: {d.exit_note}")
-    if d.rubrics:
-        lines.append(f"APPLIED: {', '.join(d.rubrics[:3])}")
-    if d.risk_notes:
-        lines.append(f"RISK: {d.risk_notes}")
+    lines = [f"CATALYST QUALITY: {d.catalyst_quality}"]
+    if d.null:
+        lines.append(f"STRONGEST RISK: {d.strongest_risk}")
+        lines.append("AI: no additional information beyond the gate")
+    else:
+        lines.append(f"STRONGEST RISK: {d.strongest_risk}")
+        if d.invalidation_beyond_rules:
+            lines.append(f"INVALIDATION BEYOND RULES: {d.invalidation_beyond_rules}")
+        shown = d.confidence_calibrated or d.confidence
+        head = f"VERDICT: {d.verdict}"
+        tail = []
+        if d.rating:
+            tail.append(d.rating)
+        if shown:
+            tail.append(f"confidence {shown:.2f}")
+        if tail:
+            head += f"  ({', '.join(tail)})"
+        lines.append(head)
+        if d.verdict_reason:
+            lines.append(f"REASON: {d.verdict_reason}")
+        for f in d.key_findings:
+            lines.append(f"- {f}")
+        if d.momentum:
+            lines.append(f"TREND: {d.direction} - {d.momentum}")
+        for i, e in enumerate(d.entries, 1):
+            zone = e.get("zone", "?")
+            note = e.get("note")
+            lines.append(f"ENTRY {i}: {zone}" + (f"  ({note})" if note else ""))
+        exits = []
+        if d.stop:
+            exits.append(f"STOP: {d.stop}")
+        if d.t1:
+            exits.append(f"T1: {d.t1}")
+        if d.t2:
+            exits.append(f"T2: {d.t2}")
+        if exits:
+            lines.append(" | ".join(exits))
+        if d.exit_note:
+            lines.append(f"EXIT NOTE: {d.exit_note}")
     # The three context lines the spec adds to the AI DECISION block. They are
     # appended after the model's own output because they are facts, not
     # judgements: a sampled analog hit rate and an exit-time estimate are the
@@ -255,6 +323,8 @@ def render(d: Decision) -> str:
     for line in getattr(d, "context_lines", ()) or ():
         if line:
             lines.append(line)
+    # Spec 2.0 C: every decision block ends with a provenance line.
+    lines.append("SOURCE: ai")
     return "\n".join(lines)
 
 
@@ -318,14 +388,18 @@ def _apply_calibration(d: Decision, facts: dict) -> None:
 
 
 def decide(gateway, facts: dict, *, model: str = "", deadline: Optional[float] = None,
-           max_tokens: int = 700) -> Decision:
+           max_tokens: int = 700, gate_passed: Optional[bool] = None,
+           min_additive: bool = True) -> Decision:
     """Make the one call and validate what comes back.
 
-    A rejected report degrades to PASS rather than to ENTER. That is the safe
-    direction: the setup may well be good, but a report that contradicts its own
-    gate has not earned an entry recommendation.
+    Spec 2.0 B: the model is never handed the gate's verdict, so it cannot echo
+    it; the ENTER-on-a-blocked-gate contradiction is caught here, server-side,
+    from the caller's own knowledge. Rejections are honest about their kind:
+    a failed call degrades to the rules (source="rules"), a rejected report
+    degrades with source="ai_rejected" and its reason -- never silently to PASS.
     """
     d = Decision(model=model)
+    d.source = "rules"
     if gateway is None or not getattr(gateway, "configured", False):
         d.error = "ai: not configured"
         d.verdict = "PASS"
@@ -339,18 +413,98 @@ def decide(gateway, facts: dict, *, model: str = "", deadline: Optional[float] =
     d.latency_ms = result.latency_ms
     if not result.ok:
         d.error = result.error or "ai: call failed"
+        d.source = "rules"
         return d
 
-    parsed = validate(parse_report(result.text),
-                      gate_passed=(facts.get("gate") or {}).get("passed"))
-    # A model that does not echo the gate verdict gets the real one applied to it,
-    # so an ENTER can never survive on a symbol the gate blocked.
-    if parsed.ok and parsed.verdict == "ENTER" and not gate_ok(facts):
-        parsed.error = "verdict=ENTER but the strategy gate did not pass"
+    parsed = validate(parse_report(result.text), gate_passed=gate_passed)
     parsed.model = d.model
     parsed.latency_ms = d.latency_ms
+    if not parsed.ok:
+        parsed.source = "ai_rejected"
+        log.info("decision rejected for %s: %s", facts.get("symbol"), parsed.error)
+        return parsed
+    # An ENTER can never survive on a symbol the gate blocked, regardless of
+    # what the model was told: the gate is not in the facts, so this check is
+    # server-side on purpose.
+    if parsed.verdict == "ENTER" and gate_passed is False:
+        parsed.error = "verdict=ENTER but the strategy gate did not pass"
     _apply_calibration(parsed, facts)
     if not parsed.ok:
-        parsed.verdict = "PASS"
+        parsed.source = "ai_rejected"
         log.info("decision rejected for %s: %s", facts.get("symbol"), parsed.error)
+        return parsed
+    parsed.source = "ai"
     return parsed
+
+
+def render_rules_fallback(m, gate, bundle, *, source: str, reason: str,
+                          cfg=None) -> str:
+    """The rules-only DECISION block (Spec 2.0 C).
+
+    The pipeline always has a view, so an unavailable or rejected AI call never
+    leaves a hole in the message. The verdict is the gate's own -- it already
+    passed the setup, so saying so is not a new opinion -- and the levels come
+    from the plan the rules already computed.
+    """
+    passed = bool(gate is not None and getattr(gate, "passed", False))
+    score = float(getattr(gate, "gate_score", 0.0) or 0.0)
+    verdict = "WAIT"
+    if passed and (cfg is None or cfg.bool("RULES_FALLBACK_VERDICT", True)):
+        verdict = "ENTER"
+    rating = "STRONG" if score >= 75 else ("MODERATE" if score >= 55 else "WEAK")
+
+    bits = []
+    if passed:
+        bits.append("gate pass")
+    elif getattr(gate, "blocked_by", None):
+        bits.append(f"gate blocked: {gate.blocked_by}")
+    reality = next((r for r in (getattr(gate, "strategies", None) or [])
+                    if r.name == "spread_liquidity"), None)
+    if reality is not None and reality.verdict == "PASS":
+        bits.append("reality gate pass")
+    mechanism = next((r.name for r in (getattr(gate, "strategies", None) or [])
+                      if getattr(r, "verdict", "") == "PASS"
+                      and r.name in ("silent_accumulation", "sympathy_move",
+                                     "short_squeeze_mechanics")), None)
+    label = mechanism or _cause_label(bundle)
+    if label:
+        bits.append(f"mechanism: {label}" if mechanism else f"cause: {label}")
+
+    plan = getattr(bundle, "plan", None) if bundle is not None else None
+    if plan is not None and getattr(plan, "stop", None):
+        levels = f"stop {plan.stop:.2f}"
+        if getattr(plan, "target1", None):
+            levels += f" | T1 {plan.target1:.2f}"
+        if getattr(plan, "target2", None):
+            levels += f" | T2 {plan.target2:.2f}"
+        levels = f"LEVELS: {levels}"
+    else:
+        levels = "LEVELS: none computed"
+
+    lines = [
+        "\u2500\u2500 DECISION (rules-only) \u2500",
+        f"VERDICT: {verdict}",
+        f"RATING: {rating}",
+        "BASIS: " + (" + ".join(bits) if bits else "evidence incomplete"),
+        levels,
+        f"SOURCE: {source}",
+        "NOTE: no adversarial check \u2014 treat as unverified",
+    ]
+    if source == "ai_rejected" and reason:
+        lines.append(f"REASON: {reason}")
+    return "\n".join(lines)
+
+
+def _cause_label(bundle) -> Optional[str]:
+    """A short cause label for the rules-only BASIS line, or None."""
+    if bundle is None or getattr(bundle, "news", None) is None:
+        return None
+    try:
+        from ..strategies.news_cause import rank_catalysts, extract_cause
+        _, ranked, _ = rank_catalysts(bundle)
+        cause = extract_cause(ranked, bundle)
+        if cause and cause.kind != "UNEXPLAINED":
+            return f"cause: {cause.text[:60]}"
+    except Exception:  # noqa: BLE001
+        return None
+    return None

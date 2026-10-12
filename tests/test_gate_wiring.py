@@ -10,8 +10,8 @@ rejection raised too.
 
 Each of those is pinned here, along with the two rules that keep a mandatory
 gate safe: an unevaluable gate fails closed rather than open, and a verdict the
-poll loop cannot reach (no candles, no news) does not veto -- while the tier bar
-keeps filtering, because it is all that can decide at that point.
+poll loop cannot reach (no candles, no news) does not veto -- the enriched pass
+decides, ahead of Alert 1, under Spec 1.1.
 """
 
 from __future__ import annotations
@@ -218,27 +218,137 @@ def test_a_passing_gate_never_vetoes(cfg, tmp_path):
 
 # -- what still filters while the gate is partial ---------------------------
 
-def test_the_tier_bar_still_filters_when_the_gate_is_mandatory(cfg, tmp_path):
-    """With the gate on, waiving the tier bar left the alert path unfiltered."""
+def test_the_tier_bar_is_waived_when_the_gate_is_mandatory(cfg, tmp_path):
+    """Spec 1.1: the gate is the bar, and it decides on enriched data before
+    Alert 1, so the 15m/60m windows leave the path as designed."""
     cfg.set("STRATEGY_GATE", "1")
     engine = _engine(cfg, tmp_path)
 
     quiet = Metrics(symbol="QUIET", ts=time.time(), price=1.10, session="regular")
     quiet.tier = TIER_NONE
-    loud = Metrics(symbol="LOUD", ts=time.time(), price=1.10, session="regular")
-    loud.tier = TIER_CONFIRMED
 
-    assert engine._reached_alert_bar(quiet, "regular", fast=False) is False
-    assert engine._reached_alert_bar(loud, "regular", fast=False) is True
+    assert engine._reached_alert_bar(quiet, "regular", fast=False) is True
 
 
-def test_the_tier_bar_unaffected_by_the_advisory_gate(cfg, tmp_path):
-    """The flag must not change who reaches the gate when it is only a report."""
+def test_the_tier_bar_holds_when_the_gate_is_only_a_report(cfg, tmp_path):
+    """With the gate off, the tier path decides and the fallbacks stay weak."""
     engine = _engine(cfg, tmp_path)
     quiet = Metrics(symbol="QUIET", ts=time.time(), price=1.10, session="regular")
     quiet.tier = TIER_NONE
 
     assert engine._reached_alert_bar(quiet, "regular", fast=False) is False
+
+
+# -- Spec 1.1: the gate decides with enrichment ahead of Alert 1 -------------
+
+def _passing_metrics(symbol="ABCD"):
+    """The numbers the simulation proves pass the enriched gate."""
+    m = Metrics(symbol=symbol, ts=time.time(), price=1.42, session="regular")
+    m.prev_close = 1.09
+    m.pct_vs_close = 0.31
+    m.cum_volume = 9_000_000
+    m.day_high = 1.44
+    m.rise = {3: 0.012, 5: 0.035, 15: 0.09}
+    m.volx = {3: 9.0, 5: 12.4, 15: 6.0}
+    m.dollar_vol = {15: 210_000.0}
+    m.vwap = 1.31
+    m.minutes_since_low = 38.0
+    m.float_shares = 18_500_000
+    m.age_seconds = 600.0
+    return m
+
+
+def _passing_enr(symbol="ABCD"):
+    """The catalyst the simulation pairs with those numbers."""
+    enr = Enrichment(symbol=symbol)
+    enr.news = [{"title": "Acme Corp awarded $12M contract",
+                 "source": "Benzinga", "url": "u", "age": "2h"}]
+    enr.float_shares = 18_500_000
+    enr.market_cap = 26_000_000
+    return enr
+
+
+def test_a_refused_setup_costs_no_alert(cfg, tmp_path, monkeypatch):
+    """Under the gate the decision happens before Alert 1: a refused setup
+    sends nothing, tracks nothing, and leaves the refusal on record."""
+    cfg.set("STRATEGY_GATE", "1")
+    engine = _engine(cfg, tmp_path)
+    m = _real_metrics(cfg)
+    gate, _ = run_gate(m, enr=None, cfg=cfg, now=to_et())
+    monkeypatch.setattr(engine, "_alert_detail_worker", lambda *a, **k: None)
+    # Enrichment finds no news, so the catalyst cannot be named: refused.
+    monkeypatch.setattr(engine.enricher, "enrich",
+                        lambda *a, **k: Enrichment(symbol=m.symbol))
+
+    fired = engine._fire_alert(m, "regular", {}, fast=True, gate=gate, bundle=None)
+
+    assert fired is False
+    assert engine.telegram.outbox == []
+    assert engine.db.query("SELECT * FROM alerts") == []
+    assert engine.db.query("SELECT * FROM alert_tracking") == []
+    assert m.symbol in engine._gate_rejects
+
+
+def test_a_passing_enriched_gate_fires_the_alert(cfg, tmp_path, monkeypatch):
+    """The same fetch the detail thread used to pay for, paid once, ahead of
+    Alert 1 -- and the STRATEGY block on Alert 1 is the enriched verdict."""
+    cfg.set("STRATEGY_GATE", "1")
+    engine = _engine(cfg, tmp_path)
+    m = _passing_metrics()
+    gate, _ = run_gate(m, enr=None, cfg=cfg, now=to_et())
+    monkeypatch.setattr(engine.enricher, "enrich",
+                        lambda *a, **k: _passing_enr(m.symbol))
+    monkeypatch.setattr(engine, "_alert_detail_worker", lambda *a, **k: None)
+
+    fired = engine._fire_alert(m, "regular", {}, fast=True, gate=gate, bundle=None)
+
+    assert fired is True
+    text = "\n".join(engine.telegram.outbox)
+    assert "ABCD" in text
+    assert "STRATEGY" in text
+    assert len(engine.db.query("SELECT * FROM alerts")) == 1
+    assert len(engine.db.query("SELECT * FROM alert_tracking")) == 1
+
+
+def test_a_refused_symbol_is_not_re_enriched_inside_the_cooldown(cfg, tmp_path,
+                                                                 monkeypatch):
+    """A refusing setup stays a candidate every cycle it stays a mover; without
+    a cooldown the gate would re-pay the same fetches on every poll."""
+    cfg.set("STRATEGY_GATE", "1")
+    engine = _engine(cfg, tmp_path)
+    m = _real_metrics(cfg)
+    gate, _ = run_gate(m, enr=None, cfg=cfg, now=to_et())
+    calls = []
+
+    def fake_enrich(symbol, quote, metrics=None):
+        calls.append(symbol)
+        return Enrichment(symbol=symbol)      # no news: the gate refuses
+
+    monkeypatch.setattr(engine.enricher, "enrich", fake_enrich)
+    monkeypatch.setattr(engine, "_alert_detail_worker", lambda *a, **k: None)
+
+    assert engine._fire_alert(m, "regular", {}, fast=True, gate=gate,
+                              bundle=None) is False
+    assert engine._fire_alert(m, "regular", {}, fast=True, gate=gate,
+                              bundle=None) is False
+    assert calls == [m.symbol]
+
+
+def test_the_advisory_gate_never_enriches_ahead_of_the_alert(cfg, tmp_path,
+                                                             monkeypatch):
+    """With STRATEGY_GATE=0 the detail thread keeps paying for enrichment."""
+    engine = _engine(cfg, tmp_path)
+    monkeypatch.setattr(engine, "_alert_detail_worker", lambda *a, **k: None)
+
+    def boom(*a, **k):
+        raise AssertionError("no enrichment belongs ahead of Alert 1 here")
+
+    monkeypatch.setattr(engine.enricher, "enrich", boom)
+    m = _real_metrics(cfg)
+
+    assert engine._fire_alert(m, "regular", {}, fast=True, gate=None,
+                              bundle=None) is True
+    assert "ABCD" in "\n".join(engine.telegram.outbox)
 
 
 def test_status_says_when_the_gate_dropped_an_alert(cfg, tmp_path):
@@ -296,3 +406,7 @@ def test_a_full_check_replies_with_the_analysis_not_an_error(cfg, tmp_path):
     assert "ABCD" in sent
     # The gate block the bug erased from the report.
     assert "STRATEGY" in sent
+    # And the AI block degrades to the rules-only fallback, stating its
+    # provenance (Spec 2.0 C) -- never a placeholder, never a silent PASS.
+    assert "DECISION (rules-only)" in sent, sent
+    assert "SOURCE: rules" in sent, sent

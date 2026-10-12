@@ -154,6 +154,8 @@ class Tracker:
     def write_decision(self, symbol: str, *, rating: Optional[str] = None,
                        verdict: Optional[str] = None,
                        findings: Optional[list] = None,
+                       source: Optional[str] = None,
+                       cause_present: Optional[bool] = None,
                        day: Optional[str] = None) -> None:
         """Record what the one AI call said about this alert.
 
@@ -162,7 +164,10 @@ class Tracker:
         section would show claimed 0.00 against actual -- a section that is
         true only in the sense that it is empty. Findings are joined into one
         cell because the reader of a post-mortem wants the sentence, not a
-        table.
+        table. Spec 2.0 adds the provenance (`ai_source`) and whether a cause
+        was named (`cause_present`), because a decision that came from the
+        rules alone has a hit rate too, and the calibration has to be able to
+        split its buckets by cause.
         """
         cols: dict = {}
         if rating:
@@ -171,6 +176,10 @@ class Tracker:
             cols["ai_verdict"] = str(verdict)
         if findings:
             cols["ai_key_findings"] = " | ".join(str(f) for f in findings)[:400]
+        if source:
+            cols["ai_source"] = str(source)
+        if cause_present is not None:
+            cols["cause_present"] = 1 if cause_present else 0
         if not cols:
             return
         day = day or to_et().strftime("%Y-%m-%d")
@@ -451,4 +460,41 @@ def stats_report(tracker: Tracker, days: int = 30) -> str:
     lines.append("")
     lines.append(f"all: avg {pct(safe_div(sum(all_closes), len(all_closes)) * 100)} | "
                  f"win {safe_div(sum(1 for c in all_closes if c > 0), len(all_closes)) * 100:.0f}%")
+
+    # Spec 2.0 D: did the AI earn its call? Every closed alert sits in exactly
+    # one provenance bucket, and the hit rates answer the only question that
+    # matters about the model's place in the pipeline. Measured, not acted on.
+    by_source: dict[str, list[dict]] = {}
+    for r in rows:
+        by_source.setdefault(_source_bucket(r), []).append(r)
+    lines.append("")
+    lines.append("BY SOURCE")
+    for name in ("agreement", "disagreement", "rules_only", "ai_rejected"):
+        group = by_source.get(name)
+        if not group:
+            continue
+        closes = [x.get("close_pct") or 0 for x in group]
+        avg = safe_div(sum(closes), len(group))
+        hit = safe_div(sum(1 for c in closes if c > 0), len(closes))
+        lines.append(f"{name:<14} n={len(group):>3} | avg {pct(avg * 100):>7} | "
+                     f"win {hit * 100:>3.0f}%")
     return "\n".join(lines)
+
+
+def _source_bucket(r: dict) -> str:
+    """The provenance bucket for one closed alert (Spec 2.0 D).
+
+    agreement    gate pass + the AI said ENTER
+    disagreement gate pass + the AI said WAIT/PASS
+    rules_only   the block was built from the rules
+    ai_rejected  the model answered but its report was refused
+    """
+    src = str(r.get("ai_source") or "").lower()
+    verdict = str(r.get("ai_verdict") or "").upper()
+    if src == "ai" and verdict == "ENTER":
+        return "agreement"
+    if src == "ai" and verdict in ("WAIT", "PASS"):
+        return "disagreement"
+    if src == "ai_rejected":
+        return "ai_rejected"
+    return "rules_only"

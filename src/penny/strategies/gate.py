@@ -28,6 +28,8 @@ from . import detectors, primitives, spread_liquidity
 from .base import Bundle, Detector, StrategyGate, StrategyResult
 
 # Name -> detector. Order is cosmetic; the gate scores, not the sequence.
+# The last three are the Spec 2.0 mechanisms: they pass only when NO cause was
+# named, which is what lets a real tape setup clear the gate with CAUSE_REQUIRED=0.
 PRIMARY: dict[str, Detector] = {
     "first_green_day": primitives.first_green_day,
     "low_float_squeeze": primitives.low_float_squeeze,
@@ -41,6 +43,12 @@ PRIMARY: dict[str, Detector] = {
     "day3_surge": detectors.day3_surge,
     "sympathy_play": detectors.sympathy_play,
     "failed_breakout": primitives.failed_breakout,
+    # Tape mechanisms: a cause is a label, not a precondition. These pass only
+    # on a no-headline tape (see detectors._no_named_cause), so they complement
+    # catalyst_volume instead of competing with it.
+    "silent_accumulation": detectors.silent_accumulation,
+    "sympathy_move": detectors.sympathy_move,
+    "short_squeeze_mechanics": detectors.short_squeeze_mechanics,
 }
 
 TRIGGERS: dict[str, Detector] = {
@@ -105,7 +113,12 @@ def run_detectors(b: Bundle) -> list[StrategyResult]:
     return results
 
 
-def evaluate_gate(b: Bundle, *, min_score: float = 55.0, require_catalyst: bool = True,
+def evaluate_gate(b: Bundle, *, min_score: float = 55.0,
+                  # Spec 2.0 A: cause is a label, not a gate -- the default no
+                  # longer refuses alerts without a named catalyst (dilution
+                  # and DATA_CONFLICT still block). Config can restore the old
+                  # bar with CAUSE_REQUIRED=1.
+                  require_catalyst: bool = False,
                   time_filter: bool = True,
                   spread_max_pct: float = 1.5, min_dollar_vol_15m: float = 300000.0,
                   min_avg_trade_size: float = 200.0, min_trades_15m: int = 30,
