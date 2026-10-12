@@ -12,7 +12,7 @@ from typing import Any, Iterable, Iterator, Optional
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 STATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS alert_tracking (
     gate_score REAL,
     ai_rating TEXT,
     ai_verdict TEXT,
+    ai_key_findings TEXT,
     plan_entry_low REAL,
     plan_entry_high REAL,
     plan_stop REAL,
@@ -183,6 +184,31 @@ CREATE TABLE IF NOT EXISTS alert_tracking (
     hit_stop INTEGER DEFAULT 0,
     hit_t1 INTEGER DEFAULT 0,
     hit_t2 INTEGER DEFAULT 0,
+    -- Feature 1: the quote reality captured at the alert, kept so a later
+    -- review can tell a move that failed from one that was never fillable.
+    bid_at_alert REAL,
+    ask_at_alert REAL,
+    spread_pct_at_alert REAL,
+    dollar_vol_15m_at_alert REAL,
+    avg_trade_size_at_alert REAL,
+    -- Feature 6: the analog sample behind the ANALOGS line, if there was one.
+    analog_t1_hit_rate REAL,
+    analog_stop_hit_rate REAL,
+    analog_median_peak_pct REAL,
+    -- Feature 9 / 10: sector context and how fast the position could be out.
+    sector_at_alert TEXT,
+    sector_hot INTEGER,
+    exit_liq_2k_seconds REAL,
+    -- Feature 4: invalidation. `aborted` is a terminal status, distinct from
+    -- `closed`, so an invalidated setup is still reported and still graded.
+    aborted INTEGER DEFAULT 0,
+    abort_ts REAL,
+    abort_reason TEXT,
+    -- Feature 5: the AI's confidence after the historical clamp, and whether
+    -- the clamp fired. The raw number is in ai_calls; this is what was shown.
+    ai_confidence_calibrated REAL,
+    -- Feature 14: the post-mortem paragraph for a losing alert.
+    postmortem_text TEXT,
     status TEXT NOT NULL DEFAULT 'open',
     UNIQUE(symbol, day)
 );
@@ -234,6 +260,40 @@ CREATE TABLE IF NOT EXISTS events (
 """
 
 
+def _declared_columns(schema: str) -> dict:
+    """table -> [(column, definition)] as SQLite itself parses the schema.
+
+    Run against a scratch in-memory database rather than a regex: the schema has
+    `--` comments that contain commas, and a hand parser gets that wrong in
+    ways that are invisible until a column goes missing on a live database.
+    SQLite has already parsed it correctly by the time this returns.
+    """
+    out: dict = {}
+    scratch = sqlite3.connect(":memory:")
+    try:
+        scratch.executescript(schema)
+        tables = [r[0] for r in scratch.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'").fetchall()]
+        for table in tables:
+            cols = []
+            for row in scratch.execute("PRAGMA table_info(%s)" % table).fetchall():
+                name = row[1]
+                ctype = (row[2] or "").strip()
+                default = row[4]
+                # NOT NULL is deliberately dropped: SQLite refuses to add a NOT
+                # NULL column without a default to a table that has rows, and
+                # every added column here is genuinely optional.
+                definition = ctype + (" DEFAULT %s" % default if default is not None else "")
+                cols.append((name, definition.strip()))
+            out[table] = cols
+    except sqlite3.Error as exc:  # noqa: BLE001
+        log.warning("could not read declared schema: %s", exc)
+    finally:
+        scratch.close()
+    return out
+
+
 class Database:
     """Thread-safe-ish SQLite wrapper (one connection per thread, WAL mode)."""
 
@@ -266,12 +326,38 @@ class Database:
             if self._schema:
                 conn = self._conn()
                 conn.executescript(self._schema)
+                self._ensure_columns(conn)
                 cur = conn.execute("SELECT COUNT(*) AS c FROM schema_version")
                 if cur.fetchone()["c"] == 0:
                     conn.execute("INSERT INTO schema_version(version) VALUES (?)",
                                  (SCHEMA_VERSION,))
                 conn.commit()
             self._initialized = True
+
+    def _ensure_columns(self, conn: sqlite3.Connection) -> None:
+        """Add any column the current schema declares and the database lacks.
+
+        SQLite has no `ADD COLUMN IF NOT EXISTS`, so each table is inspected
+        first. A column that already exists is skipped, which is the normal path
+        on a fresh database: re-running this must be harmless, because it runs on
+        every open.
+        """
+        for table, cols in _declared_columns(self._schema).items():
+            try:
+                have = {r[1] for r in conn.execute(
+                    "PRAGMA table_info(%s)" % table).fetchall()}
+            except sqlite3.Error:
+                continue
+            if not have:
+                continue                      # table is not in this database
+            for column, definition in cols:
+                if column in have or not definition:
+                    continue
+                try:
+                    conn.execute("ALTER TABLE %s ADD COLUMN %s %s"
+                                 % (table, column, definition))
+                except sqlite3.Error as exc:  # noqa: BLE001
+                    log.warning("could not add %s.%s: %s", table, column, exc)
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)

@@ -418,24 +418,33 @@ MARGINAL = {"title": "Acme Corp awarded $12M contract", "source": "Benzinga",
 
 
 def marginal_bundle(now):
-    """A setup that scores 61: passes at the normal threshold of 55, and fails
-    both 65 (open and close windows) and 60 is the point -- the same facts, a
-    different hour, a different answer."""
-    return bundle(volx={3: 3.1, 5: 3.2, 15: 3.1}, news=[MARGINAL], now_et=now)
+    """A setup whose score sits inside the band the three session windows
+    disagree about -- the same facts, a different hour, a different answer.
+    The subject here is the time-of-day filter, so the base min_score is set one
+    point below the actual score and the window adjustment is what moves it."""
+    fresh = {"title": "Acme Corp acquires Beta Industries", "source": "Benzinga",
+             "url": "u", "age": "45m"}
+    return bundle(volx={3: 3.1, 5: 3.2, 15: 3.1}, news=[fresh], now_et=now)
+
+
+MARGINAL_MIN_SCORE = 74.0            # just under the bundle's ~74.4 score
 
 
 def test_the_same_setup_is_judged_differently_by_the_hour():
-    mid = evaluate_gate(marginal_bundle(datetime(2026, 10, 12, 10, 45)))
-    opening = evaluate_gate(marginal_bundle(datetime(2026, 10, 12, 9, 45)))
+    mid = evaluate_gate(marginal_bundle(datetime(2026, 10, 12, 10, 45)),
+                        min_score=MARGINAL_MIN_SCORE)
+    opening = evaluate_gate(marginal_bundle(datetime(2026, 10, 12, 9, 45)),
+                            min_score=MARGINAL_MIN_SCORE)
     assert mid.passed is True
-    assert mid.gate_score < 65
+    assert mid.gate_score < MARGINAL_MIN_SCORE + 10
     assert opening.passed is False
     assert opening.blocked_by == "below_min_score"
     assert opening.gate_score == mid.gate_score      # same evidence, stricter bar
 
 
 def test_the_close_window_blocks_what_the_morning_allowed():
-    closing = evaluate_gate(marginal_bundle(datetime(2026, 10, 12, 15, 40)))
+    closing = evaluate_gate(marginal_bundle(datetime(2026, 10, 12, 15, 40)),
+                            min_score=MARGINAL_MIN_SCORE)
     assert closing.passed is False
     assert closing.blocked_by == "below_min_score"
 

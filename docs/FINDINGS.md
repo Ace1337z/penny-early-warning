@@ -335,13 +335,18 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 194 passed, 1 skipped
+### Unit tests (`pytest -q`) — 403 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
 journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
 Finviz feed (`tests/test_finviz.py`: column coverage, required-column merge, view coercion,
 intraday-signal guard, per-screen mover cap, extended-hours price override, average-volume
-units, intraday performance).
+units, intraday performance). Phase 2 adds `test_phase2_reality.py` (the spread/liquidity
+blocker's four conditions and the `WIDE_SPREAD`/`ILLIQUID` labels, the $500 exit walk, the
+Alert 1 book line), `test_phase2_tracking.py` (T1-T6, one-abort-ever, the calibration
+clamp, the post-mortem clause mapping, the three new EOD sections), `test_phase2_context.py`
+(analog K-NN and min_k suppression, the AI-only multi-timeframe block, the sector heatmap,
+catalyst decay) and `test_phase2_commands.py` (`/model`, `/postmortem`).
 
 ### Offline self-test (`penny selftest`) — ALL PASS
 Configuration defaults and round-trip; owner-only permissions; state and journal schemas
@@ -349,11 +354,18 @@ open; a rising stock reaches Confirmed; score stays 0–100; price above VWAP de
 noise does not alert; a fading spike is tagged FADING; session windows; the holiday list;
 CSV/HTML parsing and number formats; the AI parser (valid object, code fences, HTML
 rejection, unknown enums, bad prices); aggregation majorities/medians; the prompt character
-cap; Fibonacci levels, extensions and trade plans; Alert 1 shape and Alert 2 length and
+cap; Fibonacci levels, extensions and trade plans; Alert 1 shape (including the
+bid/ask/spread/15m-dollar book line on line two) and Alert 2 length and
 disclaimer; the model catalogue (load, persist, pool excludes aliases and over-limit
 models); the composite formula and the Wilson interval; the Shariah combine rules; secret
 scrubbing; and the backup round-trip (create, verify, encrypted, no plaintext secrets,
-restore drill, restore, wrong passphrase rejected).
+restore drill, restore, wrong passphrase rejected). Phase 2 adds its own section:
+the `WIDE_SPREAD`/`ILLIQUID` labels and the honest `INSUFFICIENT_DATA` book case, the
+$500 exit walk, a 5-minute close under VWAP invalidating a setup once, the confidence
+clamp at hit rate + 15 points (and no prior below 30 samples), analogs suppressed below
+`ANALOG_MIN_K`, the AI-only multi-timeframe block, the hot/cold sector line, the
+post-mortem clause mapping, the HARD/DILUTION decay curves, and every Phase 2
+configuration key existing in the defaults.
 
 ### Offline simulation (`penny simulate`) — ALL PASS
 Synthetic market: a grinder, a burst, a spike that fades and 60 noise stocks, with
@@ -370,7 +382,12 @@ a model that does not beat the naive baselines is not activated; automatic selec
 a three-model panel or keeps the current one; the cache reuses an analysis within the cache
 window; the AI panel survives a failing model; parsers reject HTML and missing columns;
 staged elimination runs; tracker events fire; cycle time averages ~7 ms for ~63 symbols
-(well under 500 ms); and the Shariah combine rules behave as specified.
+(well under 500 ms); and the Shariah combine rules behave as specified. Phase 2 adds: a
+wide spread blocks as `WIDE_SPREAD` and a thin market as `ILLIQUID`, a feed with no book is
+`INSUFFICIENT_DATA` (never a pass), a $500 exit that cannot be filled in 300s blocks as
+`ILLIQUID` while a deep book exits within the limit, a 5-minute close under the alert VWAP
+invalidates the setup exactly once, the multi-timeframe block is AI-only and says
+`unknown` without daily history, and a hot sector gets a line while a cold one gets none.
 
 ### Not yet run (need live accounts / a VPS)
 Acceptance tests 2 (token change), 3 (installer on a fresh VPS), 4 (`doctor` all PASS),
@@ -592,3 +609,62 @@ the grade look better than it was.
 
 **Commands.** `/eod` (today or `/eod YYYY-MM-DD`), `/tracked`, `/stats` (the
 strategies ranked by what they actually produced).
+
+## C35. Phase 2: the nine refinements, and the two gaps the tests found
+
+**Finding.** Grading an alert is only half the work; the other half is refusing
+trades that cannot be taken, saying so when a setup dies, and keeping the AI's
+confidence honest about its own sample. Nine self-contained features, all
+additive:
+
+- **F1 reality gate.** A spread over `SPREAD_MAX_PCT` (1.5%) blocks as
+  `WIDE_SPREAD`; thin 15-minute dollar volume, a sub-$200 average trade size or
+  fewer than `MIN_TRADES_15M` prints blocks as `ILLIQUID`. The label follows the
+  first failure, because "the market is quoting wide" and "nobody is here" are
+  different facts. No bid/ask in the feed is `INSUFFICIENT_DATA` - never a pass.
+  Alert 1 line two now carries the book itself.
+- **F4 invalidation.** Six triggers (T1-T6: VWAP, alert-time low, halt,
+  persistent wide spread, negative catalyst, exhaustion near the high on
+  declining volume), one abort ever, status `aborted`, and an instruction to not
+  enter / exit - never a short.
+- **F5 calibration.** Once a (rating, strategy) bucket has
+  `CALIBRATION_MIN_SAMPLES` (30) closed alerts, the confidence shown is clamped
+  to that bucket's realised T1 hit rate + `CALIBRATION_CLAMP_MARGIN` (0.15). The
+  AI's own number is kept but may not sit far above what the tape delivered.
+- **F6 analogs.** K-NN (K=20) over 540 days of tracked alerts, z-scored, with the
+  hit rates summarised for the AI - and suppressed entirely below
+  `ANALOG_MIN_K` (8), because a hit rate from three trades is a rumour.
+- **F8 multi-timeframe.** Daily MA/range, 60-minute trend and weekly float
+  turnover, marked "for reasoning only; not shown to the user".
+- **F9 sector heatmap.** One line only when the sector is hot (median >= 2.0% or
+  three names on the list), refreshed at most every 300s, median rather than
+  mean so one extreme name cannot heat a sector.
+- **F10 exit liquidity.** A $500 exit needing over 300s or slipping over 1.0%
+  blocks as `ILLIQUID`; the $2k estimate rides along in the tracker columns.
+- **F14 post-mortems.** One line per loser in the EOD (and
+  `/postmortem SYM [DATE]`) naming the rubric clause that should have blocked -
+  or "nothing in the rubric covered this", which is the finding.
+- **F15 catalyst decay.** Exponential half-life: HARD 180m, MEDIUM 120m, SOFT
+  30m; dilution (negative weight) never decays.
+
+**Two gaps the new tests caught, both wired before shipping:**
+
+1. `ai_rating`, `ai_verdict` and `ai_key_findings` were declared columns that
+   nothing ever wrote, so the EOD `BY AI RATING` section would have grouped every
+   alert under `unrated` with claimed 0.00, and every post-mortem would have said
+   "the AI rated it unrated / ?". `Tracker.write_decision()` now records the one
+   call's rating, verdict and findings, and the engine writes them alongside the
+   calibrated confidence.
+2. `build_context()` labelled a stock *below* its 20-day mean "above 20d MA"
+   whenever a previous close existed (the percentage in the same line was
+   negative, so the label contradicted its own number). Below the mean now reads
+   below - the case that matters most for a long-only system, where "already
+   extended" is the expensive error.
+
+Also fixed: the selftest's "no 15m/60m in the header" check asserted on the whole
+Alert 1 text, which Feature 1's `15m $` dollar-volume label legitimately trips;
+the ban is on the header's rise line (Spec 11.1) and now reads that line.
+
+**Commands.** `/model` (show or change the decision model, no restart) and
+`/postmortem SYM [DATE]`. `/models` remains a legacy alias; the CLI's
+`penny models` is unchanged.

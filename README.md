@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-281%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-403%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -48,12 +48,17 @@ An **Alert 1** is sent instantly, with no AI and no waiting for enrichment:
 
 ```text
 ALERT: EARLY  ABCD  $1.42
+bid $1.41 / ask $1.43 (spread 1.4%) | 15m $1,100,000
 +31.5% vs close | +1.2% 3m | +3.5% 5m
 vol 12.4x normal | day 8.9M | above VWAP
 low 38m ago | score 74 | #1 gainer
 STRATEGY: first_green_day (78) + low_float_squeeze (61)
 Shariah: COMPLIANT (halalterminal)
 ```
+
+Line two is the **book**: bid, ask, the spread and the 15-minute dollar volume - the
+cost of getting in and out, before any analysis. A feed with no bid/ask says
+`book n/a` rather than printing a spread of zero.
 
 A few seconds later an **Alert 2** leads with *why the stock moved*, then the
 evidence. The decision block is edited in as soon as the model answers:
@@ -113,7 +118,10 @@ Reading it fast:
 - **MARKET BACKDROP** shows index direction and the risk-on/off regime, because
   small caps follow it.
 - Every alert is graded to the close and reported once, after the session, in
-  the **end-of-day report** (`/eod`).
+  the **end-of-day report** (`/eod`): the day's results as a set, an `ABORTS`
+  section for setups the invalidation watcher killed, `BY AI RATING` showing
+  what the AI claimed next to what the tape delivered, and a post-mortem line
+  for every loser.
 
 The system **places no orders** - it tells you, you trade manually.
 
@@ -150,7 +158,10 @@ you can act on a symbol without typing anything.
                             v
       ONE AI decision call ---> DECISION REPORT ---> ALERT 2 edited
                             v
-    per-alert tracker (quotes) ---> END OF DAY report, once a day
+    per-alert tracker (quotes) ---> invalidation watcher ---> one ABORT, ever
+                            v
+    END OF DAY report, once a day: results, ABORTS, BY AI RATING
+    (claimed vs actual), POST-MORTEMS (one line per loser)
                             v
                 /stats grades each strategy
 ```
@@ -234,6 +245,37 @@ actually produced.
 - **Per-alert tracking with an end-of-day report** - every alerted name is measured from
   the alert price to the close, and the day's alerts are reported once, as a set
   (`/eod`). `/stats` ranks the detectors by what they actually produced.
+- **A reality gate before the alert** - a quote that cannot be filled never becomes an
+  alert. A spread over `SPREAD_MAX_PCT` (1.5%) blocks as `WIDE_SPREAD`; thin 15-minute
+  dollar volume, an average trade size under `MIN_AVG_TRADE_SIZE` ($200) or fewer than
+  `MIN_TRADES_15M` prints blocks as `ILLIQUID`; a feed with no bid/ask is
+  `INSUFFICIENT_DATA`, never a pass. The exit is checked too: a $500 exit that needs more
+  than `EXIT_LIQ_500_MAX_SEC` (300s) or slips over `EXIT_LIQ_MAX_SLIP_PCT` (1.0%) blocks
+  as `ILLIQUID`.
+- **One ABORT per alert** - after the alert, six invalidation triggers watch the quotes:
+  a 5-minute close under the alert VWAP, a break of the alert candle's low, a halt, a
+  spread that stays wide for `INVALIDATION_SPREAD_CONSEC_MIN` minutes, a negative
+  catalyst, and exhaustion near the day high on declining volume. The first one to fire
+  aborts the setup - status `aborted`, one message (`action: do not enter / exit if
+  holding`, never a short) - and the abort appears in the EOD's `ABORTS` section.
+- **Confidence that answers to the tape** - once a (rating, strategy) bucket has
+  `CALIBRATION_MIN_SAMPLES` (30) closed alerts, the confidence shown is clamped to that
+  bucket's realised T1 hit rate plus `CALIBRATION_CLAMP_MARGIN` (0.15). The EOD's
+  `BY AI RATING` section puts what was claimed next to what actually happened.
+- **Context blocks for the reader and the model** - historical analogs (nearest tracked
+  alerts by feature vector, suppressed below `ANALOG_MIN_K` samples), a multi-timeframe
+  block for the AI only (daily MA and range, 60-minute trend, weekly float turnover,
+  marked "not shown to the user"), and a sector heatmap line that appears only when a
+  sector is genuinely hot (median >= `SECTOR_MIN_HOT_PCT`, or `SECTOR_TOP_N` names on
+  the movers list).
+- **Post-mortems on every loser** - the EOD ends with one line per losing alert naming
+  the rubric clause that should have blocked it - or stating that nothing in the rubric
+  covered the loss, which is itself the finding. `/postmortem SYM [DATE]` prints the
+  full paragraph for one alert (`POSTMORTEM_ENABLED=1`).
+- **Catalysts that fade on a schedule** - a cause's weight decays on its class's
+  half-life: `HALF_LIFE_HARD` (180m), `HALF_LIFE_MEDIUM` (120m), `HALF_LIFE_SOFT` (30m).
+  A dilution never decays - a bad offering does not get better with age - and a cause
+  older than 4 hours is never named as the cause at all.
 - **Pre-market at the first sign of a move** - in the pre-market session the alert fires
   as soon as the stock clears `PREMARKET_PCT` (default +10%) *with* the volume to back it,
   instead of waiting for the 15-minute window that used to arrive at ~+20%.
@@ -371,6 +413,11 @@ lists what your provider does offer. Set it by hand:
 
 Changes apply from the next cycle - no restart.
 
+From the bot, `/model` does both in one command: `/model` shows the running id
+(and the provider's list when it can be read), `/model new-id` switches it -
+persisted, applied on the next alert, no restart. `/set AI_MODEL new-id` does
+the same.
+
 Response handling covers the shapes providers really return: `content` as a
 string, `content` as a list of parts, and reasoning models that leave `content`
 null while answering in `reasoning_content`. An empty or unusable completion is
@@ -452,6 +499,8 @@ buttons under every reply to drill in without typing.
 /eod YYYY-MM-DD          the same report for a past day
 /stats                   strategies graded by what they actually produced
 /tracked                 today's tracked alerts, still open
+/postmortem SYM [DATE]   the full post-mortem for one losing alert (default today)
+/model [MODEL-ID]        show the decision model, or switch it (no restart)
 /set KEY VALUE           change any setting at runtime (alias /setkey)
 /keys                    list settable keys (secrets masked)
 /halal SYM               Shariah status now
@@ -521,10 +570,17 @@ fake Telegram, and asserts the documented acceptance results:
 - a parabolic move, an offering priced below the open and a quote that disagrees
   with the verified price each block the gate
 - the tracker closes every open alert at the close, marks one that stopped being
-  quoted `invalid` rather than flat, and reports the day once
+  quoted `invalid` rather than flat, and reports the day once - with the `ABORTS`,
+  `BY AI RATING` and `POST-MORTEMS` sections
+- a wide spread blocks as `WIDE_SPREAD`, a thin market or an unfilled $500 exit
+  as `ILLIQUID`, and a feed with no book is `INSUFFICIENT_DATA`, never a pass
+- a 5-minute close under the alert VWAP invalidates the setup exactly once
+- the multi-timeframe block is AI-only and says `unknown` without daily history;
+  a hot sector gets a line and a cold sector gets none
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS**, `simulate` **ALL PASS**, `pytest` **333 passed** (1 skipped).
+Current status: `selftest` **ALL PASS** (79 checks), `simulate` **ALL PASS** (49 checks),
+`pytest` **403 passed** (1 skipped).
 
 ---
 
@@ -554,7 +610,12 @@ src/penny/
   engine.py                poll loop, alert rules, build feed, digests, tracking, end of day
   scoring.py               rolling state, Rise/Volx/Accel/VWAP, tiers, score, phase, builds
    sources/                 finviz, twelvedata, alpaca, finnhub, sec, finra, yahoo
-   strategies/             base, candles, primitives, detectors, news_cause, gate
+   strategies/             base, candles, primitives, detectors, news_cause, gate,
+                           spread_liquidity (the reality gate)
+   context/                postmortem, calibration, analogs, liquidity,
+                           multi_timeframe, sector_heatmap (context blocks)
+  tracking.py              per-alert tracking, aborts, calibrated confidence, EOD sections
+  tracking_invalidation.py the six invalidation triggers (T1-T6)
   ai/                      gateway, decision (the one call), prompts/methodology_v1.md
   shariah.py               halalterminal.com, screening rules, modes, cache
   enrich.py                parallel enrichment: verification, candles, news, filings, float

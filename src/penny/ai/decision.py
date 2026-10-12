@@ -62,6 +62,13 @@ class Decision:
     verdict_reason: str = ""
     rubrics: list[str] = field(default_factory=list)
     risk_notes: str = ""
+    # Feature 5: the confidence the reader sees. `confidence` is what the model
+    # claimed; this is that number after the historical clamp, which is the one
+    # stored on the tracker and shown in /stats.
+    confidence_calibrated: float = 0.0
+    clamp_flag: str = ""
+    # Feature 6 / 9 / 10: rendered into the AI DECISION block as facts.
+    context_lines: list[str] = field(default_factory=list)
     error: str = ""
     model: str = ""
     latency_ms: float = 0.0
@@ -202,6 +209,7 @@ def validate(data: dict, *, gate_passed: Optional[bool] = None) -> Decision:
     d.verdict_reason = str(data.get("verdict_reason", ""))
     d.rubrics = [str(r) for r in rubrics]
     d.risk_notes = str(data.get("risk_notes", ""))
+    d.confidence_calibrated = confidence
     return d
 
 
@@ -213,8 +221,9 @@ def render(d: Decision) -> str:
     """
     if not d.ok:
         return ""
+    shown = d.confidence_calibrated or d.confidence
     lines = [
-        f"VERDICT: {d.verdict}  ({d.rating}, confidence {d.confidence:.2f})",
+        f"VERDICT: {d.verdict}  ({d.rating}, confidence {shown:.2f})",
     ]
     if d.verdict_reason:
         lines.append(f"REASON: {d.verdict_reason}")
@@ -238,16 +247,53 @@ def render(d: Decision) -> str:
         lines.append(f"APPLIED: {', '.join(d.rubrics[:3])}")
     if d.risk_notes:
         lines.append(f"RISK: {d.risk_notes}")
+    # The three context lines the spec adds to the AI DECISION block. They are
+    # appended after the model's own output because they are facts, not
+    # judgements: a sampled analog hit rate and an exit-time estimate are the
+    # reader's evidence, and burying them under the AI's prose would make them
+    # harder to see rather than easier.
+    for line in getattr(d, "context_lines", ()) or ():
+        if line:
+            lines.append(line)
     return "\n".join(lines)
 
 
 def build_messages(facts: dict, methodology: Optional[str] = None) -> list[dict]:
     """The single request: methodology as the system turn, facts as the user turn."""
+    user = "Setup:\n" + json.dumps(facts, indent=2, default=str)
+    context = facts.get("context") or {}
+    extra = []
+    mtf = context.get("multi_timeframe")
+    if isinstance(mtf, dict):
+        from ..context.multi_timeframe import block_lines
+        extra.append(block_lines(mtf))
+    analogs = context.get("analogs")
+    if isinstance(analogs, dict) and analogs.get("summary"):
+        from ..context.analogs import analog_line
+        line = analog_line(analogs["summary"])
+        if line:
+            extra.append(line)
+    sector = context.get("sector")
+    if isinstance(sector, str) and sector:
+        extra.append(sector)
+    liq = context.get("exit_liquidity")
+    if isinstance(liq, dict):
+        from ..context.liquidity import line as liq_line
+        line = liq_line(liq)
+        if line:
+            extra.append(line)
+    prior = context.get("calibration_prior")
+    if isinstance(prior, dict):
+        from ..context.calibration import prior_lines
+        lines = prior_lines(prior, context.get("calibration_label") or "")
+        if lines:
+            extra.append(lines)
+    if extra:
+        user = user + "\n\n" + "\n".join(x for x in extra if x)
     return [
         {"role": "system",
          "content": methodology if methodology is not None else load_methodology()},
-        {"role": "user",
-         "content": "Setup:\n" + json.dumps(facts, indent=2, default=str)},
+        {"role": "user", "content": user},
     ]
 
 
@@ -255,6 +301,20 @@ def gate_ok(facts: dict) -> bool:
     """Did the strategy gate pass for this symbol? Unknown counts as no."""
     gate = facts.get("gate") or {}
     return gate.get("passed") is True
+
+
+def _apply_calibration(d: Decision, facts: dict) -> None:
+    """Clamp a claimed confidence to the bucket's historical hit rate."""
+    from ..context.calibration import clamp_confidence
+    context = facts.get("context") or {}
+    prior = context.get("calibration_prior")
+    margin = float(context.get("calibration_margin") or 0.15)
+    value, flag = clamp_confidence(d.confidence, prior, margin)
+    d.confidence_calibrated = value
+    d.clamp_flag = flag
+    if flag and flag not in d.risk_notes:
+        d.risk_notes = (d.risk_notes + " " if d.risk_notes else "") + flag
+    d.context_lines = list(context.get("render_lines") or ())
 
 
 def decide(gateway, facts: dict, *, model: str = "", deadline: Optional[float] = None,
@@ -289,6 +349,7 @@ def decide(gateway, facts: dict, *, model: str = "", deadline: Optional[float] =
         parsed.error = "verdict=ENTER but the strategy gate did not pass"
     parsed.model = d.model
     parsed.latency_ms = d.latency_ms
+    _apply_calibration(parsed, facts)
     if not parsed.ok:
         parsed.verdict = "PASS"
         log.info("decision rejected for %s: %s", facts.get("symbol"), parsed.error)

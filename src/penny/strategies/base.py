@@ -33,6 +33,11 @@ class StrategyResult:
     failed_on: list[str] = field(default_factory=list)
     evidence: dict = field(default_factory=dict)
     kind: str = "primary"          # "primary" | "trigger" | "blocker"
+    # Soft warnings that never block. They exist so the AI can be told "this is
+    # a wide spread" without that turning into a gate rejection: the reader
+    # judges a 1.2% spread and an 8% spread differently, but only one of them
+    # is untakeable.
+    flags: list[str] = field(default_factory=list)
 
     @property
     def counts_as_pass(self) -> bool:
@@ -40,7 +45,8 @@ class StrategyResult:
 
     def as_dict(self) -> dict:
         return {"name": self.name, "verdict": self.verdict, "score": round(self.score, 1),
-                "reasons": self.reasons, "failed_on": self.failed_on, "kind": self.kind}
+                "reasons": self.reasons, "failed_on": self.failed_on, "kind": self.kind,
+                "flags": self.flags}
 
 
 @dataclass
@@ -63,6 +69,15 @@ class StrategyGate:
 
     def triggers(self) -> list[StrategyResult]:
         return [r for r in self.strategies if r.verdict == "TRIGGER"]
+
+    def flags(self) -> list[str]:
+        """Every soft warning raised by any detector, de-duplicated, in order."""
+        out: list[str] = []
+        for r in self.strategies:
+            for f in getattr(r, "flags", ()) or ():
+                if f not in out:
+                    out.append(f)
+        return out
 
     def as_dict(self) -> dict:
         return {"passed": self.passed, "primary": self.primary,
@@ -132,6 +147,13 @@ class Bundle:
     day_low: Optional[float] = None
     cum_volume: float = 0.0
     pct_vs_close: Optional[float] = None
+    # Quote quality. Finviz carries no bid/ask, so these stay None on a
+    # Finviz-only feed and spread_liquidity reports INSUFFICIENT_DATA rather
+    # than guessing a spread from the last print.
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    spread_pct: Optional[float] = None
+    trades_15m: Optional[int] = None
     rise: dict = field(default_factory=dict)
     volx: dict = field(default_factory=dict)
     dollar_vol: dict = field(default_factory=dict)

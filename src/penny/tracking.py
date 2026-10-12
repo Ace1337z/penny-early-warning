@@ -27,9 +27,10 @@ flat one, which would look like a 0% day and drag the averages.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Optional
 
-from .util import money, now_et, pct, safe_div, to_et
+from .util import UTC, money, now_et, pct, safe_div, to_et
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,114 @@ class Tracker:
         except Exception as exc:  # noqa: BLE001
             log.warning("tracker start failed for %s: %s", symbol, exc)
             return None
+
+    def abort(self, symbol: str, *, reason: str, ts: Optional[float] = None,
+              day: Optional[str] = None) -> None:
+        """Mark a setup invalidated. Terminal, and it keeps the row.
+
+        An invalidated setup still has an outcome -- the reader was told not to
+        enter, and whether it went up afterwards is exactly what says whether
+        that was the right call. So this sets `aborted` rather than closing the
+        row, and the EOD report counts it in its own section.
+        """
+        day = day or to_et().strftime("%Y-%m-%d")
+        try:
+            self.db.execute(
+                "UPDATE alert_tracking SET aborted=1, abort_ts=?, abort_reason=?, "
+                "status='aborted' WHERE symbol=? AND day=? AND aborted=0",
+                (ts if ts is not None else self.clock(), reason,
+                 symbol.upper(), day))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tracker abort failed for %s: %s", symbol, exc)
+
+    def write_context(self, symbol: str, *, day: Optional[str] = None,
+                      bid: Optional[float] = None, ask: Optional[float] = None,
+                      spread_pct: Optional[float] = None,
+                      dollar_vol_15m: Optional[float] = None,
+                      avg_trade_size: Optional[float] = None,
+                      sector: Optional[str] = None,
+                      sector_hot: Optional[bool] = None,
+                      exit_liq_2k_seconds: Optional[float] = None,
+                      analogs: Optional[dict] = None) -> None:
+        """Persist the quote reality and the AI context onto the alert row.
+
+        Every value is optional and `None` is skipped rather than written, so a
+        caller that only knows the bid and ask does not blank the columns a
+        later, richer call filled in. The column set is the one declared in the
+        schema; the migration adds them to older databases at open time.
+        """
+        cols = {
+            "bid_at_alert": bid,
+            "ask_at_alert": ask,
+            "spread_pct_at_alert": spread_pct,
+            "dollar_vol_15m_at_alert": dollar_vol_15m,
+            "avg_trade_size_at_alert": avg_trade_size,
+            "sector_at_alert": sector,
+            "sector_hot": None if sector_hot is None else int(bool(sector_hot)),
+            "exit_liq_2k_seconds": exit_liq_2k_seconds,
+        }
+        summary = analogs or {}
+        if summary.get("t1_hit_rate") is not None:
+            cols["analog_t1_hit_rate"] = summary["t1_hit_rate"]
+        if summary.get("stop_hit_rate") is not None:
+            cols["analog_stop_hit_rate"] = summary["stop_hit_rate"]
+        if summary.get("median_peak_pct") is not None:
+            cols["analog_median_peak_pct"] = summary["median_peak_pct"]
+        pairs = [(k, v) for k, v in cols.items() if v is not None]
+        if not pairs:
+            return
+        day = day or to_et().strftime("%Y-%m-%d")
+        sql = ("UPDATE alert_tracking SET "
+               + ", ".join("%s=?" % k for k, _ in pairs)
+               + " WHERE symbol=? AND day=?")
+        try:
+            self.db.execute(sql, tuple(v for _, v in pairs) + (symbol.upper(), day))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("tracker context write failed for %s: %s", symbol, exc)
+
+    def write_confidence(self, symbol: str, confidence: Optional[float], *,
+                         day: Optional[str] = None) -> None:
+        """Store the calibrated confidence shown to the reader, not the raw one."""
+        if confidence is None:
+            return
+        day = day or to_et().strftime("%Y-%m-%d")
+        try:
+            self.db.execute(
+                "UPDATE alert_tracking SET ai_confidence_calibrated=? "
+                "WHERE symbol=? AND day=?", (float(confidence), symbol.upper(), day))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("tracker confidence write failed for %s: %s", symbol, exc)
+
+    def write_decision(self, symbol: str, *, rating: Optional[str] = None,
+                       verdict: Optional[str] = None,
+                       findings: Optional[list] = None,
+                       day: Optional[str] = None) -> None:
+        """Record what the one AI call said about this alert.
+
+        The EOD claimed-vs-actual block and the post-mortem both read these
+        columns. Without them every row groups under "unrated" and the rating
+        section would show claimed 0.00 against actual -- a section that is
+        true only in the sense that it is empty. Findings are joined into one
+        cell because the reader of a post-mortem wants the sentence, not a
+        table.
+        """
+        cols: dict = {}
+        if rating:
+            cols["ai_rating"] = str(rating)
+        if verdict:
+            cols["ai_verdict"] = str(verdict)
+        if findings:
+            cols["ai_key_findings"] = " | ".join(str(f) for f in findings)[:400]
+        if not cols:
+            return
+        day = day or to_et().strftime("%Y-%m-%d")
+        sql = ("UPDATE alert_tracking SET "
+               + ", ".join("%s=?" % k for k in cols)
+               + " WHERE symbol=? AND day=?")
+        try:
+            self.db.execute(sql, tuple(cols.values()) + (symbol.upper(), day))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("tracker decision write failed for %s: %s", symbol, exc)
 
     def update(self, symbol: str, *, price: float, high: Optional[float] = None,
                low: Optional[float] = None, day: Optional[str] = None) -> None:
@@ -184,6 +293,86 @@ def summary_line(r: dict) -> str:
     return "  ".join(bits)
 
 
+def _aborts_section(rows: list) -> list:
+    """ABORTS (n): every setup the invalidation watcher killed.
+
+    Each line carries the time, the entry, where the price went anyway,
+    and the reason -- because the question an abort answers is not "did
+    it die" but "was dying the right call".
+    """
+    aborted = [r for r in rows if r.get("aborted")]
+    if not aborted:
+        return []
+    out = ["ABORTS (%d)" % len(aborted)]
+    for r in aborted:
+        ts = r.get("abort_ts")
+        when = ""
+        if ts:
+            try:
+                when = to_et(datetime.fromtimestamp(float(ts), tz=UTC))
+                when = when.strftime("%H:%M")
+            except (TypeError, ValueError, OSError):
+                when = ""
+        out.append("  %-6s %s entry %s  now %s  %s" % (
+            str(r.get("symbol"))[:6],
+            when,
+            money(r.get("alert_price")),
+            money(r.get("last_price") or r.get("close_price")),
+            str(r.get("abort_reason") or "unknown")[:48]))
+    return out + [""]
+
+
+def _rating_section(rows: list) -> list:
+    """BY AI RATING: what the AI claimed, next to what the tape did.
+
+    Claimed and actual sit side by side on purpose. A bucket claiming
+    0.71 that hit T1 every time is over-cautious; one claiming 0.71
+    that hit it 18% of the time is overconfident. Same number,
+    opposite problem, and neither is visible in the averages above.
+    """
+    closed = [r for r in rows if r.get("status") == "closed"]
+    groups: dict[str, list] = {}
+    for r in closed:
+        key = str(r.get("ai_rating") or "unrated").upper()
+        groups.setdefault(key, []).append(r)
+    if not groups:
+        return []
+    out = ["BY AI RATING"]
+    for name, group in sorted(groups.items()):
+        closes = [x.get("close_pct") or 0 for x in group]
+        t1 = sum(1 for x in group if x.get("hit_t1"))
+        actual = safe_div(t1, len(group))
+        claimed = safe_div(sum(x.get("ai_confidence_calibrated") or 0
+                               for x in group), len(group))
+        out.append("  %-8s %2d alerts  avg close %+.1f%%  T1 %d/%d  "
+                   "(claimed %.2f vs actual %.2f)"
+                   % (name, len(group),
+                      safe_div(sum(closes), len(closes)) * 100,
+                      t1, len(group), claimed, actual))
+    return out + [""]
+
+
+def _postmortem_section(rows: list, limit: int = 10) -> list:
+    """POST-MORTEMS: one line per losing alert, naming the clause that
+    should have blocked it. Capped, because a bad day produces a dozen
+    losses and a dozen lines of prose is how the numbers stop being
+    read."""
+    from .config import DEFAULTS
+    from .context.postmortem import is_loser, short_line
+    if str(DEFAULTS.get("POSTMORTEM_IN_EOD", "1")).strip() in ("0", "false"):
+        return []
+    losers = [r for r in rows if is_loser(r)]
+    if not losers:
+        return []
+    out = ["POST-MORTEMS (%d)" % len(losers)]
+    for r in losers[:limit]:
+        out.append("  " + short_line(r))
+    if len(losers) > limit:
+        out.append("  ... and %d more (/postmortem SYM)"
+                   % (len(losers) - limit))
+    return out + [""]
+
+
 def eod_report(tracker: Tracker, day: Optional[str] = None) -> str:
     """The single end-of-day message.
 
@@ -209,8 +398,9 @@ def eod_report(tracker: Tracker, day: Optional[str] = None) -> str:
     worst = min(closed, key=lambda r: r.get("close_pct") or 0, default=None)
 
     lines = [f"END OF DAY {day}", ""]
+    aborted = [r for r in rows if r.get("aborted")]
     lines.append(f"alerts {len(rows)} | closed {len(closed)} | "
-                 f"invalidate {len(invalid)}")
+                 f"aborted {len(aborted)} | invalidate {len(invalid)}")
     lines.append(f"up {len(winners)} / down {len(losers)} | "
                  f"avg close {pct(avg_close * 100)} | avg max {pct(avg_max * 100)}")
     lines.append(f"stopped {stops} | hit T1 {t1s} | hit T2 {t2s}")
@@ -222,6 +412,9 @@ def eod_report(tracker: Tracker, day: Optional[str] = None) -> str:
         lines.append(summary_line(r))
     if len(rows) > 20:
         lines.append(f"... and {len(rows) - 20} more")
+    lines.extend(_aborts_section(rows))
+    lines.extend(_rating_section(rows))
+    lines.extend(_postmortem_section(rows))
     lines.append("")
     lines.append("S=stop, 1=T1, 2=T2. Screener and decision support only.")
     return "\n".join(lines)

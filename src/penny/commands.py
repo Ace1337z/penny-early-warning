@@ -38,10 +38,12 @@ Tap a button below, or type a command.
 /eod YYYY-MM-DD - results for a specific day
 /stats - performance by strategy
 /tracked - alerts still open today
+/postmortem SYM [YYYY-MM-DD] - what an alert got wrong
 
 <b>Keys</b>
 /set KEY VALUE - change any setting
 /keys - what is configured
+/model [MODEL-ID] - which AI model runs, and change it
 
 <b>Maintenance</b>
 /halal SYM - Shariah status
@@ -60,6 +62,8 @@ COMMANDS: list[tuple[str, str]] = [
     ("eod", "tracked results for a day"),
     ("stats", "performance by strategy"),
     ("tracked", "alerts still open today"),
+    ("postmortem", "what an alert got wrong"),
+    ("model", "which AI model runs, and change it"),
     ("keys", "what is configured"),
     ("backup", "run a backup now"),
     ("help", "all commands"),
@@ -327,6 +331,9 @@ class CommandHandler:
                 "/eod": self.cmd_eod,
                 "/stats": self.cmd_stats,
                 "/tracked": self.cmd_tracked,
+                "/postmortem": self.cmd_postmortem,
+                "/model": self.cmd_model,
+                "/models": self.cmd_model,  # legacy alias
                 "/set": self.cmd_set,
                 "/setkey": self.cmd_set,
                 "/keys": self.cmd_keys,
@@ -691,6 +698,103 @@ class CommandHandler:
         lines = [f"TRACKED TODAY - {still_open} open of {len(rows)}", ""]
         lines.extend(summary_line(r) for r in rows)
         return "\n".join(lines)
+
+    def cmd_postmortem(self, args) -> None:
+        """Why an alert lost, and which rubric clause should have caught it."""
+        if not args:
+            self._reply("Usage: <code>/postmortem SYM [YYYY-MM-DD]</code>")
+            return
+        symbol = args[0].upper().lstrip("$")
+        if not symbol.isalpha() or len(symbol) > 6:
+            self._reply(f"{h(args[0])} does not look like a ticker.")
+            return
+        tracker = getattr(self.engine, "tracker", None) if self.engine else None
+        if tracker is None:
+            self._reply("Tracking is not available.")
+            return
+        day = args[1] if len(args) > 1 else to_et().strftime("%Y-%m-%d")
+        rows = [r for r in tracker.rows_for(day, limit=200)
+                if str(r.get("symbol") or "").upper() == symbol]
+        if not rows:
+            self._reply(f"No tracked alert for {code(symbol)} on {code(day)}.")
+            return
+        from .config import DEFAULTS
+        from .context.postmortem import build
+        if str(DEFAULTS.get("POSTMORTEM_ENABLED", "1")).strip() in ("0", "false"):
+            self._reply("Post-mortems are switched off "
+                        "(<code>POSTMORTEM_ENABLED=1</code> turns them on).")
+            return
+        blocks = [text for text in (build(r) for r in rows) if text]
+        if not blocks:
+            # Nothing lost that day: say so instead of printing nothing.
+            bits = []
+            for r in rows:
+                bits.append("%s closed %s (%s)" % (
+                    str(r.get("symbol")), pct((r.get("close_pct") or 0) * 100),
+                    str(r.get("primary_strategy") or "unknown")))
+            self._reply("No losses for %s on %s:\n  %s"
+                        % (code(symbol), code(day), "\n  ".join(bits)),
+                        markup=RESULTS_MENU)
+            return
+        self._reply("\n\n".join(blocks), markup=RESULTS_MENU)
+
+    def cmd_model(self, args) -> None:
+        """Show the decision model, or switch it.
+
+        `/model` is the bot-side replacement for `penny models`: the reader only
+        ever needs two things from the model list -- which id is running, and
+        how to point the alert at a different one -- so both live here. A
+        provider with no `/models` endpoint is normal and never fatal; it just
+        means the id has to be typed in by hand.
+        """
+        current = str(self.cfg.raw("AI_MODEL") or "").strip()
+        if not args:
+            lines = ["<b>MODEL</b>", f"in use: {code(current or 'not set')}"]
+            listed: list = []
+            try:
+                gateway = getattr(self.engine, "gateway", None) if self.engine else None
+                if gateway is not None:
+                    listed = gateway.list_models(timeout=8.0)
+            except Exception as exc:  # noqa: BLE001
+                listed = []
+                lines.append(f"provider list unavailable: {h(exc)}")
+            lines.append("")
+            if listed:
+                lines.append(f"provider lists {len(listed)} (up to 15):")
+                for m in listed[:15]:
+                    lines.append("  " + code(m)
+                                 + ("  <- in use" if m == current else ""))
+                if len(listed) > 15:
+                    lines.append(f"  ... and {len(listed) - 15} more")
+                lines.append("")
+                lines.append("Switch with <code>/model MODEL-ID</code>")
+            else:
+                lines.append("No list from the provider (normal for many "
+                             "OpenAI-compatible gateways).")
+                lines.append("Set one by hand: <code>/model MODEL-ID</code>")
+            self._reply("\n".join(lines), markup=MAIN_MENU)
+            return
+        value = args[0].strip()
+        if not value or " " in value:
+            self._reply("Usage: <code>/model MODEL-ID</code> "
+                        "(e.g. <code>/model deepseek-v4.1-flash</code>)")
+            return
+        self.cfg.set("AI_MODEL", value)
+        try:
+            self.cfg.save()
+        except Exception as exc:  # noqa: BLE001
+            self._reply(f"Could not save AI_MODEL: {h(exc)}")
+            return
+        # The gateway caches which endpoint answered. A model change keeps the
+        # same key but not the same discovery, so drop the resolution too.
+        try:
+            if self.engine is not None:
+                self.engine.gateway.forget_endpoint()
+        except Exception:  # noqa: BLE001
+            pass
+        self._reply(f"\u2705 AI_MODEL = {code(value)}\n"
+                    f"The next alert calls this model. No restart needed.",
+                    markup=MAIN_MENU)
 
     def cmd_set(self, args) -> None:
         """Set any configuration value from the bot. Secrets are saved, not echoed."""

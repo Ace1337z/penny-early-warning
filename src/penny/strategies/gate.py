@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable
 
-from . import detectors, primitives
+from . import detectors, primitives, spread_liquidity
 from .base import Bundle, Detector, StrategyGate, StrategyResult
 
 # Name -> detector. Order is cosmetic; the gate scores, not the sequence.
@@ -106,8 +106,38 @@ def run_detectors(b: Bundle) -> list[StrategyResult]:
 
 
 def evaluate_gate(b: Bundle, *, min_score: float = 55.0, require_catalyst: bool = True,
-                  time_filter: bool = True) -> StrategyGate:
+                  time_filter: bool = True,
+                  spread_max_pct: float = 1.5, min_dollar_vol_15m: float = 300000.0,
+                  min_avg_trade_size: float = 200.0, min_trades_15m: int = 30,
+                  exit_liq_max_sec: int = 300, exit_liq_max_slip_pct: float = 1.0,
+                  exit_liq_enabled: bool = True) -> StrategyGate:
     results = run_detectors(b)
+
+    # Feature 1: the reality gate. Kept out of BLOCKERS because it needs config
+    # thresholds rather than defaults, so it is run here with them supplied.
+    try:
+        reality = spread_liquidity.evaluate(
+            b, spread_max_pct=spread_max_pct, min_dollar_vol_15m=min_dollar_vol_15m,
+            min_avg_trade_size=min_avg_trade_size, min_trades_15m=min_trades_15m)
+    except Exception as exc:  # noqa: BLE001
+        from .base import insufficient
+        reality = insufficient("spread_liquidity", "detector error: %s" % type(exc).__name__)
+    results.append(reality)
+
+    # Feature 10: the exit must exist. Deliberately redundant with the reality
+    # gate above -- belt and braces, because a stock can pass every volume test
+    # and still have too little depth to get out of a real position.
+    if exit_liq_enabled:
+        from ..context import liquidity
+        ok, why, _seconds, _slip = liquidity.passes(
+            b.bars_1m, b.price, max_seconds=exit_liq_max_sec,
+            max_slip_pct=exit_liq_max_slip_pct)
+        if not ok:
+            from .base import blocked
+            results.append(blocked("exit_liquidity", [why],
+                                   {"max_seconds": exit_liq_max_sec,
+                                    "max_slip_pct": exit_liq_max_slip_pct}))
+            return StrategyGate(passed=False, strategies=results, blocked_by="ILLIQUID")
 
     if b.data_conflict:
         return StrategyGate(passed=False, strategies=results, blocked_by="DATA_CONFLICT")
@@ -119,8 +149,19 @@ def evaluate_gate(b: Bundle, *, min_score: float = 55.0, require_catalyst: bool 
     if any("DILUTION" in r.failed_on for r in results):
         return StrategyGate(passed=False, strategies=results, blocked_by="DILUTION")
 
+    # Blockers are ordered, not merged. The reality gate is checked before
+    # exhaustion because an illiquid, wide-spread stock is untakeable regardless
+    # of how good the shape looks, and naming it ILLIQUID tells the reader the
+    # move was not the problem. There is deliberately no short branch here.
+    reality = next((r for r in results
+                    if r.name == "spread_liquidity" and r.verdict == "BLOCK"), None)
+    if reality is not None:
+        reasons = " ".join(reality.reasons or ())
+        label = "WIDE_SPREAD" if "spread" in reasons else "ILLIQUID"
+        return StrategyGate(passed=False, strategies=results, blocked_by=label)
+
     # Everything else that blocks is exhaustion: the move is spent, so refuse the
-    # new long. There is deliberately no short branch here.
+    # new long.
     blockers = [r for r in results if r.kind == "blocker" and r.verdict == "BLOCK"]
     if blockers:
         return StrategyGate(passed=False, strategies=results, blocked_by="EXHAUSTED")

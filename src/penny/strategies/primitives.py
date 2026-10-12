@@ -76,11 +76,15 @@ def catalyst_volume(b: Bundle) -> StrategyResult:
                       {"volx": volx, "catalysts": 0})
 
     top = ranked[0]
+    # top["weight"] is already the decayed weight (news_cause.effective_weight),
+    # so this score is on how much pull the catalyst has left, not on its class.
     score = 20.0 + top["weight"] * 40.0 + min(20.0, (volx - 3.0) * 4.0)
     if top["age_minutes"] <= 120:
         score += 20
     return passed("catalyst_volume", score,
-                  [top["headline"][:80], f"{top['class'].lower()} catalyst", f"volx {volx:.1f}"],
+                  [top["headline"][:80],
+                   f"{top['class'].lower()} catalyst, effective weight {top['weight']:.2f}",
+                   f"volx {volx:.1f}"],
                   {"top": top, "volx": volx, "n_catalysts": len(ranked)})
 
 

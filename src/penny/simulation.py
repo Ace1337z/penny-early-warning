@@ -656,6 +656,66 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
                extract_cause(ranked, Bundle(symbol="SIM")).kind == "UNEXPLAINED",
                "none found")
 
+    # -- the Phase 2 reality checks, end to end ----------------------------
+    from .context import liquidity
+    from .context.multi_timeframe import block_lines, build_context
+    from .context.sector_heatmap import SectorHeatmap, sector_line
+    from .strategies.spread_liquidity import evaluate as spread_evaluate
+    from .tracking_invalidation import InvalidationState, check as invalidate
+
+    wide_book = gate_for(bid=1.41, ask=1.53, trades_15m=800,
+                         dollar_vol={15: 1_100_000.0})
+    report.add("a wide spread blocks the alert as WIDE_SPREAD",
+               not wide_book.passed and wide_book.blocked_by == "WIDE_SPREAD",
+               f"blocked_by={wide_book.blocked_by}")
+
+    thin_market = gate_for(bid=1.41, ask=1.42, trades_15m=500,
+                           dollar_vol={15: 100_000.0})
+    report.add("a thin market blocks as ILLIQUID, not WIDE_SPREAD",
+               not thin_market.passed and thin_market.blocked_by == "ILLIQUID",
+               f"blocked_by={thin_market.blocked_by}")
+
+    no_book = spread_evaluate(Bundle(symbol="SIM", price=1.42))
+    report.add("a feed without a book is INSUFFICIENT_DATA, never a pass",
+               no_book.verdict == "INSUFFICIENT_DATA" and not no_book.counts_as_pass,
+               no_book.failed_on[0] if no_book.failed_on else "")
+
+    thin_bars = [{"t": 1_760_000_000 + i * 60, "o": 1.42, "h": 1.42, "l": 1.42,
+                  "c": 1.42, "v": 50.0} for i in range(15)]
+    exit_gate = gate_for(bid=1.41, ask=1.42, trades_15m=800,
+                         dollar_vol={15: 1_100_000.0}, bars_1m=thin_bars)
+    report.add("a $500 exit that cannot be filled blocks as ILLIQUID",
+               not exit_gate.passed and exit_gate.blocked_by == "ILLIQUID",
+               f"blocked_by={exit_gate.blocked_by}")
+    ok, why, _sec, _slip = liquidity.passes(
+        [dict(b, v=500_000.0) for b in thin_bars], 1.42)
+    report.add("a deep book exits $500 within the time limit", ok, why)
+
+    st = InvalidationState(symbol="SIM", day="2026-10-09", alert_ts=day_start,
+                           alert_price=1.42, vwap_ref=1.40)
+    hit = invalidate(st, price=1.38, now=day_start, five_min_close_below_vwap=True)
+    report.add("a 5m close under the alert VWAP invalidates the setup once",
+               hit is not None and hit[0] == "vwap" and st.fired
+               and invalidate(st, price=1.30, now=day_start + 60,
+                              five_min_close_below_vwap=True) is None,
+               hit[1] if hit else "no trigger")
+
+    ctx = build_context()
+    report.add("the multi-timeframe block is AI-only and honest without history",
+               block_lines(ctx).startswith("MULTI-TIMEFRAME CONTEXT")
+               and ctx["daily_trend"] == "unknown (no daily history)",
+               ctx["daily_trend"])
+
+    hm = SectorHeatmap(min_hot_pct=2.0, top_n=3, clock=lambda: 1_000.0)
+    hm.update([{"sector": "Biotech", "change_pct": 9.0},
+               {"sector": "Biotech", "change_pct": 8.0},
+               {"sector": "Biotech", "change_pct": 7.0},
+               {"sector": "Gold", "change_pct": 0.1},
+               {"sector": "Gold", "change_pct": -0.2}])
+    report.add("a hot sector gets a line and a cold sector gets none",
+               sector_line(hm, "biotech").startswith("SECTOR: biotech")
+               and sector_line(hm, "gold") == "")
+
     # -- per-alert tracking ------------------------------------------------
     tracked = state.scalar("SELECT COUNT(*) FROM alert_tracking", default=0)
     report.add("every alerted name is present in the tracker",

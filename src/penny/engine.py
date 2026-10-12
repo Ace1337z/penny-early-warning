@@ -13,6 +13,7 @@ from typing import Optional
 from .ai.decision import decide, render as render_decision
 from .alerts import (build_ai_facts, format_alert1, format_alert2, format_build_digest,
                      tier_name)
+from .context.sector_heatmap import SectorHeatmap
 from .enrich import Enricher
 from .fib import reentry_guidance
 from .market_context import MarketContextProvider
@@ -21,8 +22,10 @@ from .strategies.wiring import run_gate
 from .tracking import Tracker, eod_report, stats_report
 from .sources.finviz import FinvizTokenRejected, avg_volume_shares, row_get, row_num
 from .ui import button, cb, inline
-from .util import (SESSION_CLOSED, age_str, is_trading_day, money, pct, session_end,
-                   session_for, to_et)
+from datetime import datetime, timedelta, timezone
+
+from .util import (SESSION_CLOSED, age_str, is_trading_day, money, pct, safe_div,
+                   session_end, session_for, to_et)
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +74,16 @@ class Engine:
                                  twelvedata=twelvedata, market=self.market)
         self.gateway = gateway          # one call per alert; see ai/decision.py
         self.tokens_used = 0     # cumulative, for the status line
+        self.heatmap = SectorHeatmap(
+            min_hot_pct=cfg.float("SECTOR_MIN_HOT_PCT", 2.0),
+            top_n=cfg.int("SECTOR_TOP_N", 3),
+            refresh_seconds=cfg.int("SECTOR_HEATMAP_REFRESH_SECONDS", 300),
+            clock=self.clock)
+        # Feature 4: one watcher per alerted setup, and one abort message each.
+        self._invalidations: dict[str, object] = {}
+        self._last_invalidation_check = 0.0
+        self._calibration: dict = {}
+        self._calibration_day = ""
 
         self.universe: list[str] = []
         self.avg_volume: dict[str, float] = {}
@@ -200,6 +213,10 @@ class Engine:
             self._feed_failures = 0
 
         self._quotes_by_symbol = {q["symbol"]: q for q in quotes}
+        # The heatmap is built from the movers only -- a stock that is not on
+        # the list did not move today, and counting the whole universe would
+        # make every sector look flat.
+        self.heatmap.update([q for q in quotes if q["symbol"] in set(self._movers)])
         metrics_list: list[Metrics] = []
         for quote in quotes:
             if quote.get("halted"):
@@ -231,6 +248,7 @@ class Engine:
             stats["alerts"] += 1
 
         self._update_tracker(metrics_list)
+        self._check_invalidations(metrics_list)
         self._record_daily_close(metrics_list)
         self._track_watchlist(metrics_list, session)
         self._maybe_build_feed(session, metrics_list)
@@ -505,6 +523,10 @@ class Engine:
                 plan=getattr(bundle, "plan", None) if bundle is not None else None)
         except Exception as exc:  # noqa: BLE001
             log.debug("tracker start failed for %s: %s", m.symbol, exc)
+        # Feature 4: put the setup on the invalidation watch. Registered here,
+        # at the alert, because the two numbers it needs -- the low of the 1m
+        # candle and the VWAP -- describe this moment and no later one.
+        self._register_invalidation(m, bundle=bundle)
         log.info("ALERT %s tier %d score %.1f", m.symbol, m.tier, m.score)
 
         threading.Thread(target=self._alert_detail_worker,
@@ -556,9 +578,19 @@ class Engine:
         if alert_id and shariah.get("combined"):
             self._store_alert_shariah(alert_id, shariah)
 
+        # Phase 2 context, computed here because enrichment is the first moment
+        # candles and news exist. Best-effort: a context failure must not cost the
+        # alert or the decision that goes with it.
+        try:
+            context = self._build_context(m, enr=enr, gate=gate)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("context build failed for %s: %s", m.symbol, exc)
+            context = {}
+        self._write_tracker_context(m, enr, context)
+
         facts = build_ai_facts(m, enr, market, session=session, pct_rank=rank,
                                time_to_horizon=self._time_to_horizons(),
-                               gate=gate, bundle=bundle)
+                               gate=gate, bundle=bundle, context=context)
         detail_id = None
         try:
             detail_id = self.telegram.send(format_alert2(
@@ -596,6 +628,49 @@ class Engine:
             self.db.execute("UPDATE alerts SET alert2_id=? WHERE id=?", (detail_id, alert_id))
         if decision is not None and getattr(decision, "ok", False):
             self._store_decision(decision, facts)
+            # Feature 5: the number the reader actually saw, which is the
+            # calibrated one, not the model's claim. Claimed-vs-actual is the
+            # whole point, so the two must not be the same column.
+            if decision.clamp_flag:
+                log.info("confidence clamped for %s: %.2f -> %.2f", m.symbol,
+                         decision.confidence, decision.confidence_calibrated)
+            try:
+                self.tracker.write_confidence(
+                    m.symbol, decision.confidence_calibrated or decision.confidence)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("confidence write failed for %s: %s", m.symbol, exc)
+            # The rating and verdict travel with the alert so the EOD can show
+            # what was claimed next to what happened, and the post-mortem can
+            # quote the AI's own findings rather than reconstruct them.
+            try:
+                self.tracker.write_decision(
+                    m.symbol, rating=getattr(decision, "rating", "") or "",
+                    verdict=getattr(decision, "verdict", "") or "",
+                    findings=getattr(decision, "key_findings", None) or [])
+            except Exception as exc:  # noqa: BLE001
+                log.debug("decision write failed for %s: %s", m.symbol, exc)
+
+    def _write_tracker_context(self, m: Metrics, enr, context: dict) -> None:
+        """Persist the quote reality and the AI context onto the alert row."""
+        if not context:
+            return
+        q = self._quotes_by_symbol.get(m.symbol) or {}
+        from .strategies.spread_liquidity import avg_trade_size
+        dollars = float(m.dollar_vol.get(15, 0.0) or 0.0)
+        trades = getattr(m, "trades_15m", None)
+        try:
+            self.tracker.write_context(
+                m.symbol,
+                bid=m.bid, ask=m.ask, spread_pct=m.spread_pct,
+                dollar_vol_15m=dollars,
+                avg_trade_size=avg_trade_size(dollars, trades),
+                sector=str(getattr(enr, "sector", "") or "") or None,
+                sector_hot=bool(context.get("sector_hot")),
+                exit_liq_2k_seconds=((context.get("exit_liquidity") or {})
+                                     .get("2000", {}).get("seconds")),
+                analogs=(context.get("analogs") or {}).get("summary"))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("tracker context write failed for %s: %s", m.symbol, exc)
 
     def _store_decision(self, decision, facts: dict) -> None:
         """Record the one report, so /stats can be checked against what was sent."""
@@ -730,6 +805,154 @@ class Engine:
             self.tracker.update(m.symbol, price=m.price,
                                 high=q.get("high_price"), low=q.get("low_price"))
 
+    # -- invalidation (Feature 4) -------------------------------------------
+    def _register_invalidation(self, m: Metrics, bundle=None, enr=None) -> None:
+        """Put an alerted setup on the invalidation watch, once, at alert time.
+
+        The two numbers captured here -- the low of the 1m candle and the VWAP at
+        the alert -- are the setup's own structure, and they are only knowable
+        now. A later cycle cannot reconstruct what the alert was looking at.
+        """
+        from .tracking_invalidation import InvalidationState
+        if not self.cfg.bool("INVALIDATION_ALERTS", True):
+            return
+        if m.symbol in self._invalidations:
+            return
+        alert_low = None
+        bars = list(getattr(bundle, "bars_1m", None) or [])
+        if not bars and enr is not None:
+            bars = list(getattr(enr, "bars_1m", None) or [])
+        if bars:
+            try:
+                last = bars[-1]
+                alert_low = min(float(last.get("low") or m.price),
+                                float(last.get("close") or m.price))
+            except (TypeError, ValueError, AttributeError):
+                alert_low = None
+        now = self.clock()
+        state = InvalidationState(
+            symbol=m.symbol, day=to_et().strftime("%Y-%m-%d"),
+            alert_ts=now, alert_price=m.price,
+            alert_time_low=alert_low, vwap_ref=m.vwap)
+        state.bucket = int(now // 300)
+        state.last_cum = float(getattr(m, "cum_volume", 0.0) or 0.0)
+        # news_ts starts at 0, not now, so the first scan runs immediately: that
+        # fetch is what separates "seen at the alert" from "published since",
+        # and the alert own headlines are seeded below so they cannot re-fire.
+        if enr is not None:
+            for item in getattr(enr, "news", None) or ():
+                title = str(item.get("title") or "").strip()
+                if title:
+                    state.seen_news.append(title)
+        self._invalidations[m.symbol] = state
+
+    def _negative_catalyst(self, state) -> str:
+        """A dilutive headline published since the alert. Once found, once only.
+
+        Checked on the invalidation cadence rather than every poll, and only for
+        symbols actually on the watch -- usually none, and when there are a couple
+        this is a couple of news calls a minute, which is what the alert path
+        already spends.
+        """
+        from .strategies.news_cause import DILUTION, classify
+        if state.fired or state.pending:
+            return state.pending
+        if self.clock() - state.news_ts < 300:
+            return ""
+        state.news_ts = self.clock()
+        items: list = []
+        if self.enricher is not None:
+            try:
+                items = self.enricher.news(state.symbol)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("invalidation news failed for %s: %s", state.symbol, exc)
+                return ""
+        for item in items or ():
+            title = str(item.get("title") or "").strip()
+            if not title or title in state.seen_news:
+                continue
+            state.seen_news.append(title)
+            if classify(title) == DILUTION:
+                state.pending = title[:140]
+                return state.pending
+        return ""
+
+    def _send_abort(self, state, m: Metrics, reason: str, key: str) -> None:
+        """Record the abort on the tracker and send exactly one message."""
+        from .tracking_invalidation import abort_message
+        text = abort_message(m.symbol, m.price, state.alert_price, reason, key, self.clock())
+        self._safe_send(text)
+        try:
+            self.tracker.abort(m.symbol, reason=reason, ts=self.clock())
+        except Exception as exc:  # noqa: BLE001
+            log.debug("tracker abort write failed for %s: %s", m.symbol, exc)
+        state.fired = True
+        self._invalidations.pop(m.symbol, None)
+
+    def _check_invalidations(self, metrics: list[Metrics]) -> None:
+        """Re-evaluate every watched setup. First trigger wins; one message each."""
+        if not self._invalidations:
+            return
+        now = self.clock()
+        if now - self._last_invalidation_check < self.cfg.int("INVALIDATION_CHECK_SECONDS", 30):
+            return
+        self._last_invalidation_check = now
+        from .tracking_invalidation import check
+        spread_max = self.cfg.float("SPREAD_MAX_PCT", 1.5)
+        consec = self.cfg.int("INVALIDATION_SPREAD_CONSEC_MIN", 2)
+        bucket = int(now // 300)
+        for m in metrics:
+            state = self._invalidations.get(m.symbol)
+            if state is None or state.fired:
+                continue
+            q = self._quotes_by_symbol.get(m.symbol) or {}
+
+            # A completed 5m bar of volume per symbol, accumulated from the quotes
+            # already polled. Tracking reads quotes rather than refetching candles so
+            # the TwelveData quota stays untouched, and the same rule holds here.
+            cum = float(q.get("cum_volume") or m.cum_volume or 0.0)
+            if state.last_cum and cum > state.last_cum:
+                state.bucket_vol += cum - state.last_cum
+            state.last_cum = cum
+            state.bucket_close = m.price
+            if bucket > state.bucket:
+                state.volumes.append(state.bucket_vol)
+                state.bucket_vol = 0.0
+
+            result = check(
+                state, price=m.price, now=now, vwap=m.vwap,
+                spread_pct=getattr(m, "spread_pct", None),
+                halted=bool(q.get("halted") or m.halted),
+                negative_catalyst=self._negative_catalyst(state),
+                day_high=m.day_high,
+                five_min_volume=(state.volumes[-1] if len(state.volumes) >= 2 else None),
+                prior_five_min_volume=(state.volumes[-2] if len(state.volumes) >= 2 else None),
+                spread_max_pct=spread_max, spread_consec_min=consec,
+                five_min_close_below_vwap=self._closed_5m_below_vwap(state, bucket))
+            if result is None:
+                continue
+            key, reason = result
+            self._send_abort(state, m, reason, key)
+
+    def _closed_5m_below_vwap(self, state, bucket: int) -> bool:
+        """Did a completed 5m bar close below the setup VWAP reference?
+
+        Tracked from the polled prices rather than refetched candles: a bar closes
+        when a poll lands in the next five-minute bucket, and that poll price is the
+        close. The first bar is ignored -- there is no completed bar yet, and
+        treating the alert price as a close would abort every setup seconds after
+        alerting it.
+        """
+        if bucket <= state.bucket:
+            return False
+        closed = state.bucket_close
+        state.bucket = bucket
+        if state.bar_count == 0:
+            state.bar_count = 1
+            return False
+        state.bar_count += 1
+        return closed is not None and state.vwap_ref is not None and float(closed) < float(state.vwap_ref)
+
     def _record_daily_close(self, metrics: list[Metrics]) -> None:
         """Accumulate today's OHLC per symbol so prior sessions exist tomorrow.
 
@@ -802,6 +1025,193 @@ class Engine:
             log.info("gate withdrew %s: blocked_by=%s primary=%s", m.symbol,
                      new_gate.blocked_by, new_gate.primary)
         return new_gate, new_bundle
+
+    # -- AI context (Features 6, 8, 9, 10) ------------------------------------
+    def _minutes_since_open(self) -> float:
+        """Minutes elapsed since 09:30 ET, clamped to the session."""
+        now = to_et()
+        minutes = now.hour * 60 + now.minute - (9 * 60 + 30)
+        return float(max(0, min(390, minutes)))
+
+    def _regime_bucket(self) -> int:
+        """-1, 0 or +1 from the market backdrop 1h return.
+
+        The analog feature vector wants a single signed bucket rather than a
+        float: "the market was down" and "the market was down 0.8%" should land
+        on the same historical neighbors.
+        """
+        try:
+            snapshot = self.market.get()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("regime read failed: %s", exc)
+            return 0
+        try:
+            change = float(getattr(snapshot, "change_pct", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0
+        if change > 0.25:
+            return 1
+        if change < -0.25:
+            return -1
+        return 0
+
+    def _sector_floats(self, sector: str) -> dict:
+        """symbol -> float for the peers on the movers list in one sector."""
+        wanted = str(sector or "").strip().lower()
+        if not wanted:
+            return {}
+        out: dict = {}
+        for quote in self.heatmap.rows:
+            name = str(quote.get("sector") or "").strip().lower()
+            if name != wanted:
+                continue
+            flt = quote.get("float_shares")
+            try:
+                if flt and float(flt) > 0:
+                    out[quote.get("symbol")] = float(flt)
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _analog_pool(self, exclude: Optional[str] = None) -> list[dict]:
+        """Closed alerts inside the analog lookback window, oldest first.
+
+        Read from the tracker rather than a separate store: these rows already
+        carry the outcome, and a second copy of the same history is a second
+        thing that can be stale.
+        """
+        days = self.cfg.int("ANALOG_LOOKBACK_DAYS", 540)
+        cutoff = (to_et() - timedelta(days=days)).strftime("%Y-%m-%d")
+        try:
+            rows = self.db.query(
+                "SELECT * FROM alert_tracking WHERE day>=? AND status='closed' "
+                "AND symbol<>? ORDER BY day ASC",
+                (cutoff, str(exclude or '').upper()))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("analog pool read failed: %s", exc)
+            return []
+        return [dict(r) for r in rows]
+
+    def _calibration_table(self) -> dict:
+        """Per-bucket confidence priors, rebuilt once a day.
+
+        Cached because it is a full-table aggregation and it is read on the alert
+        path; rebuilding it per alert would turn one cheap query into a scan for
+        every alerted name. Invalidated when the day rolls over.
+        """
+        day = to_et().strftime("%Y-%m-%d")
+        if self._calibration_day == day and self._calibration:
+            return self._calibration
+        from .context.calibration import build_table
+        window = self.cfg.int("CALIBRATION_WINDOW_DAYS", 90)
+        rows = self.tracker.recent(window) if self.tracker else []
+        self._calibration = build_table(
+            rows, window_days=window,
+            min_samples=self.cfg.int("CALIBRATION_MIN_SAMPLES", 30))
+        self._calibration_day = day
+        return self._calibration
+
+    def _prior_for_strategy(self, primary: str) -> Optional[dict]:
+        """The strategy's pooled prior, across every AI rating it was given.
+
+        A single bucket on the strategy is what is knowable before the call. It is
+        weaker than a rating-keyed bucket and deliberately so: pooling trades some
+        resolution for a sample big enough to exist at all, and with 30 alerts in
+        the whole system a per-strategy-per-rating table would be four rows of one
+        observation each.
+        """
+        table = self._calibration_table()
+        groups = [v for k, v in table.items() if k.endswith("|" + str(primary or ""))]
+        groups = [g for g in groups if g.get("sufficient")]
+        if not groups:
+            return None
+        alerts = sum(int(g.get("alerts") or 0) for g in groups)
+        return {
+            "alerts": alerts,
+            "sufficient": True,
+            "t1_hit_rate": safe_div(
+                sum(float(g["t1_hit_rate"]) * int(g["alerts"])
+                    for g in groups if g.get("t1_hit_rate") is not None), alerts),
+            "stop_hit_rate": safe_div(
+                sum(float(g["stop_hit_rate"]) * int(g["alerts"])
+                    for g in groups if g.get("stop_hit_rate") is not None), alerts),
+        }
+
+    def _build_context(self, m: Metrics, enr=None, gate=None) -> dict:
+        """The AI-only context: multi-timeframe, analogs, sector, exit liquidity.
+
+        None of it is rendered into Alert 1 or Alert 2. Three of the four appear
+        in the AI DECISION block as facts -- a sampled analog hit rate and an
+        exit-time estimate are evidence the reader acts on, not decoration -- but
+        the multi-timeframe block stays prompt-only, because five timeframes is
+        the thing the lean alert was built to stop printing.
+        """
+        from .context import analogs as analogs_mod
+        from .context import liquidity as liq_mod
+        from .context import multi_timeframe as mtf
+        from .context.sector_heatmap import sector_line
+
+        context: dict = {}
+        render_lines: list[str] = []
+        history = self._daily_history(m.symbol) if m.symbol else []
+
+        if self.cfg.bool("MTF_CONTEXT", True):
+            week_volume = float(sum(float(r.get("volume") or 0) for r in history[-5:]))
+            context["multi_timeframe"] = mtf.build_context(
+                daily=history, week_volume=week_volume,
+                float_shares=m.float_shares, day_high=m.day_high,
+                prev_close=m.prev_close, rise_60=m.rise.get(60))
+
+        sector = str(getattr(enr, "sector", "") or "")
+        if sector:
+            line = sector_line(self.heatmap, sector, m.float_shares,
+                               self._sector_floats(sector))
+            if line:
+                context["sector"] = line
+                context["sector_hot"] = True
+                render_lines.append(line)
+
+        bars = list(getattr(enr, "bars_1m", None) or []) if enr is not None else []
+        est = liq_mod.estimate(bars, m.price)
+        if est:
+            context["exit_liquidity"] = est
+            line = liq_mod.line(est)
+            if line:
+                render_lines.append(line)
+
+        pool = self._analog_pool(m.symbol)
+        if pool:
+            target = analogs_mod.features_of({
+                "float_shares": m.float_shares,
+                "pct_vs_close": (m.pct_vs_close or 0.0) * 100.0,
+                "volx": m.volx.get(5, 0.0),
+                "minutes_since_open": self._minutes_since_open(),
+                "regime": self._regime_bucket(),
+            })
+            if target:
+                neighbors, _d = analogs_mod.find_neighbors(
+                    target, pool, k=self.cfg.int("ANALOG_K", 20))
+                summary = analogs_mod.summarize(
+                    neighbors, min_k=self.cfg.int("ANALOG_MIN_K", 8))
+                if summary:
+                    context["analogs"] = {"summary": summary}
+                    render_lines.append(analogs_mod.analog_line(summary))
+
+        # The rating is not known until after the call, so the prior is looked up
+        # on the strategy alone. The rating-keyed clamp still happens: it runs in
+        # decision.py against the same table, after the rating exists.
+        primary = getattr(gate, "primary", None) if gate is not None else None
+        if primary:
+            prior = self._prior_for_strategy(primary)
+            if prior:
+                context["calibration_prior"] = prior
+                context["calibration_label"] = primary
+                context["calibration_margin"] = self.cfg.float(
+                    "CALIBRATION_CLAMP_MARGIN", 0.15)
+
+        if render_lines:
+            context["render_lines"] = render_lines
+        return context
 
     def _daily_history(self, symbol: str) -> list[dict]:
         """Prior completed sessions for a symbol, oldest first.

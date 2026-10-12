@@ -70,6 +70,21 @@ class Enricher:
         self.market = market
 
     # -- public -------------------------------------------------------------
+    def news(self, symbol: str) -> list[dict]:
+        """Merged headlines for one symbol, newest first, up to 8.
+
+        Exists so a caller outside the enrichment path can check for news without
+        re-running every candle and filing fetch behind it. The invalidation
+        watcher is that caller: it needs to know whether a dilutive filing landed
+        after the alert, and nothing else in the enrichment.
+        """
+        try:
+            items, _ = self._news(symbol)
+            return items
+        except Exception as exc:  # noqa: BLE001
+            log.debug("news failed for %s: %s", symbol, exc)
+            return []
+
     def enrich(self, symbol: str, quote: dict, metrics=None) -> Enrichment:
         enr = Enrichment(symbol=symbol)
         enr.float_shares = quote.get("float_shares")

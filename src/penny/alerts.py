@@ -219,6 +219,24 @@ def cause_block(m: Metrics, enr: Optional[Enrichment], bundle=None) -> list[str]
         return ["CAUSE: could not determine."]
 
 
+def book_line(m: Metrics) -> str:
+    """Bid, ask, spread and 15-minute dollar volume on one line.
+
+    The reader is about to place an order on a sub-$10 stock, so the cost of
+    getting in and out is part of the setup, not a footnote. Absent book data
+    says so plainly rather than printing a spread of zero.
+    """
+    dollar = m.dollar_vol.get(15)
+    tail = "" if dollar is None else " | 15m " + money(dollar)
+    if m.bid is None or m.ask is None:
+        return "book n/a" + tail
+    mid = (m.bid + m.ask) / 2
+    if not mid:
+        return "book n/a" + tail
+    spread = (m.ask - m.bid) / mid * 100
+    return f"bid {money(m.bid)} / ask {money(m.ask)} (spread {spread:.1f}%){tail}"
+
+
 # --------------------------------------------------------------------------
 # alert 1 -- the trigger
 # --------------------------------------------------------------------------
@@ -237,6 +255,7 @@ def format_alert1(m: Metrics, *, shariah_line: str = "Shariah: checking...",
         # stock is none of the alert tiers.
         head = f"FAST  {m.symbol}  {money(m.price)}{phase_tag(m)}"
     msg.line(("b", f"ALERT: {head}"))
+    msg.line(book_line(m))
 
     if fast:
         # This fired on the 3-5 minute lane, so the 3m and 5m moves are the ones
@@ -472,14 +491,14 @@ def format_build_digest(signals, *, seconds: int = 0, limit: int = 6,
 def build_ai_facts(m: Metrics, enr: Optional[Enrichment], market, *,
                    session: str, pct_rank: Optional[int] = None,
                    time_to_horizon: Optional[dict] = None,
-                   gate=None, bundle=None) -> dict:
+                   gate=None, bundle=None, context: Optional[dict] = None) -> dict:
     """Everything the AI is told, as a dict it will be handed verbatim.
 
     The point of a single call is that the model sees one view of the setup. A
     panel that each read a different subset could contradict itself in the same
     message; here there is exactly one set of facts and one verdict.
     """
-    return {
+    facts = {
         "symbol": m.symbol,
         "price": m.price,
         "prev_close": m.prev_close,
@@ -507,3 +526,10 @@ def build_ai_facts(m: Metrics, enr: Optional[Enrichment], market, *,
         "sector": (enr.sector if enr is not None else ""),
         "time_to_horizon": time_to_horizon or {},
     }
+    # The AI-only context. Attached under one key rather than merged into the
+    # top level, so nothing here can be mistaken for an alert line: the renderer
+    # only ever reads the top-level keys, and the prompt tells the model this
+    # section is for reasoning and not for the reader.
+    if context:
+        facts["context"] = context
+    return facts

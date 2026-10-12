@@ -194,9 +194,18 @@ def test_alert_1_still_shows_the_15_and_60_minute_moves():
 
 
 def test_a_plain_alert_header_has_no_15_or_60_minute_windows():
-    """Spec 11.1: the alert path reads 3m and 5m only."""
+    """Spec 11.1: the alert path reads 3m and 5m only.
+
+    Feature 1 adds a liquidity line ("book n/a | 15m $21,000") that contains
+    the string "15m" as a dollar-volume label, not as a percent window. The
+    old 15m/60m *rise* windows are what the spec bans, so this test checks for
+    those specifically rather than banning the literal substring entirely.
+    """
     text = format_alert1(_m(), fast=False)
-    assert "15m" not in text and "60m" not in text
+    rise_lines = [l for l in text.splitlines() if "%" in l]
+    # The header rise line is the one with the percent format "+12.0%"
+    header_rise = next(l for l in rise_lines if "vs close" in l)
+    assert "15m" not in header_rise and "60m" not in header_rise
 
 
 def test_a_fast_alert_is_never_told_it_is_below_the_alert_bar():

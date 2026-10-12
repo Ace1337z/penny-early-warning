@@ -193,6 +193,41 @@ DEFAULTS: dict[str, str] = {
     "GATE_MIN_SCORE": "55",
     "GATE_REQUIRE_CATALYST": "1",
     "GATE_MAX_PRIMARY": "3",
+    # --- Reality gate: spread + liquidity (Feature 1) ---
+    # A setup you cannot fill is not a setup. The spread ceiling is the hard
+    # one; the three volume numbers describe whether anyone is actually here.
+    "SPREAD_MAX_PCT": "1.5",
+    "MIN_DOLLAR_VOL_15M": "300000",
+    "MIN_AVG_TRADE_SIZE": "200",
+    "MIN_TRADES_15M": "30",
+    # --- Invalidation / abort alerts (Feature 4) ---
+    "INVALIDATION_ALERTS": "1",
+    "INVALIDATION_CHECK_SECONDS": "30",
+    "INVALIDATION_SPREAD_CONSEC_MIN": "2",
+    # --- Confidence calibration (Feature 5) ---
+    "CALIBRATION_MIN_SAMPLES": "30",
+    "CALIBRATION_WINDOW_DAYS": "90",
+    "CALIBRATION_CLAMP_MARGIN": "0.15",
+    # --- Historical analogs (Feature 6) ---
+    "ANALOG_K": "20",
+    "ANALOG_MIN_K": "8",
+    "ANALOG_LOOKBACK_DAYS": "540",
+    # --- Multi-timeframe context (Feature 8) ---
+    "MTF_CONTEXT": "1",
+    # --- Sector heatmap (Feature 9) ---
+    "SECTOR_MIN_HOT_PCT": "2.0",
+    "SECTOR_TOP_N": "3",
+    "SECTOR_HEATMAP_REFRESH_SECONDS": "300",
+    # --- Exit liquidity (Feature 10) ---
+    "EXIT_LIQ_500_MAX_SEC": "300",
+    "EXIT_LIQ_MAX_SLIP_PCT": "1.0",
+    # --- Post-mortems (Feature 14) ---
+    "POSTMORTEM_ENABLED": "1",
+    "POSTMORTEM_IN_EOD": "1",
+    # --- Catalyst decay half-lives, minutes (Feature 15) ---
+    "HALF_LIFE_HARD": "180",
+    "HALF_LIFE_MEDIUM": "120",
+    "HALF_LIFE_SOFT": "30",
     # --- First green day ---
     "FGD_LOOKBACK_DAYS": "5",
     "FGD_MIN_PCT": "15",
@@ -319,7 +354,10 @@ GROUPS: dict[str, list[str]] = {
     "Fast alerts": ["FAST_ON", "FAST_RISE3", "FAST_VOLX3", "FAST_DOLLAR3", "FAST_RISE5",
                     "FAST_VOLX5", "FAST_MAX_FROM_HIGH", "FAST_MIN_VOLUME"],
     "Strategy gate": ["STRATEGY_GATE", "GATE_MIN_SCORE", "GATE_REQUIRE_CATALYST",
-                      "GATE_MAX_PRIMARY", "TIME_FILTER_ENABLED"],
+                      "GATE_MAX_PRIMARY", "TIME_FILTER_ENABLED",
+                      "SPREAD_MAX_PCT", "MIN_DOLLAR_VOL_15M", "MIN_AVG_TRADE_SIZE",
+                      "MIN_TRADES_15M", "EXIT_LIQ_500_MAX_SEC", "EXIT_LIQ_MAX_SLIP_PCT",
+                      "HALF_LIFE_HARD", "HALF_LIFE_MEDIUM", "HALF_LIFE_SOFT"],
     "Strategies": ["FGD_LOOKBACK_DAYS", "FGD_MIN_PCT", "FGD_MIN_VOLX", "FGD_MIN_LOW_AGE",
                    "FGD_MIN_HISTORY_DAYS", "FLOAT_MAX", "SHORT_FLOAT_MIN", "SHORT_RATIO_MIN",
                    "SQUEEZE_MIN_VOLX", "DOLLAR_LEVEL", "DOLLAR_HOLD_MINUTES", "DOLLAR_MIN_VOLX",
@@ -339,9 +377,16 @@ GROUPS: dict[str, list[str]] = {
                    "FAILED_BREAKOUT_RECLAIM_CANDLES", "MSS_LOOKBACK", "LIQUIDITY_GRAB_VOLX",
                    "V_REVERSAL_MIN_DROP", "V_REVERSAL_RECLAIM_VOLX", "EXHAUSTION_HIGH_PROXIMITY",
                    "EXHAUSTION_MIN_MINUTES", "EXHAUSTION_VOLUME_DECLINE"],
-    "Tracking": ["TRACKER_ENABLED", "EOD_REPORT_ENABLED", "EOD_REPORT_TIME", "STATS_WINDOW_DAYS"],
+    "Tracking base": ["TRACKER_ENABLED", "EOD_REPORT_ENABLED", "EOD_REPORT_TIME"],
     "Build feed": ["BUILD_FEED", "BUILD_FEED_SECONDS", "BUILD_TOP_N", "BUILD_MIN_SCORE",
                    "BUILD_RISE15", "BUILD_VOLX15", "BUILD_DOLLAR15", "BUILD_MIN_MINUTES"],
+    "Tracking": ["TRACKER_ENABLED", "EOD_REPORT_ENABLED", "EOD_REPORT_TIME", "STATS_WINDOW_DAYS",
+                 "INVALIDATION_ALERTS", "INVALIDATION_CHECK_SECONDS",
+                 "INVALIDATION_SPREAD_CONSEC_MIN", "POSTMORTEM_ENABLED", "POSTMORTEM_IN_EOD"],
+    "AI context": ["CALIBRATION_MIN_SAMPLES", "CALIBRATION_WINDOW_DAYS",
+                   "CALIBRATION_CLAMP_MARGIN", "ANALOG_K", "ANALOG_MIN_K",
+                   "ANALOG_LOOKBACK_DAYS", "MTF_CONTEXT", "SECTOR_MIN_HOT_PCT",
+                   "SECTOR_TOP_N", "SECTOR_HEATMAP_REFRESH_SECONDS"],
     "Install": ["PENNY_URL", "PENNY_VERSION", "INSTALL_DIR", "PENNY_HOME", "LOG_LEVEL"],
 }
 

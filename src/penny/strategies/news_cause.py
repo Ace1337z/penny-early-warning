@@ -31,6 +31,26 @@ UNEXPLAINED = "UNEXPLAINED"
 
 WEIGHTS = {HARD: 1.0, MEDIUM: 0.6, SOFT: 0.25, DILUTION: -1.0}
 
+# A cause must also be recent enough to plausibly have *caused* the move rather
+# than described it. The decay curve is the primary test; this is the outer bound
+# that stops a HARD catalyst at 09:30 being named as the cause of a 15:00 move.
+CAUSE_MAX_AGE_H = 4.0
+
+# Feature 15: exponential decay replaces the old flat "24h and still counts"
+# window. A press release at 09:35 and one at 15:00 are not the same setup, and
+# a flat window treated them as identical right up until the alert stopped. The
+# half-life is how long a catalyst keeps half its pull:
+#
+#   HARD     180m   an FDA approval still moves a float three hours later
+#   MEDIUM   120m   a priced partnership is news, then it is history
+#   SOFT      30m   a conference presentation is over before the second candle
+#   DILUTION  no decay  a dilution does not get less bad with age
+#
+# At two half-lives the weight is a quarter; a HARD catalyst at 360 minutes is
+# therefore worth what a fresh SOFT one is, which is exactly right -- by then
+# that is all it is.
+HALF_LIFE_MIN = {HARD: 180.0, MEDIUM: 120.0, SOFT: 30.0, DILUTION: 0.0}
+
 # Outlets that are usually first and usually right about a press release.
 SOURCE_TRUST = {"benzinga": 0.9, "pr newswire": 0.95, "business wire": 0.95,
                 "globe newswire": 0.95, "accesswire": 0.9, "sec": 1.0,
@@ -121,6 +141,30 @@ def trust_of(source: str) -> float:
     return SOURCE_TRUST.get(_norm(source).lower(), 0.7)
 
 
+def effective_weight(base_weight: float, cls: str, age_minutes: Optional[float],
+                     half_life: Optional[dict] = None) -> float:
+    """base_weight * 2 ** (-age / half_life): the weight halves every half_life.
+
+    Written as 2**(-t/T) rather than exp(-t/T) because the config key is named
+    HALF_LIFE and the spec's own test ("HARD catalyst at 180m has ~0.5 effective
+    weight") only holds if 180 minutes is literally the half-life. exp(-t/T)
+    would put it at 0.37 and make every key a lie about what it controls.
+
+    DILUTION has a half-life of zero, which would divide by zero, so it is
+    handled before the formula: a dilution never decays. So does an item with an
+    unknown age -- an undated headline keeps full weight rather than being
+    silently discounted to nothing, because the honest read is "we do not know
+    how old this is", and the price action already priced in whatever it was.
+    """
+    half = (half_life or HALF_LIFE_MIN)
+    if cls == DILUTION or age_minutes is None or float(age_minutes) < 0:
+        return float(base_weight)
+    hl = float(half.get(cls, 0) or 0)
+    if hl <= 0:
+        return float(base_weight)
+    return float(base_weight) * (2.0 ** (-float(age_minutes) / hl))
+
+
 def rank_catalysts(b, max_age_min: float = 1440.0) -> tuple:
     """Rank the news for this symbol.
 
@@ -143,6 +187,7 @@ def rank_catalysts(b, max_age_min: float = 1440.0) -> tuple:
             continue
         cls = classify(headline)
         src = _norm(item.get("source"))
+        base = WEIGHTS[cls]
         entry = {
             "headline": headline,
             "source": src,
@@ -150,7 +195,8 @@ def rank_catalysts(b, max_age_min: float = 1440.0) -> tuple:
             "published": str(item.get("published") or ""),
             "age_minutes": age if age is not None else 9999.0,
             "class": cls,
-            "weight": WEIGHTS[cls],
+            "base_weight": base,
+            "weight": effective_weight(base, cls, age),
             "trust": trust_of(src),
         }
         if cls == DILUTION:
@@ -166,10 +212,14 @@ def rank_catalysts(b, max_age_min: float = 1440.0) -> tuple:
                 dilution_reason = (f"offering priced at ${min(nums):.2f} "
                                    f"below the ${open_px:.2f} open")
             entry["weight"] = -1.0
-        entry["rank"] = entry["weight"] * entry["trust"] / (1.0 + entry["age_minutes"] / 240.0)
+        entry["effective_weight"] = entry["weight"]
+        # Rank by decayed weight times outlet trust. Ranking on raw weight would
+        # put a six-hour-old approval above a fresh one from a worse outlet
+        # purely because approvals weigh more, which is the opposite of right.
+        entry["rank"] = entry["weight"] * entry["trust"]
         ranked.append(entry)
 
-    ranked.sort(key=lambda e: (e["weight"], e["rank"]), reverse=True)
+    ranked.sort(key=lambda e: (e["effective_weight"], e["rank"]), reverse=True)
     best = ranked[0] if ranked else None
     return best, ranked, dilution_reason
 
@@ -183,12 +233,15 @@ def extract_cause(catalysts: list[dict], b, filings: Optional[list] = None) -> C
     is more useful than attaching a plausible-looking PR.
     """
     ranked = catalysts or []
-    max_age_h = 4.0
+    max_age_h = CAUSE_MAX_AGE_H
     for e in ranked:
         if e["class"] == DILUTION:
             continue
         if e["age_minutes"] > max_age_h * 60:
             continue
+        # The decay curve is now the age test. A headline four hours old has
+        # already fallen below the 0.6 floor for anything but a HARD catalyst,
+        # so this one comparison replaces the old separate age window.
         if e["weight"] < 0.6:
             continue
         conf = "high" if (e["weight"] >= 1.0 and e["trust"] >= 0.9) else "medium"
@@ -235,7 +288,8 @@ def cause_lines(cause: Cause) -> list[str]:
         lines.append(f"SOURCE: {src}{age} - {cause.url}")
     else:
         lines.append(f"SOURCE: {src}{age}")
-    lines.append(f"CONFIDENCE: {cause.confidence}")
+    detail = f", {cause.cls.lower()}, effective weight {cause.weight:.2f}" if cause.weight else ""
+    lines.append(f"CONFIDENCE: {cause.confidence}{detail}")
     if cause.supporting:
         lines.append(f"SUPPORTING: {cause.supporting}")
     return lines

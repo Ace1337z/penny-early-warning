@@ -45,6 +45,10 @@ class Metrics:
     bid: Optional[float] = None
     ask: Optional[float] = None
     spread_pct: Optional[float] = None
+    # Print count over the last 15 minutes. No configured source publishes it, so
+    # this stays None and the reality gate reports INSUFFICIENT_DATA on the
+    # average-trade-size and print-count tests rather than inventing a number.
+    trades_15m: Optional[int] = None
     market_cap: Optional[float] = None
     float_shares: Optional[float] = None
     halted: bool = False
@@ -327,6 +331,15 @@ class Scorer:
         m.halted = bool(quote.get("halted"))
         if m.bid and m.ask and m.ask > 0:
             m.spread_pct = safe_div(m.ask - m.bid, m.ask) * 100.0
+        for key in ("trades_15m", "trade_count", "trades"):
+            raw_trades = quote.get(key)
+            if raw_trades in (None, ""):
+                continue
+            try:
+                m.trades_15m = int(float(raw_trades))
+                break
+            except (TypeError, ValueError):
+                continue
 
         m.baseline = st.baseline(self.cfg.float("BASELINE_FALLBACK", 300.0),
                                  self.cfg.float("BASELINE_MIN_PER_MIN", 20.0))

@@ -104,12 +104,13 @@ $PENNY --config $CONFIG models refresh         # re-read the provider's model li
 $PENNY --config $CONFIG doctor                 # flag a shipped example id the provider lacks
 ```
 
-Or from Telegram: `/eod`, `/eod YYYY-MM-DD`, `/stats` and `/tracked` report on the
-alerts; `/set AI_MODEL your-id` changes the decision model.
+Or from Telegram: `/eod`, `/eod YYYY-MM-DD`, `/stats`, `/tracked` and
+`/postmortem SYM [DATE]` report on the alerts; `/model` shows the decision model
+and `/model your-id` changes it (`/set AI_MODEL your-id` does the same).
 
 `penny doctor` also flags the shipped example id: if the configured model is not on
 the provider it says so and lists what the provider does offer.
-`/set AI_MODEL your-id` applies from the next cycle without a restart.
+`/model your-id` applies from the next alert without a restart.
 
 ---
 
@@ -237,9 +238,9 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 | `/check` takes minutes | there is exactly one decision call, bounded by `AI_TIMEOUT` (default 45 s), and hung endpoints are not replayed per body variant. Read the per-stage log lines (`check SYM: <stage> in Ns`) to see whether enrichment or market context is the cost; lower `AI_TIMEOUT` for snappier checks |
 | Telegram commands ignored | the chat id must match `TELEGRAM_CHAT_ID`; re-run `$PENNY detect-chat` |
 | No decision on alerts | `$PENNY doctor`; check `AI_BASE_URL`/`AI_KEY`/`AI_MODEL`. The usual cause is `AI_MODEL` still holding the shipped example id, which your provider does not offer |
-| Example model id still configured | `penny doctor` detects it and lists what your provider offers; set it: `/set AI_MODEL your-model-id` (no restart needed) |
-| Provider cannot list models | that is normal for many OpenAI-compatible gateways; set the id by hand: `/set AI_MODEL your-model-id` |
-| `/set AI_MODEL` had no effect | on an older build, restart the service; the current build reads the value on the next cycle |
+| Example model id still configured | `penny doctor` detects it and lists what your provider offers; set it: `/model your-model-id` (no restart needed) |
+| Provider cannot list models | that is normal for many OpenAI-compatible gateways; set the id by hand: `/model your-model-id` |
+| `/set AI_MODEL` had no effect | on an older build, restart the service; the current build reads the value on the next cycle (`/model your-id` is the same setting, one command) |
 | Provider returns `content: null` | reasoning models put the answer in `reasoning_content`; the gateway reads that. An empty completion is now a reported error |
 | "BACKUP OVERDUE" | `$PENNY backup now`; check `BACKUP_REMOTE` and the passphrase |
 | High memory | lower `WORKERS`; check `sizing.log` and the `cycles` table |

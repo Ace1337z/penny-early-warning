@@ -40,6 +40,13 @@ def metrics_to_bundle(m, *, enr=None, cfg=None, now=None, history=None,
         day_low=getattr(m, "day_low", None),
         cum_volume=m.cum_volume,
         pct_vs_close=m.pct_vs_close,
+        bid=getattr(m, "bid", None),
+        ask=getattr(m, "ask", None),
+        spread_pct=getattr(m, "spread_pct", None),
+        # None on a Finviz-only feed, which publishes no print count. The reality
+        # gate treats that as INSUFFICIENT_DATA rather than guessing: an invented
+        # trade count would clear or block the gate on a made-up number.
+        trades_15m=getattr(m, "trades_15m", None),
         rise=dict(m.rise or {}),
         volx=dict(m.volx or {}),
         dollar_vol=dict(m.dollar_vol or {}),
@@ -122,5 +129,20 @@ def run_gate(m, *, enr=None, cfg=None, now=None, history=None) -> tuple[Strategy
         min_score=cfg.float("GATE_MIN_SCORE", 55.0) if cfg else 55.0,
         require_catalyst=cfg.bool("GATE_REQUIRE_CATALYST", True) if cfg else True,
         time_filter=cfg.bool("TIME_FILTER_ENABLED", True) if cfg else True,
+        **gate_limits(cfg),
     )
     return gate, b
+
+
+def gate_limits(cfg) -> dict:
+    """The gate thresholds that come from config, read once per evaluation."""
+    if cfg is None:
+        return {}
+    return {
+        "spread_max_pct": cfg.float("SPREAD_MAX_PCT", 1.5),
+        "min_dollar_vol_15m": cfg.float("MIN_DOLLAR_VOL_15M", 300000.0),
+        "min_avg_trade_size": cfg.float("MIN_AVG_TRADE_SIZE", 200.0),
+        "min_trades_15m": cfg.int("MIN_TRADES_15M", 30),
+        "exit_liq_max_sec": cfg.int("EXIT_LIQ_500_MAX_SEC", 300),
+        "exit_liq_max_slip_pct": cfg.float("EXIT_LIQ_MAX_SLIP_PCT", 1.0),
+    }
