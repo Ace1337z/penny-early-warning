@@ -226,6 +226,14 @@ class FakeFinviz:
         if stock is None:
             return None
         price = stock.price(self.minute)
+        # The real normalize_row reads the row's own Price column; honor it here
+        # too so a forced mismatch (the simulation's DATA MISMATCH check) survives.
+        raw = row.get("Price")
+        if raw:
+            try:
+                price = float(str(raw).replace(",", "").replace("$", ""))
+            except ValueError:
+                pass
         highs = [stock.price(i) for i in range(0, self.minute + 1)] or [price]
         return {
             "symbol": symbol,

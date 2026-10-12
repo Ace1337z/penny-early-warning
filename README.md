@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-479%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-481%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -157,8 +157,8 @@ you can act on a symbol without typing anything.
         ALERT 1 (Telegram, instant, no AI)
                             v
    parallel enrichment: Finviz verification - candles (TwelveData/Alpaca/Yahoo) - news
-   (Finviz first, wires as fallback) - filings (SEC, Finviz) - short interest/volume -
-   market context
+   (the ticker's Finviz quote page, today only) - filings (SEC, Finviz) - short
+   interest/volume - market context
                             v
         ALERT 2 (cause first, "AI unavailable" placeholder)
                             v
@@ -250,11 +250,14 @@ actually produced.
   No panel, no leaderboard, no agreement score, no persona. A report that claims `ENTER`
   on a gate that did not pass is rejected, not repaired.
 - **Cause-first alerts** - every message names exactly one reason the stock moved, with
-  its outlet, age and confidence, or says `none found`. A news dump is not a cause. An
-  unrecognised wire headline counts as a real event, not noise; only routine notices and
-  chatter are dropped, and a real event stays nameable for 24h. When no cause is named,
-  the freshest fetched headline is still shown (`NEWS ...`), so a real PR the feed
-  carried is never invisible.
+  its outlet, age and confidence, or says `none found`. A news dump is not a cause. The
+  news is the ticker's own Finviz quote page, **today only**: an alert answers "why is it
+  moving now", so a prior-session headline is background. No wire feeds are merged and the
+  market-wide export (which matched on headline text and could attach another company's
+  story) is never used. An unrecognised wire headline counts as a real event, not noise;
+  only routine notices and chatter are dropped, and a real event stays nameable for 24h.
+  When no cause is named, the freshest fetched headline is still shown (`NEWS ...`), so a
+  real PR the feed carried is never invisible.
 - **Per-alert tracking with an end-of-day report** - every alerted name is measured from
   the alert price to the close, and the day's alerts are reported once, as a set
   (`/eod`). `/stats` ranks the detectors by what they actually produced.
@@ -310,9 +313,11 @@ actually produced.
 - **Prices that match the clock** - Finviz keeps `Price`/`Change` frozen at the regular
   close after 16:00 ET, so the after-hours columns are used from 16:00 until the next
   open (including the whole weekend), and `session_for()` knows a Saturday is `closed`.
-  TwelveData supplies the freshest single-symbol price, volume and 1-minute candles, so
-  the gate's detectors and the cause ranking are built from *now* rather than from
-  whatever candle set happened to be cached.
+  The feed quote and the Finviz verification row are normalized with the same session, so
+  an after-hours alert is not flagged with a bogus "DATA MISMATCH" against the frozen
+  regular close. TwelveData supplies the freshest single-symbol price, volume and
+  1-minute candles, so the gate's detectors and the cause ranking are built from *now*
+  rather than from whatever candle set happened to be cached.
 - **On-demand checks for any symbol** - `/check SYM` fetches the symbol live (including
   after-hours) rather than reading the last cycle's cache, so it works for NVDA or AAPL
   just as well as for a sub-$10 name.
@@ -356,7 +361,7 @@ actually produced.
 | SEC contact (`Name email`) | recommended | SEC EDGAR requests |
 | halalterminal.com API key | optional | Shariah screening |
 | TwelveData | recommended | fresh single-symbol price, volume and 1-minute candles |
-| Alpaca / Finnhub | optional | candle fallback, extra news (fallback only: Finviz news is the source) |
+| Alpaca / Finnhub | optional | candle fallback |
 | Backup passphrase + destination | optional | encrypted off-server backups |
 
 ---
@@ -598,7 +603,7 @@ fake Telegram, and asserts the documented acceptance results:
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
 Current status: `selftest` **ALL PASS** (85 checks), `simulate` **ALL PASS** (54 checks),
-`pytest` **479 passed** (1 skipped).
+`pytest` **481 passed** (1 skipped).
 
 ---
 

@@ -239,6 +239,22 @@ def test_after_hours_price_used_when_the_market_is_closed(cfg):
     assert abs(quote["price"] - 1.41 * 1.2752) < 1e-6
 
 
+def test_verify_compares_like_for_like_in_the_after_hours_session(cfg, monkeypatch):
+    """A post-market alert printed "DATA MISMATCH: price feed 1.79 vs Finviz 1.41":
+    the quote had gone through normalize_row (After-Hours price) but verify() read
+    the raw regular Price column, so the two were never on the same basis."""
+    from penny.enrich import Enricher
+
+    client = _client(cfg)
+    row = _row()
+    monkeypatch.setattr(client, "verify", lambda t: row)
+    e = Enricher(None, finviz=client)
+    quote = client.normalize_row(row, "post")
+    v = e._verify("VCIG", quote)["verification"]
+    assert v["status"] == "ok"
+    assert v["mismatch"] == []
+
+
 def test_intraday_performance_is_exposed(cfg):
     client = _client(cfg)
     row = _row()

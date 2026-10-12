@@ -40,6 +40,26 @@ def _parse_ts(text: str) -> Optional[datetime]:
         return None
 
 
+def _is_today(published) -> bool:
+    """True when a headline's stamp falls on today's ET calendar date (C45).
+
+    An alert answers "why is it moving now", so only the current session's
+    headlines are candidates. A prior-session PR is background and naming it
+    describes the last move, not this one. An undated item is kept: dropping it
+    would hide a headline the feed did carry, and the age renderer still shows
+    what it knows.
+    """
+    text = str(published or "").strip()
+    if not text:
+        return True
+    dt = _parse_ts(text)
+    if dt is None:
+        return True
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ET)
+    return dt.astimezone(ET).date() == datetime.now(ET).date()
+
+
 @dataclass
 class Enrichment:
     symbol: str
@@ -251,67 +271,50 @@ class Enricher:
         return best
 
     def _news(self, symbol: str, *, fast: bool = True) -> tuple[list[dict], int]:
-        """Merge several sources, de-duplicate, newest first, up to 8 items (6.8).
+        """Today's Finviz headlines for one symbol, newest first, up to 8 (C45).
 
-        Finviz is asked first: it is the fastest source and the one feed already
-        being polled for the quote, so a headline it carries costs no extra round
-        trip. The per-symbol feeds (Alpaca, Finnhub, Google News) are slower, so
-        on the alert path (`fast=True`) they are skipped once Finviz named the
-        symbol. The invalidation watcher passes `fast=False`: it must still see a
-        dilutive PR that only the wires carry, and missing one is the whole risk
-        that watcher exists to cover.
+        Finviz is the only source. The scanner already fetches this symbol's
+        Finviz quote page, so its own `news-table` is the ticker's news -- keyed
+        by ticker, not matched on headline text. The old merge pulled in Alpaca,
+        Finnhub and Google News and fell back to Finviz's *market-wide*
+        `/export/news` CSV, which matches on the headline string; that is how an
+        unrelated story got attached to a ticker the scanner had picked up. Only
+        items stamped today (ET) count: an alert answers "why is it moving now",
+        so a headline from a prior session is background, not a cause.
+
+        `fast` is kept for the callers that pass it; the source no longer
+        changes with it.
         """
-        items: list[dict] = []
-
-        def add(source_items, name):
-            for item in source_items or []:
-                title = str(item.get("title") or "").strip()
-                if not title:
-                    continue
-                items.append({
-                    "title": title,
-                    "source": item.get("source") or name,
-                    "url": item.get("url") or "",
-                    "published": item.get("published") or "",
-                    "summary": (item.get("summary") or "")[:200],
-                })
-
+        rows = []
         if self.finviz:
             try:
-                add(self._finviz_news(symbol), "finviz")
+                rows = self._finviz_news(symbol)
             except FinvizTokenRejected:
-                pass
+                rows = []
             except Exception as exc:  # noqa: BLE001
                 log.debug("finviz news failed: %s", exc)
-
-        if not (fast and items):
-            if self.alpaca and getattr(self.alpaca, "configured", False):
-                try:
-                    add(self.alpaca.news([symbol]), "alpaca")
-                except Exception as exc:  # noqa: BLE001
-                    log.debug("alpaca news failed: %s", exc)
-            if self.finnhub and getattr(self.finnhub, "configured", False):
-                try:
-                    add(self.finnhub.company_news(symbol), "finnhub")
-                except Exception as exc:  # noqa: BLE001
-                    log.debug("finnhub news failed: %s", exc)
-            if self.yahoo:
-                try:
-                    add(self.yahoo.google_news(symbol), "google-news")
-                except Exception as exc:  # noqa: BLE001
-                    log.debug("google news failed: %s", exc)
+                rows = []
 
         seen: set[str] = set()
         merged: list[dict] = []
-        for item in items:
-            key = item["title"][:60].lower()
+        for item in rows:
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            key = title[:60].lower()
             if key in seen:
                 continue
             seen.add(key)
-            item["age"] = self._age_of(item.get("published"))
-            merged.append(item)
+            merged.append({
+                "title": title,
+                "source": item.get("source") or "finviz",
+                "url": item.get("url") or "",
+                "published": item.get("published") or "",
+                "summary": (item.get("summary") or "")[:200],
+                "age": self._age_of(item.get("published")),
+            })
 
-        merged.sort(key=lambda i: (i.get("published") == "", str(i.get("published")), ), reverse=False)
+        merged = [i for i in merged if _is_today(i.get("published"))]
         merged.sort(key=lambda i: str(i.get("published") or ""), reverse=True)
         outlets = len({i["source"] for i in merged})
         return merged[:8], outlets
@@ -320,28 +323,16 @@ class Enricher:
         """Per-ticker headlines from the Finviz quote page.
 
         The `/export/news` CSV is market-wide and matches on the headline text, so
-        it misses a small cap whose PR says "SkyAI" and never "SKYA" -- which is
-        exactly the alert that needs a cause. The quote page's own news table is
-        keyed by ticker, so it is the source. Falls back to the market-wide CSV
-        when the quote page yields nothing (older cached pages, token hiccups).
+        it misses a small cap whose PR says "SkyAI" and never "SKYA", and it
+        attaches a same-worded story about another company. The quote page's own
+        `news-table` is keyed by ticker, so it is the only source.
         """
         if not self.finviz:
             return []
         ticker_news = getattr(self.finviz, "ticker_news", None)
         if callable(ticker_news):
-            rows = ticker_news(symbol)
-            if rows:
-                return rows
-        sym = str(symbol or "").upper()
-        out = []
-        for row in (self.finviz.news("1") or [])[:60]:
-            title = row_get(row, "Title", "Headline") or ""
-            if sym and sym in title.upper():
-                out.append({"title": title,
-                            "source": row_get(row, "Source") or "finviz",
-                            "url": row_get(row, "Url", "URL") or "",
-                            "published": row_get(row, "Date") or ""})
-        return out
+            return ticker_news(symbol) or []
+        return []
 
     @staticmethod
     def _age_of(published) -> str:
@@ -476,6 +467,19 @@ class Enricher:
         f_price = row_num(row, "Price")
         f_change = row_num(row, "Change")
         f_volume = row_num(row, "Volume")
+        # Compare like-for-like. `quote` went through normalize_row, so in the
+        # after-hours session it carries the After-Hours price; reading the raw
+        # `Price` column here (the regular close) made every post-market alert
+        # print a false "price feed X vs Finviz Y" mismatch. Normalizing the
+        # verification row with the same session keeps the two on one basis.
+        session = str(quote.get("session") or "regular")
+        try:
+            norm = self.finviz.normalize_row(row, session) or {}
+        except Exception as exc:  # noqa: BLE001
+            log.debug("finviz verify normalize failed for %s: %s", symbol, exc)
+            norm = {}
+        f_price = norm.get("price") or f_price
+        f_volume = norm.get("cum_volume") or f_volume
         m_price = quote.get("price")
         m_volume = quote.get("cum_volume")
         mismatch = []

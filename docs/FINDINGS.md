@@ -335,7 +335,7 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 479 passed, 1 skipped
+### Unit tests (`pytest -q`) — 481 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
 journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
@@ -961,3 +961,39 @@ absence of a named cause is itself a signal - name the mechanism or say
   window shorter than the horizon the rest of the code reasons about, a config
   key nothing reads, and a render path with no room for a non-cause headline
   stacked into the same false negative. Any one alone would have hidden the PR.
+
+## C45. The news was merged from other feeds, and the alert could cite a story that was not the ticker's
+
+- **Question:** the MNDR alert named a "Mobile-health Network Solutions ...
+  Acquisition of Malaysian AI Data Centers" headline. The scanner had picked up
+  MNDR. Why was the cause not simply *MNDR's own* Finviz news, and why could a
+  story about a different company appear?
+- **Finding:** the news path merged four feeds. `_news()` asked Finviz first but
+  then added Alpaca, Finnhub and Google News, and `_finviz_news` fell back to
+  Finviz's **market-wide** `/export/news` CSV, which matches on the headline
+  string (`sym in title.upper()`). Any headline that merely spelled the ticker --
+  a sector roundup, another company's PR that mentions it -- matched and could be
+  ranked as the cause. Nothing pinned the cause to the ticker the scanner had
+  actually picked up, and nothing bounded it to the current session, so an
+  unrelated or stale item could be named.
+- **Default adopted:** Finviz is the only news source. `_finviz_news` reads the
+  ticker's own quote-page `news-table` (`ticker_news`, keyed by ticker) and never
+  falls back to the market-wide CSV; the wire feeds (Alpaca/Finnhub/Google) are
+  no longer consulted for the cause. `_news` keeps only items stamped **today**
+  (ET) via `_is_today` -- an alert answers "why is it moving now", so a
+  prior-session headline is background, not a cause. The `fast` flag is retained
+  for callers but no longer changes the source.
+- **Also in this pass:** the `DATA MISMATCH` line compared the feed quote (which
+  had gone through `normalize_row`, so after hours it carried the After-Hours
+  price) against the raw `Price` column (the frozen regular close), so every
+  post-market alert printed a false mismatch. `_verify` now normalizes its row
+  with the same session, keeping the two on one basis. The simulation double
+  learned to honor the row's `Price` so its forced mismatch still exercises the
+  check.
+- **Where:** `src/penny/enrich.py` (`_news`, `_finviz_news`, `_is_today`,
+  `_verify`), `src/penny/simulation.py` (`normalize_row`), `tests/test_news_age.py`,
+  `tests/test_finviz.py`.
+- **Why it matters:** a cause that is not the ticker's own news is worse than no
+  cause: it is a confident, wrong answer, and the alert is read as fact. Pinning
+  the source to the ticker's Finviz page and the window to today makes "the
+  cause" mean what it says.

@@ -1,10 +1,12 @@
-"""News source order and headline age.
+"""News source, session scope and headline age.
 
-Three bugs this pins down: the Finviz news export is market-wide and missed a
-small cap whose PR says "SkyAI" not "SKYA", so the alert had no cause at all; the
-export stamps UTC and reading it as ET pushed every fresh headline into the future
-so the age collapsed to "0m ago"; and the per-symbol feeds were fetched before
-Finviz, so the fastest source was not the one that decided the news.
+Bugs this pins down: the Finviz news export is market-wide and missed a small cap
+whose PR says "SkyAI" not "SKYA", so the alert had no cause at all (and could
+attach a same-worded story about another company); the export stamps UTC and
+reading it as ET pushed every fresh headline into the future so the age collapsed
+to "0m ago"; and the per-symbol feeds were merged in, so an alert could cite a
+headline that did not belong to the ticker the scanner had picked up. News is now
+the ticker's own Finviz page, today only.
 """
 
 from __future__ import annotations
@@ -123,16 +125,16 @@ def test_a_page_without_a_news_table_is_not_an_error():
     assert parse_finviz_news_table("<html><body>nothing</body></html>") == []
 
 
-# --- Finviz decides the news; the slow feeds are the fallback ---------------
+# --- Finviz is the only source; only today's headlines count (C45) ----------
 
 def _enricher(finviz):
     return Enricher(None, finviz=finviz)
 
 
-def _ticker_rows():
+def _ticker_rows(published=None):
+    published = published or time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
     return [{"title": "ACME wins a $12M contract", "source": "Benzinga",
-             "url": "https://x/y",
-             "published": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())}]
+             "url": "https://x/y", "published": published}]
 
 
 def test_finviz_headline_is_used_and_tagged_with_its_outlet():
@@ -146,7 +148,23 @@ def test_finviz_headline_is_used_and_tagged_with_its_outlet():
     assert items[0]["age"]
 
 
-def test_the_market_wide_export_is_the_fallback_when_the_page_yields_nothing():
+def test_a_prior_session_headline_is_not_todays_news():
+    """An alert answers "why now"; a headline from a prior day is background."""
+    old = time.strftime("%Y-%m-%dT%H:%M:%S%z",
+                        time.localtime(time.time() - 3 * 86400))
+
+    class F:
+        def ticker_news(self, t):
+            return _ticker_rows(published=old)
+
+    items, _ = _enricher(F())._news("ACME")
+    assert items == []
+
+
+def test_the_market_wide_export_is_never_used():
+    """The /export/news CSV matches on headline text and attached a story about
+    another company. Finviz's per-ticker table is the only source; when the quote
+    page yields nothing the result is empty, not the market-wide row."""
     class F:
         def ticker_news(self, t):
             return []
@@ -154,15 +172,13 @@ def test_the_market_wide_export_is_the_fallback_when_the_page_yields_nothing():
         def news(self, view):
             return [{"Title": "ACME rallies on a contract", "Source": "Benzinga",
                      "Date": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-                     "Url": "u"},
-                    {"Title": "S&P closes at a record", "Source": "WSJ",
-                     "Date": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), "Url": "u"}]
+                     "Url": "u"}]
 
     items, _ = _enricher(F())._news("ACME")
-    assert [i["title"] for i in items] == ["ACME rallies on a contract"]
+    assert items == []
 
 
-def test_slow_feeds_are_skipped_once_finviz_names_the_symbol():
+def test_slow_feeds_are_never_asked():
     calls = {"n": 0}
 
     class F:
@@ -176,24 +192,22 @@ def test_slow_feeds_are_skipped_once_finviz_names_the_symbol():
 
     e = Enricher(None, finviz=F(), yahoo=Y())
     e._news("ACME", fast=True)
+    e._news("ACME", fast=False)
     assert calls["n"] == 0
 
 
-def test_the_invalidation_watcher_still_asks_every_feed():
-    """A dilutive PR that only a wire carries must not be skipped."""
-    calls = {"n": 0}
-
+def test_only_finviz_carries_the_news_even_for_the_watcher():
+    """The invalidation watcher used to pull the wires too. Every headline now
+    comes from the ticker's Finviz page, so a wire-only item is not a source."""
     class F:
         def ticker_news(self, t):
             return _ticker_rows()
 
     class Y:
         def google_news(self, symbol, limit=8):
-            calls["n"] += 1
             return [{"title": "ACME prices an offering", "source": "wire",
                      "url": "u2", "published": ""}]
 
     e = Enricher(None, finviz=F(), yahoo=Y())
     items, _ = e._news("ACME", fast=False)
-    assert calls["n"] == 1
-    assert any("offering" in i["title"] for i in items)
+    assert items and all(i["source"] != "wire" for i in items)
