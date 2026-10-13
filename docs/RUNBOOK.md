@@ -122,9 +122,26 @@ bash update.sh v1.1.0       # a specific tag
 bash update.sh --rollback   # restore the previous version
 ```
 
-The updater takes a backup first, extracts the new archive over the install directory
+The updater takes a backup first, then installs the newest version
 (configuration, databases and bar files are untouched), reinstalls dependencies, runs the
 self-test, restarts the service and keeps the previous version under `.rollback/`.
+
+If the install directory is a real git checkout, the updater uses `git fetch` +
+`git reset --hard origin/main` (or checks out the requested tag), which removes files that
+were deleted upstream and reports "already up to date" when nothing changed. Otherwise it
+downloads a GitHub archive and overlays it (an overlay cannot remove stale files).
+
+**If an update reports success but nothing changed**, the host is not a git checkout. Fix it
+once:
+
+```bash
+cd /opt/penny
+git init && git remote add origin https://github.com/Ace1337z/penny-early-warning.git
+git fetch origin main && git reset --hard origin/main
+.venv/bin/pip install -q -e .
+.venv/bin/penny --config config.env selftest
+sudo systemctl restart penny
+```
 
 If an update fails: `bash update.sh --rollback`, then check `journalctl -u penny -n 100`.
 

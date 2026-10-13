@@ -2,10 +2,17 @@
 #
 # Penny Stock Early-Warning System updater.
 #
-# Downloads the newest archive (or a requested tag), extracts it over the
-# install directory (configuration, databases and bar files are untouched),
-# reinstalls dependencies, runs the offline self-test, restarts the service and
-# keeps the previous version for rollback.
+# Downloads the newest version and installs it over the install directory
+# (configuration, databases and bar files are untouched).
+#
+# When the install directory is a real git checkout, the updater does a
+# `git fetch` + `git reset --hard origin/main` (or checks out the requested tag),
+# which removes files that were deleted upstream and reports "already up to date"
+# instead of silently re-overlaying. Otherwise it falls back to downloading a
+# GitHub archive and overlaying it.
+#
+# It then reinstalls dependencies, runs the offline self-test, restarts the
+# service and keeps the previous version for rollback.
 #
 # Usage:
 #   bash update.sh                 # update to the configured version (main by default)

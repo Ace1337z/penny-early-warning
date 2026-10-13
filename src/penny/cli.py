@@ -451,20 +451,111 @@ def cmd_restore(args) -> int:
         runtime.close()
 
 
-def cmd_update(args) -> int:
-    """Download the newest archive over the install directory; keep the previous version."""
+# --- updater helpers --------------------------------------------------------
+
+def _git_available() -> bool:
+    import shutil as _shutil
+    return _shutil.which("git") is not None
+
+
+def _is_git_checkout(install_dir: Path) -> bool:
+    """A directory we can `git fetch` into: it has a .git and git is on PATH."""
+    return (install_dir / ".git").exists() and _git_available()
+
+
+def _git(install_dir: Path, *argv: str,
+         timeout: int = 180) -> "tuple[int, str]":
+    """Run git in install_dir; return (returncode, combined output)."""
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(install_dir), *argv],
+            capture_output=True, text=True, timeout=timeout,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except Exception as exc:  # noqa: BLE001 - surfaced to the operator
+        return 1, f"git {' '.join(argv)} failed: {exc}"
+    out = (proc.stdout or "") + (proc.stderr or "")
+    return proc.returncode, out.strip()
+
+
+def _git_head(install_dir: Path) -> str:
+    code, out = _git(install_dir, "rev-parse", "--short", "HEAD")
+    return out.splitlines()[0].strip() if code == 0 and out else ""
+
+
+def _update_git(cfg: Config, args, install_dir: Path, version: str) -> int:
+    """Bring a real git checkout up to date. Returns the process exit code."""
+    if version == "main":
+        ref_spec, fetch_msg = "main", "origin/main"
+        code, out = _git(install_dir, "fetch", "--prune", "origin", "main")
+        if code != 0:
+            print(f"git fetch failed:\n{out}")
+            return 1
+        remote_head = _git(install_dir, "rev-parse", "--short", "origin/main")[1]
+        local_head = _git_head(install_dir)
+        changed = remote_head and remote_head != local_head
+        action = ["reset", "--hard", "origin/main"]
+    else:
+        ref_spec, fetch_msg = version, f"tags/{version}"
+        code, out = _git(install_dir, "fetch", "--tags", "origin")
+        if code != 0:
+            print(f"git fetch failed:\n{out}")
+            return 1
+        remote_head = _git(install_dir, "rev-parse", "--short", f"tags/{version}")[1]
+        local_head = _git_head(install_dir)
+        changed = bool(remote_head)
+        action = ["checkout", "--force", f"tags/{version}"]
+
+    if not remote_head:
+        print(f"could not resolve {fetch_msg} after fetching; nothing was changed")
+        return 1
+
+    # Back up the data before touching a single file (matches the archive path).
+    if not args.no_backup:
+        from .runtime import build
+        runtime = build(cfg, with_engine=False, console_logs=False)
+        try:
+            runtime.backup.run("pre-update")
+        finally:
+            runtime.close()
+
+    if not changed and version == "main":
+        print(f"already up to date at {local_head or remote_head} (origin/main); "
+              f"nothing to install")
+        cfg.set("PENNY_VERSION", version)
+        cfg.save()
+        return 0
+
+    code, out = _git(install_dir, *action)
+    if code != 0:
+        print(f"git {' '.join(action)} failed:\n{out}")
+        return 1
+    new_head = _git_head(install_dir)
+
+    print(f"updated {local_head or '?'} -> {new_head} on {ref_spec}")
+    cfg.set("PENNY_VERSION", version)
+    cfg.save()
+    print("reinstalling dependencies and running the self-test...")
+    venv_pip = install_dir / ".venv" / "bin" / "pip"
+    if venv_pip.exists():
+        os.system(f"cd {install_dir} && .venv/bin/pip install -q -e .")
+    from .selftest import run_selftest
+    report = run_selftest(cfg)
+    print(report.text())
+    return 0 if report.ok else 1
+
+
+def _update_archive(cfg: Config, args, install_dir: Path, version: str) -> int:
+    """Fall back to downloading a GitHub archive and overlaying it (no git checkout)."""
     import shutil
     import tarfile
     import tempfile
     import urllib.request
 
-    cfg = _config(args)
     base = str(cfg.raw("PENNY_URL") or "").rstrip("/")
     if not base:
         print("PENNY_URL is not set")
         return 2
-    version = args.version or cfg.raw("PENNY_VERSION") or "main"
-    install_dir = Path(args.install_dir or cfg.raw("INSTALL_DIR") or Path.cwd())
     url = f"{base}/archive/refs/{'tags' if version != 'main' else 'heads'}/{version}.tar.gz"
     print(f"downloading {url}")
 
@@ -479,13 +570,19 @@ def cmd_update(args) -> int:
         with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
             archive = workdir / "src.tar.gz"
             archive.write_bytes(resp.read())
+        if not archive.stat().st_size:
+            print("download was empty (the CDN may be serving a stale copy); aborting")
+            return 1
         with tarfile.open(archive, "r:gz") as tar:
             tar.extractall(workdir / "src")
         roots = [p for p in (workdir / "src").iterdir() if p.is_dir()]
         if not roots:
-            print("archive was empty")
+            print("archive was empty; aborting without touching the install")
             return 1
         new_src = roots[0]
+        if not (new_src / "src" / "penny").exists():
+            print("archive did not look like penny-early-warning; aborting")
+            return 1
 
         if not args.no_backup:
             from .runtime import build
@@ -511,15 +608,31 @@ def cmd_update(args) -> int:
                 shutil.copy2(item, target)
         cfg.set("PENNY_VERSION", version)
         cfg.save()
-        print(f"updated to {version}; previous version kept at {rollback_dir}")
+        print(f"updated to {version} (archive overlay); previous version kept at {rollback_dir}")
         print("reinstalling dependencies and running the self-test...")
-        os.system(f"cd {install_dir} && .venv/bin/pip install -r requirements.txt")
+        venv_pip = install_dir / ".venv" / "bin" / "pip"
+        if venv_pip.exists():
+            os.system(f"cd {install_dir} && .venv/bin/pip install -q -r requirements.txt")
         from .selftest import run_selftest
         report = run_selftest(cfg)
         print(report.text())
         return 0 if report.ok else 1
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def cmd_update(args) -> int:
+    """Update the install directory: git pull when it is a checkout, else the archive."""
+    cfg = _config(args)
+    version = args.version or cfg.raw("PENNY_VERSION") or "main"
+    install_dir = Path(args.install_dir or cfg.raw("INSTALL_DIR") or Path.cwd())
+    if _is_git_checkout(install_dir):
+        print(f"updating the git checkout at {install_dir} ({version})")
+        return _update_git(cfg, args, install_dir, version)
+    if version == "main" and not (install_dir / ".git").exists() and install_dir.exists():
+        print("note: this is not a git checkout; falling back to the archive overlay "
+              "(it cannot delete files that were removed upstream)")
+    return _update_archive(cfg, args, install_dir, version)
 
 
 def cmd_rollback(args) -> int:
@@ -661,7 +774,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_restore)
 
-    p = sub.add_parser("update", help="download and install the newest version")
+    p = sub.add_parser("update", help="update the installation (git pull when it is a checkout)")
     p.add_argument("--version", default=None)
     p.add_argument("--install-dir", default=None)
     p.add_argument("--private", action="store_true", help="use the GitHub read-only token")
