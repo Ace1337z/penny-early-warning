@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Iterable, Optional
 
@@ -90,3 +91,33 @@ class SecClient(BaseClient):
             return (True, f"ok (AAPL CIK {cik})") if cik else (False, "AAPL not found in ticker map")
         except Exception as exc:  # noqa: BLE001
             return False, self.error_text(exc)
+
+    # -- filing text (toxicity scan) ----------------------------------------
+    def filing_text(self, filing: dict, limit: int = 40000) -> str:
+        """Plain text of a filing's primary document, cached per document.
+
+        Only the forms that can veto read the body; the rest of the pipeline
+        never pays for it. The archive pages are HTML, so the tags are stripped
+        and the result truncated -- the keywords the classifier looks for live in
+        the first pages.
+        """
+        url = str(filing.get("url") or "").strip()
+        if not url:
+            return ""
+        cache_key = f"sec-text?{url}"
+        cached = self._cache.get(cache_key, 24 * 3600.0)
+        if cached is not None:
+            return cached
+        text = ""
+        try:
+            resp = self.request("GET", url, timeout=25.0, retries=2,
+                                headers=self._headers())
+            if resp.status_code < 400:
+                import html as htmlmod
+                text = htmlmod.unescape(
+                    re.sub(r"<[^>]+>", " ", resp.text))
+                text = re.sub(r"\s+", " ", text).strip()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("sec filing text failed for %s: %s", url, exc)
+        self._cache.set(cache_key, text[:limit], 24 * 3600.0)
+        return text[:limit]

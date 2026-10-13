@@ -518,11 +518,23 @@ class Engine:
         result = False
         if self.sec:
             try:
-                for filing in self.sec.filings(m.symbol, days=5):
-                    form = str(filing.get("form") or "").upper()
-                    if "REVERSE" in str(filing.get("items") or "").upper() or form in ("25",):
-                        result = True
-                        break
+                # Spec 1.1: reverse splits keep a 90-day lookback; everything
+                # else expires after 14 days. `classify` reuses the same rules
+                # as the gate, so the split-artifact guard and the SEC veto
+                # never disagree about a 1-for-60 print.
+                from .strategies import toxicity
+                from .util import to_et
+                filings = self.sec.filings(
+                    m.symbol, days=toxicity.REVERSE_SPLIT_WINDOW_DAYS)
+                for i, f in enumerate(filings[:4]):
+                    if str(f.get("form") or "").upper() in ("8-K", "6-K") and f.get("url"):
+                        f = dict(f)
+                        f["text"] = self.sec.filing_text(f) or ""
+                        filings[i] = f
+                risk = toxicity.classify(filings, today=to_et().date())
+                result = (risk.risk == toxicity.REVERSE_SPLIT_RECENT
+                          or any(str(f.get("form") or "").upper() == "25"
+                                 for f in filings))
             except Exception:  # noqa: BLE001
                 result = False
         self._split_cache[m.symbol] = result
@@ -1387,6 +1399,18 @@ class Engine:
             # taking the cycle down. Strings keep the row reportable.
             "failed_on": [f for r in gate.strategies for f in r.failed_on][:4],
         }
+
+        # Spec 1.3: an SEC veto is a fail-closed decision and is logged with its
+        # reason code for `/builds`-style review, even though nothing was sent.
+        if gate.blocked_by and str(gate.blocked_by).startswith("SEC_"):
+            try:
+                self.db.execute(
+                    "INSERT INTO screener_decisions(ts, symbol, reason_code, "
+                    "detail, price) VALUES(?,?,?,?,?)",
+                    (self.clock(), m.symbol, gate.blocked_by,
+                     gate.primary, m.price))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("screener_decisions insert failed: %s", exc)
 
     def _maybe_build_feed(self, session: str, metrics: list[Metrics]) -> None:
         """Surface quiet accumulations the alert rules stay silent on.

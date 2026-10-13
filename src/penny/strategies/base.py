@@ -57,6 +57,9 @@ class StrategyGate:
     entry_trigger: Optional[str] = None
     gate_score: float = 0.0
     blocked_by: Optional[str] = None
+    # Soft warnings that never block by themselves (the SEC toxicity checks put
+    # ACTIVE_ATM here): they rate the setup rather than reject it.
+    warnings: list[str] = field(default_factory=list)
 
     def by_name(self, name: str) -> Optional[StrategyResult]:
         for r in self.strategies:
@@ -82,7 +85,7 @@ class StrategyGate:
     def as_dict(self) -> dict:
         return {"passed": self.passed, "primary": self.primary,
                 "entry_trigger": self.entry_trigger, "gate_score": round(self.gate_score, 1),
-                "blocked_by": self.blocked_by,
+                "blocked_by": self.blocked_by, "warnings": self.warnings,
                 "strategies": [r.as_dict() for r in self.strategies]}
 
 

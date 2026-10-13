@@ -240,6 +240,18 @@ CREATE TABLE IF NOT EXISTS suppressed (
     price REAL,
     pct REAL
 );
+
+-- Spec 1.3: fail-closed SEC vetos are logged here with their reason code so a
+-- later review can tell an offering veto from a reverse-split veto without
+-- trawling the logs.
+CREATE TABLE IF NOT EXISTS screener_decisions (
+    ts REAL NOT NULL,
+    symbol TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    detail TEXT,
+    price REAL
+);
+CREATE INDEX IF NOT EXISTS idx_scr_dec_symbol_ts ON screener_decisions(symbol, ts);
 """
 
 JOURNAL_SCHEMA = """

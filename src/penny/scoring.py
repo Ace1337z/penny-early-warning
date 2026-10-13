@@ -51,6 +51,10 @@ class Metrics:
     trades_15m: Optional[int] = None
     market_cap: Optional[float] = None
     float_shares: Optional[float] = None
+    # Finviz's own time-of-day relative volume and average volume, carried so a
+    # reader (or the AI) can judge the *now* of a move against the usual pace.
+    avg_volume: Optional[float] = None
+    rel_volume: Optional[float] = None
     halted: bool = False
     session: str = "regular"
 
@@ -351,6 +355,8 @@ class Scorer:
         m.ask = quote.get("ask")
         m.market_cap = quote.get("market_cap")
         m.float_shares = quote.get("float_shares")
+        m.avg_volume = quote.get("avg_volume")
+        m.rel_volume = quote.get("rel_volume")
         m.halted = bool(quote.get("halted"))
         if m.bid and m.ask and m.ask > 0:
             m.spread_pct = safe_div(m.ask - m.bid, m.ask) * 100.0

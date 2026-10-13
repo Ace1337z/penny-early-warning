@@ -162,6 +162,27 @@ def evaluate_gate(b: Bundle, *, min_score: float = 55.0,
     if any("DILUTION" in r.failed_on for r in results):
         return StrategyGate(passed=False, strategies=results, blocked_by="DILUTION")
 
+    # Spec 1: the SEC toxicity firewall. An offering, a reverse split or a
+    # resale overhang ends the alert before any scoring or any AI call -- the
+    # gate's verdict is what stands between the screener and Telegram, so this
+    # is where a veto has to live to be fail-closed. An ACTIVE ATM program does
+    # not veto; it tags the card [ACTIVE_ATM] and halves sizing.
+    warnings: list[str] = []
+    tox_today = getattr(b.now_et, "date", lambda: None)()
+    if not tox_today:
+        from datetime import date as _date
+        tox_today = _date.today()
+    if b.filings:
+        from . import toxicity
+        tox = toxicity.classify(b.filings, today=tox_today)
+        if tox.veto:
+            tox_blocked = StrategyGate(passed=False, strategies=results,
+                                       blocked_by=tox.reason_code,
+                                       warnings=[tox.reason_code])
+            return tox_blocked
+        if tox.elevated:
+            warnings.append("ACTIVE_ATM")
+
     # Blockers are ordered, not merged. The reality gate is checked before
     # exhaustion because an illiquid, wide-spread stock is untakeable regardless
     # of how good the shape looks, and naming it ILLIQUID tells the reader the
@@ -171,19 +192,22 @@ def evaluate_gate(b: Bundle, *, min_score: float = 55.0,
     if reality is not None:
         reasons = " ".join(reality.reasons or ())
         label = "WIDE_SPREAD" if "spread" in reasons else "ILLIQUID"
-        return StrategyGate(passed=False, strategies=results, blocked_by=label)
+        return StrategyGate(passed=False, strategies=results, blocked_by=label,
+                            warnings=warnings)
 
     # Everything else that blocks is exhaustion: the move is spent, so refuse the
     # new long.
     blockers = [r for r in results if r.kind == "blocker" and r.verdict == "BLOCK"]
     if blockers:
-        return StrategyGate(passed=False, strategies=results, blocked_by="EXHAUSTED")
+        return StrategyGate(passed=False, strategies=results, blocked_by="EXHAUSTED",
+                            warnings=warnings)
 
     primaries = [r for r in results if r.kind == "primary" and r.verdict == "PASS"]
     triggers = [r for r in results if r.kind == "trigger" and r.verdict == "TRIGGER"]
 
     if not primaries:
-        return StrategyGate(passed=False, strategies=results, blocked_by="no_strategy")
+        return StrategyGate(passed=False, strategies=results, blocked_by="no_strategy",
+                            warnings=warnings)
 
     # A trigger alone never passes. It only names a better entry on a setup that
     # already qualified.
@@ -194,17 +218,20 @@ def evaluate_gate(b: Bundle, *, min_score: float = 55.0,
                                     for r in primaries):
         return StrategyGate(passed=False, strategies=results, primary=primary.name,
                             entry_trigger=entry_trigger.name if entry_trigger else None,
-                            gate_score=primary.score, blocked_by="no_catalyst")
+                            gate_score=primary.score, blocked_by="no_catalyst",
+                            warnings=warnings)
 
     threshold = min_score + time_of_day_adjustment(b.now_et, time_filter)
     if primary.score < threshold:
         return StrategyGate(passed=False, strategies=results, primary=primary.name,
                             entry_trigger=entry_trigger.name if entry_trigger else None,
-                            gate_score=primary.score, blocked_by="below_min_score")
+                            gate_score=primary.score, blocked_by="below_min_score",
+                            warnings=warnings)
 
     return StrategyGate(passed=True, strategies=results, primary=primary.name,
                         entry_trigger=entry_trigger.name if entry_trigger else None,
-                        gate_score=primary.score, blocked_by=None)
+                        gate_score=primary.score, blocked_by=None,
+                        warnings=warnings)
 
 
 def gate_summary_lines(gate: StrategyGate, limit: int = 8) -> list[str]:
@@ -224,4 +251,6 @@ def gate_summary_lines(gate: StrategyGate, limit: int = 8) -> list[str]:
         lines.append(f"{r.name:<20} TRIGGER {r.score:>3.0f}{reason}")
     if gate.blocked_by:
         lines.append(f"blocked: {gate.blocked_by}")
+    for w in getattr(gate, "warnings", ()) or ():
+        lines.append(f"flagged: {w}")
     return lines

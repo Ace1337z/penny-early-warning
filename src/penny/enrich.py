@@ -68,7 +68,6 @@ class Enrichment:
     outlets: int = 0
     filings: list[dict] = field(default_factory=list)
     short_interest: list[dict] = field(default_factory=list)
-    short_volume: Optional[dict] = None
     float_shares: Optional[float] = None
     market_cap: Optional[float] = None
     insiders: list[dict] = field(default_factory=list)
@@ -176,7 +175,6 @@ class Enricher:
 
         if isinstance(results.get("short"), dict):
             enr.short_interest = results["short"].get("interest") or []
-            enr.short_volume = results["short"].get("volume")
         else:
             enr.missing.append("short data")
 
@@ -366,26 +364,34 @@ class Enricher:
         return age_str(now - et)
 
     def _filings(self, symbol: str) -> list[dict]:
+        from .strategies import toxicity
+
         out: list[dict] = []
         if self.sec:
             try:
-                out.extend(self.sec.filings(symbol, days=5))
+                out.extend(self.sec.filings(
+                    symbol, days=toxicity.GENERAL_WINDOW_DAYS))
             except Exception as exc:  # noqa: BLE001
                 log.debug("sec filings failed for %s: %s", symbol, exc)
         if self.finviz:
             try:
                 rows = self.finviz.latest_filings(symbol)
-                cutoff = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+                cutoff = datetime.now() - timedelta(days=toxicity.GENERAL_WINDOW_DAYS)
                 for row in rows:
                     form = row_get(row, "Form", "Type") or ""
-                    date = row_get(row, "Date", "Filing Date") or ""
-                    if date and date < cutoff:
+                    # Finviz prints dates as M/D/YYYY, which compared lexically
+                    # against an ISO cutoff lets a 2019 filing sail through the
+                    # "last 5 days" filter. Normalise to ISO before comparing.
+                    fdate = toxicity.normalize_filing_date(
+                        row_get(row, "Date", "Filing Date"))
+                    if fdate is None or fdate < cutoff.date():
                         continue
                     if not str(form).upper().startswith(FILING_PREFIXES):
                         continue
-                    out.append({"form": form, "date": date,
+                    out.append({"form": form, "date": fdate.isoformat(),
                                 "items": row_get(row, "Item", "Items") or "",
-                                "url": row_get(row, "URL", "Link") or "", "source": "finviz"})
+                                "url": row_get(row, "URL", "Link") or "",
+                                "source": "finviz"})
             except FinvizTokenRejected:
                 pass
             except Exception as exc:  # noqa: BLE001
@@ -393,12 +399,26 @@ class Enricher:
         dedup: dict[tuple, dict] = {}
         for f in out:
             dedup[(str(f.get("form")), str(f.get("date")))] = f
-        return sorted(dedup.values(), key=lambda f: str(f.get("date")), reverse=True)[:10]
+        rows = sorted(dedup.values(), key=lambda f: str(f.get("date")), reverse=True)[:10]
+
+        # The forms that can veto need the filing body for the keyword scan
+        # (an S-3 is passive unless it names an ATM program). Only the watch
+        # forms pay for the fetch, and only the newest few.
+        if self.sec:
+            watch = toxicity.OFFERING_FORMS + toxicity.SHELF_FORMS + \
+                toxicity.REGISTRATION_FORMS + ("8-K", "6-K")
+            for f in rows[:4]:
+                form = str(f.get("form") or "").upper()
+                if not any(form == w or form.startswith(w) for w in watch):
+                    continue
+                if f.get("url"):
+                    text = self.sec.filing_text(f)
+                    if text:
+                        f["text"] = text
+        return rows
 
     def _short(self, symbol: str, verify_fut=None) -> dict:
         interest: list[dict] = []
-        volume: Optional[dict] = None
-
         if self.finviz:
             try:
                 row = None
@@ -416,18 +436,7 @@ class Enricher:
                 pass
             except Exception:  # noqa: BLE001
                 pass
-
-        if self.finra:
-            try:
-                data = self.finra.short_ratio(symbol)
-                if data:
-                    volume = volume or data
-                    interest.append({"short_volume_ratio": data.get("ratio"),
-                                     "date": data.get("date"), "source": "finra"})
-            except Exception:  # noqa: BLE001
-                pass
-
-        return {"interest": interest, "volume": volume}
+        return {"interest": interest}
 
     def _insiders(self, symbol: str) -> list[dict]:
         if not self.finviz:
@@ -521,6 +530,10 @@ class Enricher:
 
     @staticmethod
     def short_text(enr: Enrichment) -> Optional[str]:
+        """Short/financing context for the alert card, FINRA daily short volume
+        deliberately absent (Spec 2.1): a settlement-day ratio does not measure
+        the squeeze that is happening now, and showing it next to live prints
+        reads like the float itself is heavily shorted."""
         bits = []
         for item in enr.short_interest:
             if item.get("short_float_pct") is not None:
@@ -529,12 +542,6 @@ class Enricher:
             elif item.get("ratio") is not None:
                 bits.append(f"SI ratio {item['ratio']:.2f} ({item.get('source')}"
                             + (f" {item['date']}" if item.get("date") else "") + ")")
-            elif item.get("short_volume_ratio") is not None:
-                bits.append(f"short vol {item['short_volume_ratio'] * 100:.1f}% "
-                            f"({item.get('source')} {item.get('date')})")
-        if enr.short_volume and enr.short_volume.get("ratio") is not None:
-            bits.append(f"day short vol {enr.short_volume['ratio'] * 100:.1f}% "
-                        f"({enr.short_volume.get('date')})")
         if enr.float_shares:
             bits.append(f"float {enr.float_shares:,.0f}")
         return " | ".join(bits) if bits else None

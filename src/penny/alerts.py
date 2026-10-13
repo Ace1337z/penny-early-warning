@@ -244,6 +244,45 @@ def _float_rotation(m: Metrics, enr: Optional[Enrichment]) -> Optional[dict]:
     return {"rate": round(rot, 2), "rising": bool(rot > rot_15m_ago)}
 
 
+def _toxicity_facts(enr) -> Optional[dict]:
+    """The sec_toxicity facts key; missing when no filings arrived."""
+    from .strategies import toxicity
+    if not enr.filings:
+        return None
+    return toxicity.classify(enr.filings).as_dict()
+
+
+def _float_and_rvol_bits(m: Metrics, enr: Optional[Enrichment]) -> str:
+    """Spec 2.2: live float turnover + time-of-day RVOL, appended to the
+    SHORT/FLOAT line. RVOL is Finviz's own relative volume (volume to date
+    against the average at this minute of day), so it measures the *now* of a
+    squeeze, which a daily average next to live prints cannot."""
+    bits = []
+    rot = _float_rotation(m, enr)
+    if rot:
+        bits.append(f"turnover {rot['rate']:.1f}x")
+    rvol = getattr(m, "rel_volume", None)
+    if rvol:
+        bits.append(f"RVOL {rvol:.0f}x")
+    return (" | " + " | ".join(bits)) if bits else ""
+
+
+def _edgar_line(enr: Optional[Enrichment]) -> Optional[str]:
+    """The EDGAR toxicity card line (Spec 1.2). Reclassified here for display;
+    the gate has already vetoed anything hard, so an alert card can only show a
+    clean/passive verdict or an elevated ATM tag with its sizing note."""
+    if enr is None or not enr.filings:
+        return None
+    from .strategies import toxicity
+    tox = toxicity.classify(enr.filings)
+    parts = [tox.label]
+    if tox.elevated:
+        parts.append("0.5x sizing [ACTIVE_ATM]")
+    if tox.evidence:
+        parts.append("-- " + "; ".join(tox.evidence))
+    return " | ".join(parts)
+
+
 def _news_checked(m: Metrics, enr: Optional[Enrichment], bundle=None) -> bool:
     """Was the news actually fetched for this symbol? (Not-checked stays quiet.)"""
     if bundle is not None and getattr(bundle, "news", None) is not None:
@@ -539,14 +578,20 @@ def format_alert2(m: Metrics, enr: Optional[Enrichment], market, *,
 
     if enr is not None and enr.filings:
         msg.blank()
-        msg.line(("b", "FILINGS (last 5 days)"))
+        msg.line(("b", "FILINGS (last 14 days)"))
         for f in enr.filings[:5]:
             extra = f" items {f['items']}" if f.get("items") else ""
             msg.line("- ", f"{f.get('form')} {f.get('date')}{extra}")
 
+    edgar = _edgar_line(enr)
+    if edgar:
+        msg.blank()
+        msg.line(("b", "EDGAR: "), edgar)
+
     if enr is not None:
         short_text = Enricher.short_text(enr)
         if short_text:
+            short_text += _float_and_rvol_bits(m, enr)
             msg.blank()
             msg.line(("b", "SHORT/FLOAT: "), short_text)
 
@@ -688,6 +733,11 @@ def build_ai_facts(m: Metrics, enr: Optional[Enrichment], market, *,
         "market": (market.headline() if market is not None else "unknown"),
         "float_shares": (enr.float_shares if enr is not None else None),
         "sector": (enr.sector if enr is not None else ""),
+        # Spec 1/2.2: the EDGAR toxicity verdict and the live micro-structure
+        # numbers so the red team judges the now, not the averages.
+        "sec_toxicity": (_toxicity_facts(enr) if enr is not None else None),
+        "float_turnover": (_float_rotation(m, enr) if enr is not None else None),
+        "tod_rvol": getattr(m, "rel_volume", None),
         "time_to_horizon": time_to_horizon or {},
     }
     # The AI-only context. Attached under one key rather than merged into the

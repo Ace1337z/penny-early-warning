@@ -1056,3 +1056,61 @@ absence of a named cause is itself a signal - name the mechanism or say
   it lies about *why* ("volx 0.0x" on a 148x tape). The fix is one line of
   policy (the window follows the cadence) rather than a new config key to keep
   in sync by hand.
+
+## C48. Stale Finviz filings sailed through the 5-day window, and nothing vetted the ones that did not
+
+- **Question:** the BKYI card showed FILINGS (last 5 days) containing an
+  8-K dated 9/9/2020 and a 4 dated 9/5/2023. Five days ago was 2026-10-08.
+  Why did a 2019 filing sit on a card that promised five days?
+- **Finding:** Finviz's latest-filings export prints dates as M/D/YYYY
+  (9/9/2020), but the filter compared them *lexically* against an ISO cutoff
+  ('9/9/2020' < '2026-10-08' is False because '9' > '2'), so every Finviz
+  filing of any age passed the filter and was printed as-is. Separately, the
+  pipeline never classified what a filing *means*: a 424B offering, a reverse
+  split, an active ATM shelf or a resale registration all just rendered as
+  text under FILINGS, with no veto anywhere.
+- **Fix (Spec 1 + 2.1/2.2, the toxicity firewall phase):**
+  - strategies/toxicity.py (new): deterministic filing classification into
+    ACTIVE_FINANCING / REVERSE_SPLIT_RECENT / RESALE_OVERHANG / ATM_ACTIVE /
+    CLEAN_OR_PASSIVE. 14-day general window, 90-day reverse-split window.
+    8-K items 3.02 (unregistered sales) veto outright; 1.01/2.03/2.04 need a
+    financing keyword; 5.03/6-K need a reverse-split keyword. S-3 is passive
+    unless its text names an ATM program (then ATM_ACTIVE, elevated); an S-1 is
+    an offering unless it is a resale. Unparseable dates are skipped, never
+    trusted, so a stale row cannot veto on an unreadable age.
+  - Gate integration (fail-closed): a HARD VETO class returns
+    passed=False, blocked_by=SEC_VETO_* before any scoring or AI call; an
+    elevated ATM passes but tags the card [ACTIVE_ATM] and states 0.5x
+    sizing. Vetoes are logged to a new screener_decisions table (ts, symbol,
+    reason_code, detail, price).
+  - sec.filing_text fetches (and caches, 24h) a filing's primary document so
+    the keyword scan has real text; only the veto-watch forms pay for it, only
+    the newest four per candidate.
+  - Enrichment widens to the 14-day window, normalises both date formats to
+    ISO before comparing, and attaches filing text for the watch forms.
+  - FINRA daily short volume is gone from short_interest, short_text and
+    the alert card (kept: Finviz short float, short ratio -- different data,
+    still live). The FinraClient stays wired for the doctor only.
+  - SHORT/FLOAT line now carries live float turnover (	urnover Nx) and
+    Finviz's time-of-day RVOL (RVOL Nx, stored on Metrics as 
+el_volume).
+    An EDGAR: line renders the class on Alert 2; the alert1/2 STRATEGY block
+    prints lagged: ACTIVE_ATM.
+- **Where:** src/penny/strategies/toxicity.py (new),
+  src/penny/strategies/gate.py (SEC veto after DILUTION, warnings on every
+  return), src/penny/strategies/base.py (gate warnings),
+  src/penny/sources/sec.py (iling_text), src/penny/enrich.py
+  (_filings 14d + normalisation + text; _short/short_text FINRA purge),
+  src/penny/scoring.py (Metrics vg_volume/
+el_volume),
+  src/penny/alerts.py (EDGAR line, turnover/RVOL bits, ai facts
+  sec_toxicity/loat_turnover/	od_rvol),
+  src/penny/engine.py (_note_gate_reject -> screener_decisions,
+  _possible_split_artifact on the 90-day classifier),
+  src/penny/store.py (screener_decisions table),
+  	ests/test_toxicity.py (17 tests).
+- **Why it matters:** a +230% mover carrying a 2019 8-K on its card was two
+  failures in one: the reader was told 'recent filings' that were not recent,
+  and nothing in the pipeline could stop an alert on a symbol that had just
+  priced an offering or split 1-for-60. Now the window is honest and the veto
+  is fail-closed, deterministic and logged with a reason code.
