@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-481%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-483%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -252,12 +252,14 @@ actually produced.
 - **Cause-first alerts** - every message names exactly one reason the stock moved, with
   its outlet, age and confidence, or says `none found`. A news dump is not a cause. The
   news is the ticker's own Finviz quote page, **today only**: an alert answers "why is it
-  moving now", so a prior-session headline is background. No wire feeds are merged and the
-  market-wide export (which matched on headline text and could attach another company's
-  story) is never used. An unrecognised wire headline counts as a real event, not noise;
-  only routine notices and chatter are dropped, and a real event stays nameable for 24h.
-  When no cause is named, the freshest fetched headline is still shown (`NEWS ...`), so a
-  real PR the feed carried is never invisible.
+  moving now", so a prior-session headline is background. Finviz prints the date once per
+  day block and a bare time on the rows that continue it, so the parser carries that day
+  forward -- otherwise a two-day-old headline was dated *today* and survived the filter. No
+  wire feeds are merged and the market-wide export (which matched on headline text and
+  could attach another company's story) is never used. An unrecognised wire headline counts
+  as a real event, not noise; only routine notices and chatter are dropped, and a real event
+  stays nameable for 24h. When no cause is named, the freshest fetched headline is still
+  shown (`NEWS ...`), so a real PR the feed carried is never invisible.
 - **Per-alert tracking with an end-of-day report** - every alerted name is measured from
   the alert price to the close, and the day's alerts are reported once, as a set
   (`/eod`). `/stats` ranks the detectors by what they actually produced.
@@ -311,7 +313,8 @@ actually produced.
    Alert 2, and is never described as "below the alert bar". Set `FAST_ON=0` to turn the
    whole lane off and restore the old 15/60-minute behaviour.
 - **Prices that match the clock** - Finviz keeps `Price`/`Change` frozen at the regular
-  close after 16:00 ET, so the after-hours columns are used from 16:00 until the next
+  close after 16:00 ET, so the alert quotes Finviz's own **After-Hours Close** -- the
+  actual aftermarket print, not a re-derivation of it -- from 16:00 until the next
   open (including the whole weekend), and `session_for()` knows a Saturday is `closed`.
   The feed quote and the Finviz verification row are normalized with the same session, so
   an after-hours alert is not flagged with a bogus "DATA MISMATCH" against the frozen
@@ -603,7 +606,7 @@ fake Telegram, and asserts the documented acceptance results:
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
 Current status: `selftest` **ALL PASS** (85 checks), `simulate` **ALL PASS** (54 checks),
-`pytest` **481 passed** (1 skipped).
+`pytest` **483 passed** (1 skipped).
 
 ---
 

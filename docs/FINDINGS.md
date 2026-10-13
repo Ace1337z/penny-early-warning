@@ -997,3 +997,34 @@ absence of a named cause is itself a signal - name the mechanism or say
   cause: it is a confident, wrong answer, and the alert is read as fact. Pinning
   the source to the ticker's Finviz page and the window to today makes "the
   cause" mean what it says.
+
+## C46. A bare time in Finviz's news table inherited *today*, and the aftermarket price was re-derived
+
+- **Question:** after C45 (Finviz-only, today-only news) the user still saw a
+  headline that did not belong to the ticker's current session, and the
+  aftermarket price looked like the regular one. Why did the "today only" filter
+  not remove the old headline?
+- **Finding:** the filter was right, but the parser fed it the wrong date. Finviz
+  prints the date **once per day block** -- `Today 02:15AM`, `Oct-12-26 06:02PM`
+  -- and a **bare time** (`04:57PM`) on the rows that continue the same day.
+  `_finviz_dt` read any text without a month-and-year as *today*, so every row
+  after an older dated row was stamped with today's date. A two-day-old headline
+  therefore passed `_is_today`, and its age went negative and clamped to `0m`.
+  Read against a live AAPL quote page: 100 rows parsed, **98 of them wrongly
+  dated today**; with the fix, only the 2 rows that are genuinely today survive.
+- **Also in this pass:** the after-hours quote was re-derived as
+  `regular_close * (1 + After-Hours Change/100)` instead of using Finviz's own
+  `After-Hours Close`. The two agree on paper but the reconstruction can drift
+  from what Finviz actually displays; the reader wants the aftermarket quote, so
+  `normalize_row` now uses `After-Hours Close` directly. Pre-market was checked
+  against live data -- Finviz folds the pre-market print into `Price`/`Change`
+  (AAPL's screener row showed the same 342.05 the quote page carried at 05:00 ET),
+  so that path is unchanged.
+- **Where:** `src/penny/sources/finviz.py` (`parse_finviz_news_table`,
+  `_finviz_dt`, `_finviz_time`, `normalize_row`), `tests/test_news_age.py`
+  (`test_a_bare_time_inherits_the_day_above_it`,
+  `test_only_the_todays_rows_survive_the_filter`), `tests/test_finviz.py`.
+- **Why it matters:** the today filter is only as good as the timestamps under
+  it. A parser that flattens a day-block to "now" makes stale news look like the
+  cause and a real age look like "0m" -- the exact two symptoms the user
+  reported.

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta
 from html import unescape
 from typing import Any, Iterable, Optional
 from urllib.parse import urlencode
@@ -384,15 +384,13 @@ class FinvizClient(BaseClient):
         extended = session in ("post", "closed")
         if extended and self.cfg.bool("FINVIZ_EXTENDED_HOURS", True):
             ah_price = row_num(row, "After-Hours Close")
-            ah_change = row_num(row, "After-Hours Change")
             if ah_price and ah_price > 0:
-                # Express the move from the regular close so pct_vs_close
-                # includes the extended-hours move.
-                base = price if (price and price > 0) else None
-                if base is not None and ah_change is not None:
-                    price = base * (1 + ah_change / 100.0)
-                else:
-                    price = ah_price
+                # Use Finviz's own after-hours price: it *is* the aftermarket
+                # quote. Re-deriving it as regular_close * (1 + After-Hours
+                # Change/100) only re-computed the same number and drifted from
+                # what Finviz actually displays; the reader wants the aftermarket
+                # price, not a reconstruction of it.
+                price = ah_price
         if not price or price <= 0:
             return None
         prev_close = None
@@ -523,7 +521,7 @@ def parse_finviz_news_table(html: str, now: Optional[datetime] = None) -> list[d
     Returns {"title", "source", "url", "published"}. `published` is a real
     timestamp (ISO), not Finviz's display text, so the age the alert renders is
     the time since publication rather than since midnight. The page dates read
-    "Today 10:58AM" or "Oct-11-26 11:14PM"; both are ET.
+    "Today 10:58AM", "Yesterday 04:15PM" or "Oct-11-26 11:14PM"; all are ET.
     """
     text = html or ""
     start = text.find('id="news-table"')
@@ -532,6 +530,9 @@ def parse_finviz_news_table(html: str, now: Optional[datetime] = None) -> list[d
     table = text[start:text.find("</table>", start)]
     now = now or now_et()
     out: list[dict[str, str]] = []
+    # Finviz prints the date only on the first row of each day block and a bare
+    # time on the rows that continue it. The current day is carried forward.
+    day = now.date()
     for row in re.split(r"<tr\b", table)[1:]:
         link = re.search(r'class="tab-link-news"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
                          row, re.S | re.I)
@@ -546,26 +547,56 @@ def parse_finviz_news_table(html: str, now: Optional[datetime] = None) -> list[d
         item = {"title": title,
                 "source": (source.group(1).strip() if source else "finviz"),
                 "url": unescape(url)}
-        published = _finviz_dt(unescape(stamp.group(1)).strip(), now) if stamp else None
+        stamp_text = unescape(re.sub(r"<[^>]+>", " ", stamp.group(1))).strip() if stamp else ""
+        day, published = _finviz_dt(stamp_text, now, day)
         if published is not None:
             item["published"] = published.isoformat()
         out.append(item)
     return out
 
 
-def _finviz_dt(stamp: str, now: datetime) -> Optional[datetime]:
-    """Parse a Finviz news-table stamp (ET) into an aware datetime."""
+def _finviz_dt(stamp: str, now: datetime, day) -> tuple:
+    """Parse a Finviz news-table stamp, inheriting the day from the row above.
+
+    Finviz stamps only the first row of each day block ("Today 10:58AM",
+    "Oct-12-26 06:02PM") and prints a bare time ("04:57PM") on the rows that
+    continue the same day. Reading a bare time as *today* dated every row of an
+    older block to the current day, so a two-day-old headline survived the
+    "today" filter and its age clamped to zero. Returns the new running day and
+    the parsed aware datetime (or None when the stamp is unusable).
+    """
     text = re.sub(r"\s+", " ", stamp or "").strip()
-    for fmt in ("%b-%d-%y %I:%M%p", "%b-%d-%Y %I:%M%p"):
+    if not text:
+        return day, None
+    m = re.match(r"([A-Za-z]{3})-(\d{1,2})-(\d{2,4})\b(.*)$", text)
+    if m:
+        fmt = "%b-%d-%y" if len(m.group(3)) == 2 else "%b-%d-%Y"
         try:
-            return datetime.strptime(text, fmt).replace(tzinfo=now.tzinfo)
+            d = datetime.strptime("-".join(m.group(1, 2, 3)), fmt).date()
         except ValueError:
-            continue
-    m = re.search(r"(\d{1,2}):(\d{2})\s*(AM|PM)", text, re.I)
-    if m:  # "Today 10:58AM" (Finviz shows a bare time for today's items).
-        hour = int(m.group(1)) % 12 + (12 if m.group(3).upper() == "PM" else 0)
-        return now.replace(hour=hour, minute=int(m.group(2)), second=0, microsecond=0)
-    return None
+            return day, None
+        t = _finviz_time(m.group(4)) or dtime(0, 0)
+        return d, datetime.combine(d, t).replace(tzinfo=now.tzinfo)
+    low = text.lower()
+    if low.startswith("today"):
+        d = now.date()
+    elif low.startswith("yesterday"):
+        d = now.date() - timedelta(days=1)
+    else:
+        d = day or now.date()
+    t = _finviz_time(text)
+    if t is None:
+        return d, None
+    return d, datetime.combine(d, t).replace(tzinfo=now.tzinfo)
+
+
+def _finviz_time(text: str) -> Optional[dtime]:
+    """The clock part of a Finviz stamp, e.g. "10:58AM" -> 10:58."""
+    m = re.search(r"(\d{1,2}):(\d{2})\s*(AM|PM)", text or "", re.I)
+    if not m:
+        return None
+    hour = int(m.group(1)) % 12 + (12 if m.group(3).upper() == "PM" else 0)
+    return dtime(hour, int(m.group(2)))
 
 
 def row_get(row: dict[str, str], *names: str) -> Optional[str]:

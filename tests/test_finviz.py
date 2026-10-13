@@ -202,8 +202,8 @@ def _row(**kw):
 def test_after_hours_price_used_in_post_session(cfg):
     client = _client(cfg)
     quote = client.normalize_row(_row(), "post")
-    # 1.41 close carried +27.52% after hours.
-    assert abs(quote["price"] - 1.41 * 1.2752) < 1e-6
+    # The aftermarket quote is Finviz's own After-Hours Close, not a re-derivation.
+    assert abs(quote["price"] - 1.80) < 1e-9
     # % vs close uses the explicit previous close, not the regular Change.
     assert abs(quote["prev_close"] - 0.91) < 1e-9
 
@@ -236,11 +236,11 @@ def test_after_hours_price_used_when_the_market_is_closed(cfg):
     what made a check at 22:00 or on Sunday show a stale price."""
     client = _client(cfg)
     quote = client.normalize_row(_row(), "closed")
-    assert abs(quote["price"] - 1.41 * 1.2752) < 1e-6
+    assert abs(quote["price"] - 1.80) < 1e-9
 
 
 def test_verify_compares_like_for_like_in_the_after_hours_session(cfg, monkeypatch):
-    """A post-market alert printed "DATA MISMATCH: price feed 1.79 vs Finviz 1.41":
+    """A post-market alert printed "DATA MISMATCH: price feed 1.80 vs Finviz 1.41":
     the quote had gone through normalize_row (After-Hours price) but verify() read
     the raw regular Price column, so the two were never on the same basis."""
     from penny.enrich import Enricher

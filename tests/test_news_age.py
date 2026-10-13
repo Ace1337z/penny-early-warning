@@ -12,6 +12,7 @@ the ticker's own Finviz page, today only.
 from __future__ import annotations
 
 import time
+from datetime import timedelta
 
 from penny.enrich import Enricher
 from penny.sources.finviz import parse_finviz_news_table
@@ -113,16 +114,75 @@ def test_a_per_ticker_headline_is_parsed_even_when_it_never_says_the_ticker():
 
 
 def test_the_parsed_age_is_real_not_zero():
+    """A "Today HH:MM" stamp keeps its clock time, so the age is the hours since
+    it was printed rather than the "0s"/"0m" the UTC-as-ET misread produced."""
     from penny.util import now_et
 
-    rows = parse_finviz_news_table(_SKYA_ROW, now=now_et().replace(hour=12, minute=0))
+    now = now_et()
+    then = now - timedelta(hours=3)
+    clock = then.strftime("%I:%M%p").lstrip("0")
+    # Across midnight Finviz prints the date rather than "Today"; mirror that.
+    stamp = ("Today " + clock if then.date() == now.date()
+             else then.strftime("%b-%d-%y ") + clock)
+    html = _SKYA_ROW.replace("Today 10:58AM", stamp)
+    rows = parse_finviz_news_table(html, now=now)
     age = Enricher._age_of(rows[0]["published"])
-    # "Today 10:58AM" is hours old, not "0s"/"0m" -- the whole point of the fix.
     assert age.endswith("h") and not age.startswith("0")
 
 
 def test_a_page_without_a_news_table_is_not_an_error():
     assert parse_finviz_news_table("<html><body>nothing</body></html>") == []
+
+
+def _inherited_day_row():
+    """A page in Finviz's real shape: one dated row per day block, bare times after."""
+    from penny.util import now_et
+
+    now = now_et()
+    yday = (now.date() - timedelta(days=1)).strftime("%b-%d-%y")
+    html = f"""
+<table id="news-table" class="fullview-news-outer news-table" data-ticker="ACME">
+  <tr><td width="130">Today 02:15AM</td>
+      <td><div class="news-link-left"><a class="tab-link-news" href="/a">Fresh pre-market headline</a></div>
+      <div class="news-link-right"><span>(Benzinga)</span></div></td></tr>
+  <tr><td width="130">{yday} 06:02PM</td>
+      <td><div class="news-link-left"><a class="tab-link-news" href="/b">Prior evening headline</a></div></td></tr>
+  <tr><td width="130">04:57PM</td>
+      <td><div class="news-link-left"><a class="tab-link-news" href="/c">Prior afternoon headline</a></div></td></tr>
+</table>
+"""
+    return now.replace(hour=4, minute=55), html
+
+
+def test_a_bare_time_inherits_the_day_above_it():
+    """Finviz prints the date once per day block and a bare time on the rows that
+    continue it. Reading "04:57PM" as *today* dated a prior day's headline to the
+    current day, so it slipped past the today filter and its age clamped to zero."""
+    now, html = _inherited_day_row()
+    yesterday = (now.date() - timedelta(days=1)).isoformat()
+    rows = parse_finviz_news_table(html, now=now)
+    assert len(rows) == 3
+    assert rows[0]["published"].startswith(now.date().isoformat())
+    assert rows[1]["published"].startswith(yesterday)
+    # The bare time belongs to the row above it, not to today.
+    assert rows[2]["published"].startswith(yesterday)
+    assert "16:57" in rows[2]["published"]
+
+
+def test_only_the_todays_rows_survive_the_filter():
+    from penny.util import now_et
+
+    now, html = _inherited_day_row()
+    rows = parse_finviz_news_table(html, now=now)
+    today = now.date().isoformat()
+
+    class F:
+        def ticker_news(self, t):
+            return rows
+
+    items, _ = _enricher(F())._news("ACME")
+    assert [i["title"] for i in items] == ["Fresh pre-market headline"]
+    assert items[0]["published"].startswith(today)
 
 
 # --- Finviz is the only source; only today's headlines count (C45) ----------
