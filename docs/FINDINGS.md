@@ -1028,3 +1028,31 @@ absence of a named cause is itself a signal - name the mechanism or say
   it. A parser that flattens a day-block to "now" makes stale news look like the
   cause and a real age look like "0m" -- the exact two symptoms the user
   reported.
+
+## C47. Polls faster than the dedupe window kept every symbol's history at one sample
+
+- **Question:** a +230% mover (BKYI, Finviz `Rel Volume 148x`, 20.5M shares
+  traded) printed `SETUP: NONE - below the alert bar (volx 0.0x is under 3x)` and
+  never alerted. Why was the volume multiple zero on the hottest tape of the day?
+- **Finding:** the engine cycles every `UNIVERSE_POLL_SECONDS` (30s), but
+  `SAMPLE_SECONDS` was 55. `SymbolState.add_sample` replaces the last sample when
+  an update lands *inside* the dedupe window, so at 30s every poll replaced the
+  previous one and each symbol's history stayed a **single point** --
+  `volume_added(w)` was 0 for every window, `volx` was always `0.0x`, and no
+  tier, fast or build gate could ever fire on live data. The simulator never
+  caught it because its quotes land ~60s apart, which appends and works; only
+  the live cadence was broken. Reproduced in isolation: 30s polls -> `samples=1,
+  volx=0.0`; 70s polls -> `samples=40, volx=15.0`.
+- **Default adopted:** `Scorer` derives the dedupe window as
+  `min(SAMPLE_SECONDS, UNIVERSE_POLL_SECONDS - 2)` so it can never again exceed
+  the cadence it is fed at, whatever the two config keys are set to. Sub-sampled
+  updates still collapse (anything closer than the window replaces the last
+  sample), so the memory bound is unchanged.
+- **Where:** `src/penny/scoring.py` (`Scorer.__init__`,
+  `Scorer.cycle_interval_floor`), `tests/test_scoring.py`
+  (`test_a_poll_faster_than_the_dedupe_window_still_builds_history`).
+- **Why it matters:** every threshold in the system is written as a volume
+  multiple, so a scorer that cannot build a window does not just miss a setup --
+  it lies about *why* ("volx 0.0x" on a 148x tape). The fix is one line of
+  policy (the window follows the cadence) rather than a new config key to keep
+  in sync by hand.

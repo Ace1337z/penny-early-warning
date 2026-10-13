@@ -51,6 +51,30 @@ def test_watch_tier_on_mild_move(cfg):
     assert m.tier >= TIER_WATCH
 
 
+def test_a_poll_faster_than_the_dedupe_window_still_builds_history(cfg):
+    """The engine cycles every UNIVERSE_POLL_SECONDS (30s). With SAMPLE_SECONDS
+    at 55 every update landed inside the dedupe window, so each poll replaced
+    the single sample and volx was "0.0x" on every symbol while a real +230%
+    mover with Finviz Rel Volume 148x printed "below the alert bar (volx 0.0x)".
+    The simulator's quotes land ~60s apart, which is why it kept passing."""
+    cfg.set("WARMUP_CYCLES", "0")
+    scorer = Scorer(cfg)
+    scorer.cycles = 5
+    start = time.time() - 1200
+    cum = 0.0
+    m = None
+    # 40 polls, 30s apart, 50k shares each: exactly the live cadence.
+    for i in range(40):
+        cum += 50_000
+        m = scorer.compute({"symbol": "BKYI", "ts": start + i * 30, "price": 5.83,
+                            "prev_close": 1.65, "cum_volume": cum, "halted": False},
+                           "regular")
+    st = scorer.state("BKYI")
+    assert len(st.samples) > 5, "polls faster than the dedupe window must append"
+    assert m.volx.get(15, 0) > 3.0
+    assert m.volx.get(5, 0) > 3.0
+
+
 def test_fading_spike_is_tagged(cfg):
     cfg.set("WARMUP_CYCLES", "0")
     scorer = Scorer(cfg)

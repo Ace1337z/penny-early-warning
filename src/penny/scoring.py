@@ -262,12 +262,35 @@ class Scorer:
     def __init__(self, cfg, clock=None):
         self.cfg = cfg
         self.clock = clock or time.time
-        self.sample_seconds = cfg.float("SAMPLE_SECONDS", 55.0)
+        # The dedupe window must be shorter than the poll cadence. The engine
+        # cycles every UNIVERSE_POLL_SECONDS (30s); with the old SAMPLE_SECONDS
+        # of 55 every update landed *inside* the dedupe window, so each poll
+        # replaced the one sample instead of appending and every symbol's
+        # history stayed a single point -- volume_added(w) was 0 for every
+        # window, volx was always "0.0x", and no tier, fast or build gate could
+        # ever fire on live data while the simulator (whose quotes land ~60s
+        # apart) kept passing. Sub-sampled updates still collapse: anything
+        # closer than this interval replaces the last sample rather than
+        # growing the array, so the memory bound is unchanged.
+        self.sample_seconds = min(cfg.float("SAMPLE_SECONDS", 55.0),
+                                  self.cycle_interval_floor())
         self.state_hours = cfg.float("STATE_HOURS", 6.0)
         self.states: dict[str, SymbolState] = {}
         self.warmup_cycles = cfg.int("WARMUP_CYCLES", 2)
         self.cycles = 0
         self.reset_at = self.clock()
+
+    def cycle_interval_floor(self) -> float:
+        """One poll interval, minus a small margin for jitter.
+
+        The engine reads UNIVERSE_POLL_SECONDS; reading it here keeps the scorer
+        self-consistent with the cadence it is fed at instead of trusting a
+        second config key to stay in sync.
+        """
+        try:
+            return max(1.0, self.cfg.int("UNIVERSE_POLL_SECONDS", 30) - 2.0)
+        except Exception:
+            return 28.0
 
     # -- state --------------------------------------------------------------
     def state(self, symbol: str) -> SymbolState:
