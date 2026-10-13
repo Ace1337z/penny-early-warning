@@ -603,7 +603,7 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
              "rating": {"grade": "MODERATE", "confidence": 0.6},
              "trends": {"direction": "rising", "momentum": "3m accel"},
              "entry_points": [{"zone": "1.40-1.42"}],
-             "exit_points": {"stop": "1.33", "t1": "1.55"},
+             "exit_points": {"stop": "1.33", "overhead": ["1.55"]},
              "verdict": "ENTER"}
     d = validate(valid, gate_passed=True)
     report.add("a valid Decision Report passes validation", d.ok, d.error or "ok")

@@ -90,8 +90,9 @@ class Decision:
     momentum: str = ""
     entries: list[dict] = field(default_factory=list)
     stop: Optional[str] = None
-    t1: Optional[str] = None
-    t2: Optional[str] = None
+    # Spec 4.2: no T1/T2 targets -- a fixed percentage target is a ghost. The
+    # exits are a structural stop and the real overhead supply above the entry.
+    overhead: list[str] = field(default_factory=list)
     exit_note: str = ""
     verdict_reason: str = ""
     rubrics: list[str] = field(default_factory=list)
@@ -257,8 +258,16 @@ def validate(data: dict, *, gate_passed: Optional[bool] = None,
     exits = data.get("exit_points") or {}
     if isinstance(exits, dict):
         d.stop = exits.get("stop")
-        d.t1 = exits.get("t1")
-        d.t2 = exits.get("t2")
+        # Spec 4.2/6: accept a structural `overhead` list. A model that still
+        # answers with the old t1/t2 keys is tolerated but not printed as
+        # targets -- they are folded into the overhead list so the block never
+        # shows a ghost target.
+        over = exits.get("overhead")
+        if isinstance(over, list):
+            d.overhead = [str(v) for v in over if v not in (None, "")][:3]
+        else:
+            legacy = [exits.get(k) for k in ("t1", "t2") if exits.get(k)]
+            d.overhead = [str(v) for v in legacy][:3]
         d.exit_note = str(exits.get("note", ""))
     trends = data.get("trends") or {}
     if isinstance(trends, dict):
@@ -308,11 +317,9 @@ def render(d: Decision) -> str:
             lines.append(f"ENTRY {i}: {zone}" + (f"  ({note})" if note else ""))
         exits = []
         if d.stop:
-            exits.append(f"STOP: {d.stop}")
-        if d.t1:
-            exits.append(f"T1: {d.t1}")
-        if d.t2:
-            exits.append(f"T2: {d.t2}")
+            exits.append(f"STOP (structural): {d.stop}")
+        if d.overhead:
+            exits.append("OVERHEAD: " + ", ".join(d.overhead))
         if exits:
             lines.append(" | ".join(exits))
         if d.exit_note:

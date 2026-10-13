@@ -308,3 +308,51 @@ def test_confirmed_tier_never_produces_a_short_instruction():
     for banned in ("sell short", "go short", "short entry", "short below",
                    "short above", "fade the", "short squeeze play"):
         assert banned not in text
+
+
+# --- the exact Telegram layout (Spec 6) -------------------------------------
+
+
+def test_section_order_is_exact():
+    """Spec 6: the reader scans a fixed order -- cause, backdrop, evidence,
+    decision. A section that floats is a section the reader has to hunt for."""
+    enr = Enrichment(symbol="XYZ")
+
+    class _Market:
+        def headline(self):
+            return "MARKET SPY +0.4% | RISK-ON"
+
+    text = format_alert2(_metrics(), enr, _Market(), bundle=_bundle())
+    order = ["WHY IT MOVED", "MARKET BACKDROP", "EVIDENCE", "AI DECISION"]
+    positions = [text.index(s) for s in order]
+    assert positions == sorted(positions), order
+
+
+def test_no_ghost_block_is_printed():
+    """Spec 4/6: the alert prints no TECH block, no Fibonacci grid and no
+    standalone PLAN/VERDICT heading -- the levels live inside the decision."""
+    text = format_alert2(_metrics(), Enrichment(symbol="XYZ"), None,
+                         bundle=_bundle())
+    for banned in ("TECH:", "FIB", "T1:", "T2:", "PLAN:", "VERDICT:"):
+        assert banned not in text, banned
+
+
+def test_alert_starts_with_the_detail_headline_and_ends_with_the_disclaimer():
+    text = format_alert2(_metrics(), Enrichment(symbol="XYZ"), None,
+                         bundle=_bundle())
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    assert lines[0].startswith("DETAIL  ")
+    assert lines[-1].startswith("Screener and decision support only")
+
+
+def test_alert1_headline_carries_tier_symbol_price_and_no_news_tag():
+    m = _metrics()
+    text = format_alert1(m, no_news=True)
+    head = text.splitlines()[0]
+    assert head.startswith("ALERT: ")
+    assert "XYZ" in head and "$1.23" in head and "[NO-NEWS]" in head
+
+
+def test_alert1_ends_with_the_shariah_line():
+    text = format_alert1(_metrics(), shariah_line="Shariah: COMPLIANT (halalterminal)")
+    assert text.splitlines()[-1] == "Shariah: COMPLIANT (halalterminal)"

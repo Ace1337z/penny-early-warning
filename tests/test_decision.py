@@ -28,7 +28,7 @@ def _report(**over):
         "rating": {"grade": "MODERATE", "confidence": 0.62},
         "trends": {"direction": "rising", "momentum": "3m accel"},
         "entry_points": [{"zone": "1.40-1.42", "note": "on a hold of VWAP"}],
-        "exit_points": {"stop": "1.33", "t1": "1.55", "t2": "1.70"},
+        "exit_points": {"stop": "1.33", "overhead": ["1.55", "1.70"]},
         "verdict": "ENTER",
     }
     base.update(over)
@@ -56,7 +56,7 @@ def test_a_complete_report_validates():
     assert d.strongest_risk.startswith("average trade size")
     assert d.rating == "MODERATE"
     assert d.confidence == 0.62
-    assert d.stop == "1.33" and d.t1 == "1.55" and d.t2 == "1.70"
+    assert d.stop == "1.33" and d.overhead == ["1.55", "1.70"]
 
 
 def test_render_leads_with_the_four_fields_in_order_and_ends_with_source():
@@ -70,7 +70,9 @@ def test_render_leads_with_the_four_fields_in_order_and_ends_with_source():
     # Spec 2.0 C: every decision block ends with a provenance line.
     assert lines[-1] == "SOURCE: ai"
     assert "ENTRY 1: 1.40-1.42" in text
-    assert "STOP: 1.33" in text and "T1: 1.55" in text
+    assert "STOP (structural): 1.33" in text and "OVERHEAD: 1.55, 1.70" in text
+    # Spec 4.2: a ghost target must never appear in a rendered decision.
+    assert "T1:" not in text and "T2:" not in text
 
 
 def test_an_honest_null_is_accepted_and_marked():

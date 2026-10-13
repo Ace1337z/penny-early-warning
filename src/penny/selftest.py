@@ -362,6 +362,29 @@ def _message_checks(report) -> None:
                "\u2500\u2500 AI DECISION" in text2)
     report.add("no trade instruction in the lean alert is a short",
                not any(w in text2.lower() for w in ("sell short", "go short", "fade the")))
+    # Spec 6: the section order is fixed and no ghost T1/T2 target is printed.
+    order = ["WHY IT MOVED", "EVIDENCE", "AI DECISION"]
+    pos = [text2.index(s) for s in order if s in text2]
+    report.add("Spec 6: alert sections appear in the fixed order",
+               len(pos) == len(order) and pos == sorted(pos), " < ".join(order))
+    report.add("Spec 4.2/6: no ghost T1/T2 target is printed",
+               "T1:" not in text2 and "T2:" not in text2)
+    # Spec 6: the exit line names a structural stop and overhead supply.
+    from .ai.decision import render as render_decision, validate as validate_decision
+    d = validate_decision({
+        "catalyst_quality": "real",
+        "strongest_risk": "average size is retail churn, not accumulation",
+        "invalidation_beyond_rules": "",
+        "key_findings": ["reclaimed VWAP on 3x volume"],
+        "rating": {"grade": "MODERATE", "confidence": 0.6},
+        "trends": {"direction": "rising", "momentum": "3m accel"},
+        "entry_points": [{"zone": "1.40-1.42"}],
+        "exit_points": {"stop": "1.33", "overhead": ["1.55", "1.70"]},
+        "verdict": "ENTER"}, gate_passed=True)
+    block = render_decision(d)
+    report.add("Spec 6: the decision exit line is structural (stop + overhead)",
+               "STOP (structural): 1.33" in block and "OVERHEAD: 1.55, 1.70" in block
+               and "T1:" not in block and "T2:" not in block)
 
 
 def _strategy_checks(report) -> None:
