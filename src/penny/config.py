@@ -121,7 +121,8 @@ DEFAULTS: dict[str, str] = {
     "AI_MAX_TOKENS": "1800",
     # Spec 2.0 B/E: the AI is adversarial, not a second vote on the gate.
     # AI_MIN_ADDITIVE=0 accepts reports that merely restate the gate;
-    # RULES_FALLBACK_VERDICT=0 strips the rules-only fallback down to WAIT.
+    # RULES_FALLBACK_VERDICT=0 strips the rules-only fallback down to NO_TRADE
+    # (Spec 5 removed WAIT entirely -- a hedge is not a verdict).
     # AI_ADVERSARIAL records which prompt is in force (v2 is the only prompt
     # today); it is listed so /keys shows the posture, not to switch prompts.
     "AI_ADVERSARIAL": "1",

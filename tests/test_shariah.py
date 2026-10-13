@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from penny.shariah import (COMPLIANT, DOUBTFUL, ERROR, FakeShariahSource, NON_COMPLIANT,
-                           NOT_SCREENED, UNKNOWN, ShariahService, combine)
+                           NOT_SCREENED, UNKNOWN, UNVERIFIED, ShariahService, combine)
 
 
 def test_combine_rules():
@@ -12,7 +12,9 @@ def test_combine_rules():
     assert combine([NON_COMPLIANT, COMPLIANT]) == NON_COMPLIANT
     assert combine([COMPLIANT, DOUBTFUL]) == DOUBTFUL
     assert combine([COMPLIANT, NOT_SCREENED]) == COMPLIANT
-    assert combine([NOT_SCREENED, ERROR]) == UNKNOWN
+    # Spec 5: a failed source with nothing screened is an outage, not "unknown".
+    assert combine([NOT_SCREENED, ERROR]) == UNVERIFIED
+    assert combine([NOT_SCREENED, NOT_SCREENED]) == UNKNOWN
     assert combine([]) == UNKNOWN
 
 

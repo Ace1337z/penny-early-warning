@@ -18,6 +18,12 @@ NON_COMPLIANT = "NON-COMPLIANT"
 NOT_SCREENED = "NOT SCREENED"
 ERROR = "ERROR"
 UNKNOWN = "UNKNOWN"
+# Spec 5: when the screening service cannot be reached at all, the label is
+# explicit about *why* it is missing. "UNKNOWN" reads like "we looked and found
+# nothing"; the truth is "we could not look". The two must not be confused, so
+# an outage gets its own label and the reason is carried alongside it.
+UNVERIFIED = "UNVERIFIED"
+UNVERIFIED_OFFLINE = "UNVERIFIED (Service Offline)"
 
 SCREENED = {COMPLIANT, DOUBTFUL, NON_COMPLIANT}
 
@@ -35,6 +41,11 @@ def combine(statuses: list[str]) -> str:
             return NON_COMPLIANT
         if any(s == DOUBTFUL for s in results):
             return DOUBTFUL
+    # Spec 5: nothing was screened *and* at least one source outright failed.
+    # That is an outage, not an empty result -- say so, so the reader knows the
+    # screen could not run rather than that the name passed it.
+    if not results and any(s == ERROR for s in statuses):
+        return UNVERIFIED
     return UNKNOWN
 
 
@@ -206,6 +217,10 @@ def one_line(status: dict) -> str:
     names = ", ".join(s.source for s in active)
     if not active and not sources:
         return "Shariah: not checked"
+    # Spec 5: an outage is reported as such -- never as UNKNOWN, which reads like
+    # "screened and inconclusive" rather than "could not screen".
+    if combined == UNVERIFIED:
+        return f"Shariah: {UNVERIFIED_OFFLINE}"
     if combined == UNKNOWN:
         return "Shariah: UNKNOWN (no screening result)"
     return f"Shariah: {combined}" + (f" ({names})" if names else "")
@@ -379,7 +394,13 @@ class ShariahService:
     def detail_lines(self, status: dict) -> list[str]:
         return detail_lines(status, self.sources)
     def should_alert(self, status: dict) -> tuple[bool, str]:
-        """Mode handling: tag, only_compliant, hide_noncompliant, off (6.17)."""
+        """Mode handling: tag, only_compliant, hide_noncompliant, off (6.17).
+
+        Spec 5 resilience: an *outage* (UNVERIFIED) is not a NON-COMPLIANT
+        verdict. The restrictive modes must not suppress a name merely because
+        the screening service was unreachable -- that would turn a network
+        problem into a silent filter. Only an actual NON-COMPLIANT suppresses.
+        """
         mode = self.mode
         combined = status.get("combined", UNKNOWN)
         if mode in ("off", "tag"):
@@ -387,6 +408,8 @@ class ShariahService:
         if mode == "only_compliant":
             if combined == COMPLIANT:
                 return True, ""
+            if combined == UNVERIFIED:
+                return True, "unverified (service offline)"
             return False, f"suppressed ({combined})"
         if mode == "hide_noncompliant":
             if combined == NON_COMPLIANT:

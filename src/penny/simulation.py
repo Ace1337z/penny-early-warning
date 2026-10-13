@@ -621,7 +621,7 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
 
     # Spec 2.0 B: the honest null is accepted -- and an ENTER on top of it is not.
     honest_null = dict(valid, catalyst_quality="unknown",
-                       strongest_risk="none identified", verdict="WAIT")
+                       strongest_risk="none identified", verdict="NO_TRADE")
     dn = validate(honest_null)
     report.add("STRONGEST_RISK: none identified with unknown quality is accepted",
                dn.ok and dn.null, d.error or "ok")
@@ -760,7 +760,7 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
                 {"primary_strategy": "catalyst_volume", "close_pct": 0.05,
                  "ai_source": "rules", "ai_verdict": ""},
                 {"primary_strategy": "catalyst_volume", "close_pct": 0.02,
-                 "ai_source": "ai", "ai_verdict": "WAIT"},
+                 "ai_source": "ai", "ai_verdict": "NO_TRADE"},
                 {"primary_strategy": "catalyst_volume", "close_pct": -0.01,
                  "ai_source": "ai_rejected", "ai_verdict": ""},
             ]

@@ -366,3 +366,38 @@ def _reversal_ready(bars: list[dict], armed: ArmedState,
     if rc <= ro:
         return False, "reversal bar is not green"
     return True, "flush then green reversal"
+
+
+# --------------------------------------------------------------------------
+# Deterministic-first routing (Spec 5)
+# --------------------------------------------------------------------------
+
+# The full outcome vocabulary, in one place. WAIT is not in it.
+OUTCOMES = ("ENTER", "ARMED", "NO_TRADE", "REJECT")
+
+
+def deterministic_verdict(gate, armed: Optional[ArmedState], bundle, *,
+                          now_ts: Optional[float] = None) -> str:
+    """The rule-engine's verdict, computed with no I/O (Spec 5).
+
+    This is the routing decision the alert is built from: it is a pure function
+    of the gate, the armed state and the bundle's closed bars, so it returns in
+    well under the 10 ms budget and is identical on every machine. The LLM is a
+    *red team* that runs afterwards and can only ever downgrade this -- it never
+    gates the alert, because a network call must never sit in the hot path.
+
+    Exactly one of ENTER | ARMED | NO_TRADE | REJECT is returned:
+
+      REJECT    the gate did not pass -- there is no setup to speak of.
+      ENTER     a closed 1m bar confirmed the entry (primitives A/B/C).
+      ARMED     the setup qualified but the tape has not confirmed it yet.
+      NO_TRADE  it was confirmed-then-vetoed, expired, or chased too far.
+
+    A missing armed state on a passing gate is ARMED-worthy only if we have not
+    even armed; without an arm there is nothing to confirm, so it is NO_TRADE.
+    """
+    if gate is None or not getattr(gate, "passed", False):
+        return "REJECT"
+    if armed is None:
+        return "NO_TRADE"
+    return confirm(armed, bundle, now_ts=now_ts).state

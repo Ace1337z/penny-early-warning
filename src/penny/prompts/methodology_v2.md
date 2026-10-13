@@ -28,7 +28,13 @@ Return ONE report as JSON. Do not roleplay. You are one adversarial reader.
    the rule engine cannot express (e.g. "two consecutive 1m closes under the
    rising trendline from 10:40"). Empty is allowed; a vague one is worse than
    empty.
-4. **VERDICT** — ENTER | WAIT | PASS. Downstream of the three fields above.
+4. **VERDICT** — ENTER | ARMED | NO_TRADE | REJECT. Downstream of the three
+   fields above. There is no WAIT: an outcome that hedges is not a decision.
+   - ENTER: you would take this now.
+   - ARMED: the setup is sound but the entry is not yet confirmed — say what
+     must confirm in INVALIDATION_BEYOND_RULES.
+   - NO_TRADE: nothing here worth a long right now.
+   - REJECT: the setup is unsound (dilution, promotional tape, a real defect).
    A model that returns ENTER with `strongest_risk: none identified` and
    `catalyst_quality: unknown` has nothing to add and must not claim
    otherwise.
@@ -36,9 +42,9 @@ Return ONE report as JSON. Do not roleplay. You are one adversarial reader.
 ## Cross-cutting rules
 
 - LONG ONLY. Never propose a short entry, a fade trade, or "going short". If
-  the move is dying, the answer is PASS, not a short.
+  the move is dying, the answer is NO_TRADE or REJECT, not a short.
 - A dilution priced below the open means no long: name it in
-  STRONGEST_RISK and return WAIT or PASS.
+  STRONGEST_RISK and return REJECT.
 - Position size comes from the plan's stop, never from conviction.
 
 ## What you are given
@@ -59,7 +65,7 @@ Return only JSON matching this shape. No prose outside it.
   "catalyst_quality": "dilution | promotional | real | mechanical | unknown",
   "strongest_risk": "one specific sentence, or 'none identified'",
   "invalidation_beyond_rules": "one forward trigger the rule engine cannot express, or empty",
-  "verdict": "ENTER | WAIT | PASS"
+  "verdict": "ENTER | ARMED | NO_TRADE | REJECT"
 }
 ```
 
@@ -72,11 +78,11 @@ Return only JSON matching this shape. No prose outside it.
   `STRONGEST_RISK: none identified`.
 - `invalidation_beyond_rules` may be empty. Inventing a vague one is worse
   than leaving it empty.
-- `verdict` is exactly one of ENTER, WAIT, PASS.
+- `verdict` is exactly one of ENTER, ARMED, NO_TRADE, REJECT. There is no WAIT.
 - An ENTER resting on "none identified" + "unknown" is rejected: you said you
   had nothing to add.
 - Honest null is expected and allowed: for a pure tape move,
-  `CATALYST_QUALITY: unknown` + `STRONGEST_RISK: none identified` + a WAIT or
-  PASS verdict is the correct report.
+  `CATALYST_QUALITY: unknown` + `STRONGEST_RISK: none identified` + a NO_TRADE
+  or ARMED verdict is the correct report.
 - State the evidence. "Momentum is rising" is not a risk; "average trade size
   of $180 on 9x volume is retail churn, not accumulation" is.

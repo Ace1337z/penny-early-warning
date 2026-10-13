@@ -652,3 +652,71 @@ def test_trade_plan_flags_stop_too_wide():
     # Breakout near the high -> r382 stop sits ~18% under entry, over the cap.
     plan = trade_plan(1.95, fib_levels(1.00, 2.00), risk_usd=50, day_high=2.10)
     assert plan is not None and (plan.viable or plan.reason == "STOP_TOO_WIDE")
+
+
+# --- deterministic-first routing (Spec 5) -----------------------------------
+
+
+def test_banned_wait_verdict_is_gone():
+    from penny.ai.decision import VERDICTS
+    assert "WAIT" not in VERDICTS
+    assert set(VERDICTS) == {"ENTER", "ARMED", "NO_TRADE", "REJECT"}
+    assert set(conf.OUTCOMES) == {"ENTER", "ARMED", "NO_TRADE", "REJECT"}
+
+
+def test_deterministic_verdict_rejects_a_blocked_gate():
+    gate = StrategyGate(passed=False, blocked_by="EXHAUSTED")
+    assert conf.deterministic_verdict(gate, armed(), bundle()) == "REJECT"
+    assert conf.deterministic_verdict(None, armed(), bundle()) == "REJECT"
+
+
+def test_deterministic_verdict_is_no_trade_without_an_arm():
+    assert conf.deterministic_verdict(StrategyGate(passed=True), None, bundle()) == "NO_TRADE"
+
+
+def test_deterministic_verdict_enters_on_a_confirmed_bar():
+    gate = StrategyGate(passed=True, primary="dollar_breakout")
+    b = bundle(price=1.065, bars_1m=bars((1.00, 1.02, 0.99, 1.01, 100),
+                                         (1.01, 1.06, 1.00, 1.055, 100),
+                                         (1.055, 1.07, 1.05, 1.065, 100)))
+    assert conf.deterministic_verdict(gate, armed(trigger=1.05), b, now_ts=1100.0) == "ENTER"
+
+
+def test_deterministic_verdict_runs_without_io_and_is_pure():
+    # The router must be a pure function: same inputs, same verdict, no gateway.
+    gate = StrategyGate(passed=True, primary="dollar_breakout")
+    b = bundle(price=1.065, bars_1m=bars((1.00, 1.02, 0.99, 1.01, 100),
+                                         (1.01, 1.06, 1.00, 1.055, 100),
+                                         (1.055, 1.07, 1.05, 1.065, 100)))
+    a = conf.deterministic_verdict(gate, armed(trigger=1.05), b, now_ts=1100.0)
+    bb = conf.deterministic_verdict(gate, armed(trigger=1.05), b, now_ts=1100.0)
+    assert a == bb == "ENTER"
+
+
+# --- resilient Shariah (Spec 5) ---------------------------------------------
+
+
+def test_shariah_outage_is_unverified_not_unknown():
+    from penny.shariah import ERROR, NOT_SCREENED, UNKNOWN, UNVERIFIED, combine
+    assert combine([NOT_SCREENED, ERROR]) == UNVERIFIED
+    assert combine([NOT_SCREENED]) == UNKNOWN
+
+
+def test_shariah_one_line_reports_service_offline():
+    from penny.shariah import (ERROR, UNVERIFIED, SourceResult, one_line)
+    status = {"combined": UNVERIFIED,
+              "sources": {"halalterminal": SourceResult("halalterminal", ERROR)}}
+    assert one_line(status) == "Shariah: UNVERIFIED (Service Offline)"
+
+
+def test_shariah_outage_does_not_suppress_in_only_compliant_mode():
+    from penny.shariah import UNVERIFIED, ShariahService
+
+    class _Cfg:
+        def raw(self, key, default=None):
+            return "only_compliant" if key == "SHARIAH_MODE" else default
+
+    svc = ShariahService(_Cfg(), db=None, sources=[])
+    allowed, reason = svc.should_alert({"combined": UNVERIFIED})
+    assert allowed is True
+    assert "unverified" in reason.lower()

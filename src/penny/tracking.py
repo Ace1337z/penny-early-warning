@@ -513,7 +513,7 @@ def _source_bucket(r: dict) -> str:
     """The provenance bucket for one closed alert (Spec 2.0 D).
 
     agreement    gate pass + the AI said ENTER
-    disagreement gate pass + the AI said WAIT/PASS
+    disagreement gate pass + the AI declined (NO_TRADE/REJECT/ARMED)
     rules_only   the block was built from the rules
     ai_rejected  the model answered but its report was refused
     """
@@ -521,7 +521,7 @@ def _source_bucket(r: dict) -> str:
     verdict = str(r.get("ai_verdict") or "").upper()
     if src == "ai" and verdict == "ENTER":
         return "agreement"
-    if src == "ai" and verdict in ("WAIT", "PASS"):
+    if src == "ai" and verdict in ("NO_TRADE", "REJECT", "ARMED", "WAIT", "PASS"):
         return "disagreement"
     if src == "ai_rejected":
         return "ai_rejected"

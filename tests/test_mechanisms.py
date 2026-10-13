@@ -220,7 +220,7 @@ def test_rules_fallback_is_a_full_block_with_provenance():
 def test_rules_fallback_waits_when_the_gate_blocked():
     text = render_rules_fallback(metrics(), _gate(passed=False, blocked_by="EXHAUSTED"),
                                  bundle(), source="rules", reason="ai: not configured")
-    assert "VERDICT: WAIT" in text
+    assert "VERDICT: NO_TRADE" in text
     assert "gate blocked: EXHAUSTED" in text
 
 

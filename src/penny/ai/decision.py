@@ -35,7 +35,9 @@ log = logging.getLogger(__name__)
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "methodology_v2.md"
 
-VERDICTS = ("ENTER", "WAIT", "PASS")
+# Spec 5: the verdict vocabulary. WAIT is banned -- it is not a decision, it is
+# the absence of one. Every report must land on one of these four outcomes.
+VERDICTS = ("ENTER", "ARMED", "NO_TRADE", "REJECT")
 RATINGS = ("STRONG", "MODERATE", "WEAK", "AVOID")
 DIRECTIONS = ("rising", "flat", "fading")
 
@@ -448,7 +450,9 @@ def render_rules_fallback(m, gate, bundle, *, source: str, reason: str,
     """
     passed = bool(gate is not None and getattr(gate, "passed", False))
     score = float(getattr(gate, "gate_score", 0.0) or 0.0)
-    verdict = "WAIT"
+    # Spec 5: no WAIT. A rules-only view of a non-trade is NO_TRADE, and the
+    # rules-only view of a passing setup is ENTER -- never a hedge.
+    verdict = "NO_TRADE"
     if passed and (cfg is None or cfg.bool("RULES_FALLBACK_VERDICT", True)):
         verdict = "ENTER"
     rating = "STRONG" if score >= 75 else ("MODERATE" if score >= 55 else "WEAK")

@@ -444,7 +444,8 @@ class FakeGateway:
         # move is honestly unknown, and the risk sentence is always specific.
         cause = facts.get("cause_detail") or {}
         quality = "real" if cause.get("headline") else "unknown"
-        verdict = "ENTER" if cause else "WAIT"
+        # Spec 5: no WAIT. A cause-free tape move is NO_TRADE, not a hedge.
+        verdict = "ENTER" if cause else "NO_TRADE"
         confidence = {"accurate": 0.75, "wrong": 0.25}.get(bias, 0.55)
         direction = "rising" if cause else "fading"
         payload = {

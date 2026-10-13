@@ -76,7 +76,7 @@ def test_render_leads_with_the_four_fields_in_order_and_ends_with_source():
 def test_an_honest_null_is_accepted_and_marked():
     """Criterion 5: none identified + unknown is accepted, and marked."""
     d = validate(_report(catalyst_quality="unknown",
-                         strongest_risk="none identified", verdict="WAIT",
+                         strongest_risk="none identified", verdict="NO_TRADE",
                          invalidation_beyond_rules=""))
     assert d.ok, d.error
     assert d.null
@@ -142,14 +142,17 @@ def test_a_specific_risk_survives_the_additive_check():
 
 def test_an_honest_null_is_never_a_rejection():
     d = validate(_report(catalyst_quality="unknown",
-                         strongest_risk="none identified", verdict="WAIT"))
+                         strongest_risk="none identified", verdict="NO_TRADE"))
     assert d.ok and d.null
 
 
 # --- long-only, enforced on the payload rather than trusted from the prompt --
 
 def test_every_verdict_is_a_long_verdict():
-    assert set(VERDICTS) == {"ENTER", "WAIT", "PASS"}
+    # Spec 5: WAIT is banned; the four outcomes are ENTER/ARMED/NO_TRADE/REJECT.
+    assert set(VERDICTS) == {"ENTER", "ARMED", "NO_TRADE", "REJECT"}
+    assert "WAIT" not in VERDICTS
+    assert not validate(_report(verdict="WAIT")).ok
     assert not validate(_report(verdict="SHORT")).ok
     assert not validate(_report(verdict="SELL")).ok
 

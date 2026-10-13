@@ -218,9 +218,21 @@ def _ai_checks(report) -> None:
     report.add("a report that restates the gate is rejected as non-additive",
                not validate(echo).ok, "rejected")
     honest = validate(dict(valid, catalyst_quality="unknown",
-                           strongest_risk="none identified", verdict="WAIT"))
+                           strongest_risk="none identified", verdict="NO_TRADE"))
     report.add("STRONGEST_RISK: none identified with unknown quality is accepted",
                honest.ok and honest.null, honest.error or "ok")
+    # Spec 5: WAIT is banned -- a hedge is not a verdict. The vocabulary is the
+    # four outcomes, and a report that returns WAIT is refused outright.
+    from .ai.decision import VERDICTS
+    from .strategies import OUTCOMES, StrategyGate, deterministic_verdict
+    report.add("Spec 5: WAIT is banned from the verdict vocabulary",
+               "WAIT" not in VERDICTS
+               and set(VERDICTS) == {"ENTER", "ARMED", "NO_TRADE", "REJECT"},
+               ", ".join(VERDICTS))
+    report.add("Spec 5: deterministic routing rejects a blocked gate, purely",
+               deterministic_verdict(StrategyGate(passed=False), None, None) == "REJECT"
+               and deterministic_verdict(StrategyGate(passed=True), None, None) == "NO_TRADE"
+               and set(OUTCOMES) == {"ENTER", "ARMED", "NO_TRADE", "REJECT"})
     from .ai.decision import render_rules_fallback
     from .strategies import Bundle, evaluate_gate
 
@@ -596,13 +608,17 @@ def _phase2_checks(report) -> None:
 
 
 def _shariah_checks(report) -> None:
-    from .shariah import COMPLIANT, DOUBTFUL, NON_COMPLIANT, UNKNOWN, combine
+    from .shariah import (COMPLIANT, DOUBTFUL, NON_COMPLIANT, UNKNOWN, UNVERIFIED,
+                          combine)
     report.add("Shariah combine: all compliant", combine([COMPLIANT, COMPLIANT]) == COMPLIANT)
     report.add("Shariah combine: any non-compliant wins",
                combine([COMPLIANT, NON_COMPLIANT]) == NON_COMPLIANT)
     report.add("Shariah combine: doubtful", combine([COMPLIANT, DOUBTFUL]) == DOUBTFUL)
     report.add("Shariah combine: nothing screened is unknown",
-               combine(["NOT SCREENED", "ERROR"]) == UNKNOWN)
+               combine(["NOT SCREENED", "NOT SCREENED"]) == UNKNOWN)
+    # Spec 5 resilience: a failed source is an outage, not an empty result.
+    report.add("Shariah combine: a failed source is UNVERIFIED, not UNKNOWN",
+               combine(["NOT SCREENED", "ERROR"]) == UNVERIFIED)
 
 
 def _security_checks(report) -> None:
