@@ -30,8 +30,8 @@ $PENNY --config $CONFIG run       # run in the foreground
 $PENNY --config $CONFIG run --once   # a single cycle, then exit (smoke test)
 ```
 
-From Telegram, `/status` shows uptime, session, cycle time, symbols, quotes, memory,
-tokens and the last backup.
+From Telegram, `/status` shows uptime, session, cycle time, symbols, quotes, memory
+and tokens.
 
 ---
 
@@ -122,9 +122,9 @@ bash update.sh v1.1.0       # a specific tag
 bash update.sh --rollback   # restore the previous version
 ```
 
-The updater takes a backup first, then installs the newest version
-(configuration, databases and bar files are untouched), reinstalls dependencies, runs the
-self-test, restarts the service and keeps the previous version under `.rollback/`.
+The updater installs the newest version (configuration, databases and bar files are
+untouched), reinstalls dependencies, runs the self-test, restarts the service and keeps the
+previous version under `.rollback/`.
 
 If the install directory is a real git checkout, the updater uses `git fetch` +
 `git reset --hard origin/main` (or checks out the requested tag), which removes files that
@@ -147,68 +147,7 @@ If an update fails: `bash update.sh --rollback`, then check `journalctl -u penny
 
 ---
 
-## 5. Backups
-
-Automatic: a full backup daily at 20:30 ET, a light backup of the two databases every hour
-during sessions, an immediate light backup after any journal change or panel change, and
-before every update. Off-server copies are encrypted with `BACKUP_PASSPHRASE`.
-
-```bash
-$PENNY --config $CONFIG backup now            # a manual backup
-$PENNY --config $CONFIG backup list           # recent backups and destination health
-$PENNY --config $CONFIG backup drill          # weekly restore drill (also automatic)
-```
-
-From Telegram: `/backup now`, `/backups`.
-
-- Verification after every backup: checksum, decryption test, integrity check, row-count
-  comparison with the live database.
-- Retention: hourly 48, daily 14, weekly 8, monthly 12. Nothing is pruned until a newer
-  backup is verified, and the last 3 verified backups are never pruned.
-- If there is no verified backup within `BACKUP_MAX_AGE_HOURS` (26), you get a Telegram
-  alert, repeated daily until one succeeds.
-
-**Configure an off-server destination** (strongly recommended; the installer warns when it
-is missing):
-
-```bash
-$PENNY --config $CONFIG set BACKUP_REMOTE "s3:my-bucket/penny"   # an rclone remote
-$PENNY --config $CONFIG set BACKUP_PASSPHRASE                   # hidden input
-```
-
----
-
-## 6. Restore
-
-Restore is **command line only** (it is destructive) and is not available through
-Telegram.
-
-```bash
-sudo systemctl stop penny
-$PENNY --config $CONFIG restore latest --scope full
-$PENNY --config $CONFIG restore /path/to/penny-daily-....tar.gz --scope learning
-$PENNY --config $CONFIG restore s3:my-bucket/penny/penny-daily-....gpg --scope full
-sudo systemctl start penny
-$PENNY --config $CONFIG doctor
-```
-
-Scopes:
-
-- `full` — the two databases, bar files and tuned settings
-- `learning` - journal, tracked alerts and tuned settings (not bar files)
-- `journal` — the journal database only
-
-A **safety snapshot** of whatever exists is taken first (in the local backup directory).
-The passphrase must match the one used when the backup was made; without it an encrypted
-backup cannot be read.
-
-**On a new server:** run the installer and answer **yes** to "restore the learning state
-from an existing backup"; it asks for the backup location and passphrase and restores
-before the first run.
-
----
-
-## 7. Journal and rule tuning
+## 5. Journal and rule tuning
 
 ```bash
 # Guided entry
@@ -230,7 +169,7 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 
 ---
 
-## 8. Troubleshooting
+## 6. Troubleshooting
 
 | Symptom | Check / fix |
 |---|---|
@@ -259,22 +198,21 @@ Rule results are labelled `PRELIMINARY` until there are 30 winners and 100 loser
 | Provider cannot list models | that is normal for many OpenAI-compatible gateways; set the id by hand: `/model your-model-id` |
 | `/set AI_MODEL` had no effect | on an older build, restart the service; the current build reads the value on the next cycle (`/model your-id` is the same setting, one command) |
 | Provider returns `content: null` | reasoning models put the answer in `reasoning_content`; the gateway reads that. An empty completion is now a reported error |
-| "BACKUP OVERDUE" | `$PENNY backup now`; check `BACKUP_REMOTE` and the passphrase |
 | High memory | lower `WORKERS`; check `sizing.log` and the `cycles` table |
 | Service keeps restarting | `journalctl -u penny -n 100`; run `$PENNY selftest` |
 
 Useful log greps:
 
 ```bash
-journalctl -u penny | grep -i "finviz\|alpaca\|halalterminal\|backup\|alert"
+journalctl -u penny | grep -i "finviz\|alpaca\|halalterminal\|alert"
 ```
 
 ---
 
-## 9. Housekeeping
+## 7. Housekeeping
 
 - Retention: sizing records and AI call logs older than `RETENTION_DAYS` (365) are
   deleted; bar files are kept; the sizing log rotates weekly.
 - Time sync is mandatory — keep chrony running.
 - The configuration file is mode 600; keep it that way. Never commit it.
-- Periodically run `backup drill` and, after any change, `doctor`.
+- After any change, run `doctor`.

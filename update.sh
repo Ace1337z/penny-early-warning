@@ -56,19 +56,14 @@ if [[ "$ROLLBACK" == "1" ]]; then
     exit 0
 fi
 
-# 1. Back up the learning state before touching anything.
-info "taking a pre-update backup"
-"$PENNY" --config "$INSTALL_DIR/config.env" backup now --kind pre-update || \
-    warn "pre-update backup failed; continuing (the updater keeps a code rollback)"
-
-# 2. Download and install the new version.
+# 1. Download and install the new version.
 ARGS=(update --install-dir "$INSTALL_DIR")
 [[ -n "$PENNY_VERSION" ]] && ARGS+=(--version "$PENNY_VERSION")
 [[ -n "${GITHUB_TOKEN:-}" ]] && ARGS+=(--private)
 info "downloading the new version"
 "$PENNY" --config "$INSTALL_DIR/config.env" "${ARGS[@]}"
 
-# 3. Restart.
+# 2. Restart.
 if command -v systemctl >/dev/null 2>&1; then
     info "restarting the service"
     $SUDO systemctl restart penny

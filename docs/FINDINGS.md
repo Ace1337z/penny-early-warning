@@ -185,13 +185,15 @@ needs a live check.
 - **Status:** implemented and covered by tests; confirm against the live provider with
   `penny doctor` and `/models refresh`.
 
-## C17 — Off-server backup destination and Telegram document size
-- **Question:** the off-server destination and its credentials; does the critical archive
-  fit Telegram's ~50 MB document limit?
-- **Default adopted:** local backup always; off-server optional but strongly recommended
-  (the installer and `doctor` warn when missing); the Telegram document backup is skipped
-  with a warning when the archive exceeds ~45 MB.
-- **Status:** **TO CONFIRM** (set `BACKUP_REMOTE` and `BACKUP_PASSPHRASE`).
+## C17 / C18 — Backup subsystem (retired)
+- **Question:** the off-server backup destination and credentials, archive size versus
+  Telegram's document limit, and which encryption tool (`age` or GnuPG) the VPS has.
+- **Decision:** the whole backup subsystem was **removed**. There is no `penny backup`,
+  `penny restore`, `backup.py`, scheduled snapshot, verify or restore drill any more. Data
+  lives in the two SQLite databases under `PENNY_HOME`; keep the host itself backed up with
+  whatever the operator's provider offers. `penny update` no longer takes a pre-update
+  backup either.
+- **Status:** removed.
 
 ## C19 — Surfacing momentum builds below the alert bar
 - **Question:** the alert bar is tier 2 (`TIER_EARLY`), so slow accumulations (steady
@@ -320,13 +322,7 @@ needs a live check.
 - **Status:** implemented; covered by `tests/test_check_quote.py`.
 - **Where:** `src/penny/engine.py` (`check_quote`), `src/penny/commands.py` (`_run_check`).
 
-## C18 — Encryption tool on the VPS
-- **Question:** is `age` or GnuPG available?
-- **Default adopted:** **GnuPG symmetric** (AES-256) when `gpg` is present; otherwise an
-  internal AES-GCM scheme with a PBKDF2-HMAC-SHA256 key (300,000 iterations) and a
-  `PENNYBKP1` header. Either way the archive cannot be read without the passphrase.
-- **Status:** implemented with fallback; confirm `gpg` on the VPS.
-- **Where:** `src/penny/backup.py`.
+- **Where:** removed with the backup subsystem.
 
 ---
 
@@ -335,10 +331,10 @@ needs a live check.
 Run on the development machine (Python 3.12, Windows) with `penny selftest`,
 `penny simulate` and `pytest`.
 
-### Unit tests (`pytest -q`) — 481 passed, 1 skipped
+### Unit tests (`pytest -q`) — 580 passed, 1 skipped
 Covers config defaults and round-trip, storage, scoring (Rise/Volx/Accel/VWAP, tiers,
 phase, builds), alert and build-feed formatting, the AI gateway/runner/leaderboard, the
-journal, backups, the Telegram client, `/check` latency bounds and quote freshness, and the
+journal, the Telegram client, `/check` latency bounds and quote freshness, and the
 Finviz feed (`tests/test_finviz.py`: column coverage, required-column merge, view coercion,
 intraday-signal guard, per-screen mover cap, extended-hours price override, average-volume
 units, intraday performance). Phase 2 adds `test_phase2_reality.py` (the spread/liquidity
@@ -363,8 +359,7 @@ cap; Fibonacci levels, extensions and trade plans; Alert 1 shape (including the
 bid/ask/spread/15m-dollar book line on line two) and Alert 2 length and
 disclaimer; the model catalogue (load, persist, pool excludes aliases and over-limit
 models); the composite formula and the Wilson interval; the Shariah combine rules; secret
-scrubbing; and the backup round-trip (create, verify, encrypted, no plaintext secrets,
-restore drill, restore, wrong passphrase rejected). Phase 2 adds its own section:
+scrubbing. Phase 2 adds its own section:
 the `WIDE_SPREAD`/`ILLIQUID` labels and the honest `INSUFFICIENT_DATA` book case, the
 $500 exit walk, a 5-minute close under VWAP invalidating a setup once, the confidence
 clamp at hit rate + 15 points (and no prior below 30 samples), analogs suppressed below
@@ -404,9 +399,8 @@ and `/stats` splits closed alerts `BY SOURCE` (`agreement`/`disagreement`/`rules
 
 ### Not yet run (need live accounts / a VPS)
 Acceptance tests 2 (token change), 3 (installer on a fresh VPS), 4 (`doctor` all PASS),
-5 (mover parity), 6 (replay), 8 (failure drills), 9 (5-day soak), 11 (full off-server
-backup/restore across servers), 12 (model catalogue against the real provider). Run these
-on the VPS once the credentials are in place.
+5 (mover parity), 6 (replay), 8 (failure drills), 9 (5-day soak), 12 (model catalogue
+against the real provider). Run these on the VPS once the credentials are in place.
 
 ## C25. A closed market reported the frozen regular close as live
 

@@ -355,8 +355,8 @@ actually produced.
 - **Self-learning journal** - log historical winners and losers, download their bars,
   compute metrics and search rule thresholds, with trust levels
   (`PRELIMINARY` -> `MODERATE` -> `FIRM`).
-- **Backups that survive a dead server** - scheduled local + off-server encrypted
-  snapshots, verification, retention and a weekly restore drill.
+- **Rollback-safe updates** - `penny update` pulls the newest code (git-aware) and keeps the
+  previous version for one-command rollback.
 - **Telegram + CLI** - alerts, commands, digests and a full command line.
 - **Runs offline for testing** - a synthetic market, a fake AI and a fake Telegram, so the
   whole pipeline is exercised with no network and no credentials.
@@ -380,14 +380,13 @@ actually produced.
 | halalterminal.com API key | optional | Shariah screening |
 | TwelveData | recommended | fresh single-symbol price, volume and 1-minute candles |
 | Alpaca / Finnhub | optional | candle fallback |
-| Backup passphrase + destination | optional | encrypted off-server backups |
 
 ---
 
 ## Install
 
 Create an **empty** repo, then run the installer **directly** (not piped into `bash`, so it
-can read your answers). It asks for every credential *first*, before anything is
+can read your answers). It asks for the Telegram credentials *first*, before anything is
 downloaded, and it is idempotent - running it again keeps existing values (shown masked;
 pressing Enter keeps them).
 
@@ -402,10 +401,10 @@ first copy.
 
 The installer installs system packages, downloads the source, creates a virtual
 environment, writes `config.env` (mode 600), detects the Telegram chat id, installs the
-systemd unit, runs the offline self-test and the live `doctor`, and offers to start the
-service. Only the **Telegram bot token and chat id** are required at install time - every
-other credential (Finviz, Alpaca, Finnhub, SEC, halalterminal, AI, backup) is optional and
-can be added later straight from the Telegram bot with `/set`.
+systemd unit, runs the offline self-test and the live `doctor`, and starts the service.
+Only the **Telegram bot token and chat id** are asked for at install time - every other
+credential (Finviz, Alpaca, Finnhub, SEC, halalterminal, AI, GitHub) is optional and can be
+added later straight from the Telegram bot with `/set`.
 
 **Non-interactive:**
 
@@ -497,7 +496,6 @@ time changes - most changes apply from the next cycle without a restart. See
 | **Other sources** | TwelveData (key, base URL, per-minute/per-day budgets), Alpaca, Finnhub, SEC contact |
 | **Telegram** | bot token and chat id |
 | **Shariah** | keys, `SHARIAH_MODE`, TTL, monthly call limit |
-| **Backup** | local dir, off-server destination, passphrase, schedule, retention |
 | **AI** | gateway URL, key, model id, timeout, token cap |
 | **Behaviour** | price range, alert tiers, re-alert window, warm-up, workers, risk size |
 | **Tuning** | tier thresholds and score weights |
@@ -540,8 +538,6 @@ buttons under every reply to drill in without typing.
 /set KEY VALUE           change any setting at runtime (alias /setkey)
 /keys                    list settable keys (secrets masked)
 /halal SYM               Shariah status now
-/backup now
-/backups                 recent backups and destination health
 /status
 /help
 ```
@@ -552,7 +548,7 @@ buttons, so a symbol is always one tap away:
 - Alerts and `/check` - **Re-check**, **Halal**, **Menu** (a single row).
 - `/top` and `/builds` - up to six symbols packed three per row, plus **Refresh**.
 - `/market`, `/status`, `/eod` - **Refresh**, **Menu**.
-- The main menu is two rows of three; **More** opens Status, Keys, Backup and Help.
+- The main menu is two rows of three; **More** opens Status, Keys and Help.
 - Tapping a button edits the message in place instead of posting a new one.
 
 Alerts, `/check` and `/builds` are HTML-formatted (bold headers, monospace
@@ -565,18 +561,16 @@ notices (feed health, digests) stay plain text.
 
 | Command | Purpose |
 |---|---|
-| `penny setup` | interactive wizard; asks for every key first, then runs the self-test |
+| `penny setup` | interactive wizard; asks for Telegram first, then runs the self-test |
 | `penny set KEY [VALUE]` | change one setting (hidden input for secrets) |
 | `penny config show [KEY]` | list settings with secrets masked |
 | `penny run` | run the service (engine + Telegram command poller) |
 | `penny doctor` | live checker: every source, Telegram and every AI model, PASS/FAIL |
 | `penny selftest` | offline self-test (no network, no credentials) |
 | `penny simulate` | offline simulation with a synthetic market |
-| `penny status` | uptime, session, cycle, tokens, backups |
+| `penny status` | uptime, session, cycle, decisions |
 | `penny models` | inspect the configured decision model; `refresh` re-reads the provider's list |
 | `penny journal ...` | add/import/list events, download bars, metrics, rule search, discover |
-| `penny backup now\|list\|drill` | create, list and verify backups |
-| `penny restore SOURCE --scope full\|learning\|journal` | restore a backup (destructive) |
 | `penny update` / `penny rollback` | install a new version / restore the previous one |
 | `penny detect-chat` | read the Telegram chat id from the next message to the bot |
 
@@ -587,7 +581,7 @@ notices (feed health, digests) stay plain text.
 ## Testing
 
 ```bash
-penny selftest      # offline: config, storage, scoring, parsers, AI, fib, messages, backups
+penny selftest      # offline: config, storage, scoring, parsers, AI, fib, messages
 penny simulate      # synthetic market: grinder, burst, fading spike, ~60 noise stocks
 pytest -q           # unit tests
 ```
@@ -623,8 +617,8 @@ fake Telegram, and asserts the documented acceptance results:
   a hot sector gets a line and a cold sector gets none
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS** (93 checks), `simulate` **ALL PASS** (58 checks),
-`pytest` **579 passed** (1 skipped).
+Current status: `selftest` **ALL PASS** (86 checks), `simulate` **ALL PASS** (58 checks),
+`pytest` **580 passed** (1 skipped).
 
 ---
 
@@ -636,8 +630,7 @@ Current status: `selftest` **ALL PASS** (93 checks), `simulate` **ALL PASS** (58
   or a restricted key file, and are **never** passed as command-line arguments.
 - Tokens and keys are **scrubbed** from logs, errors and messages.
 - Telegram commands are accepted only from the configured chat id.
-- Backups never contain secrets by default; off-server archives are always encrypted with
-  your passphrase (GnuPG symmetric, or an internal AES-GCM fallback).
+- No backup archive is produced, so no copy of the databases or secrets leaves the host.
 
 ---
 
@@ -667,13 +660,12 @@ src/penny/
   telegram.py              Telegram client + offline fake
   ui.py                    HTML escaping, inline/reply keyboards, callback codes
   journal.py               events, bar download, metrics, rule search
-  backup.py                backup, verification, retention, restore, drill
   commands.py              Telegram command handling
   doctor.py                live checker
   selftest.py              offline self-test
   simulation.py            offline simulation with a synthetic market
 tests/                     unit tests
-docs/RUNBOOK.md            start, stop, update, rollback, change keys, restore
+docs/RUNBOOK.md            start, stop, update, rollback, change keys, troubleshooting
 docs/FINDINGS.md           the items to confirm during build and their defaults
 ```
 
@@ -687,9 +679,9 @@ bash update.sh v1.1.0       # a specific tag
 bash update.sh --rollback   # restore the previous version
 ```
 
-The updater takes a backup first, then installs the newest version
-(configuration, databases and bar files are untouched), reinstalls dependencies, runs the
-self-test, restarts the service and keeps the previous version for rollback.
+The updater installs the newest version (configuration, databases and bar files are
+untouched), reinstalls dependencies, runs the self-test, restarts the service and keeps the
+previous version for rollback.
 
 If the install directory is a real git checkout (`/opt/penny/.git` present and `git` on
 `PATH`), the updater does `git fetch` + `git reset --hard origin/main` (or checks out the
@@ -707,7 +699,7 @@ note that an overlay can never delete a stale file, so a git checkout is preferr
 ## Documentation
 
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) - operations: start, stop, update, rollback, change
-  any key or token, restore a backup, troubleshooting.
+  any key or token, troubleshooting.
 - [`docs/FINDINGS.md`](docs/FINDINGS.md) - the items to confirm during build and the
   default adopted for each.
 
