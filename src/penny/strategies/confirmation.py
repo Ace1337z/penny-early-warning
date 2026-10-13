@@ -1,35 +1,39 @@
-"""Two-stage ARMED -> ENTER confirmation (Spec 2.3, Section 3).
+"""Two-stage ARMED -> ENTER confirmation (Spec Section 3).
 
 A setup is not an entry. Stage 1 says "this could be a long"; Stage 2 says "the
 tape just agreed". Splitting them is what stops the bot from chasing a sign it
 has not seen yet.
 
-  Stage 1  ARMED   the gate passed and the phase is actionable. No alert-level
-                   decision is made yet; the setup is remembered with the level
-                   that would confirm it.
-  Stage 2  ENTER   a CLOSED 1m bar confirmed above the armed level (primitives
-                   A/B/C below) while the price stayed within the chase cap.
+  Stage 1  ARMED   the pattern qualified. The setup is remembered with the level
+                   that would confirm it and the mode it is traded in. No order,
+                   no actionable alert.
+  Stage 2  ENTER   a CLOSED 1m bar confirmed (primitives A/B/C below) while the
+                   price stayed inside the chase tolerance.
 
-The four possible outcomes are ARMED, ENTER, NO_TRADE and REJECT. There is no
-WAIT: "wait" is a non-decision, and this module exists precisely to turn it into
-one of the four. ARMED is the only state that keeps listening; NO_TRADE and
-REJECT are terminal and the setup is forgotten.
+The four outcomes are ARMED, ENTER, NO_TRADE and REJECT. There is no WAIT:
+"wait" is a non-decision, and this module exists to turn it into one of the four.
 
-Confirmation primitives, all read off a CLOSED 1m bar (the forming bar is
-dropped -- a confirmation that has not closed is not a confirmation):
+Confirmation primitives, all read off CLOSED 1m bars (the forming bar is dropped
+-- a confirmation that has not closed is not a confirmation). Spec 3.1:
 
-  A  break & hold   the last closed bar closed above the trigger and its own low
-                    held the trigger. The clean breakout.
-  B  reclaim        the last closed bar opened below the trigger and closed back
-                    above it, having wicked under. The failed break that held.
-  C  volume push    A or B, and that bar's volume was at or above the mean of the
-                    last three closed bars. A silent breakout is suspect; a loud
-                    one is not.
+  A  volume reversal bar   bar[-1].volume >= 2.0x the 5-bar average, close > open
+                           and the close in the upper 50% of the bar's range.
+  B  higher-low structure  bar[-1].low > bar[-2].low.
+  C  trigger break         bar[-1].close > trigger, price within the 4% chase cap.
 
-CONTINUATION vs REVERSAL is decided once, at arming, and never flips. A
-CONTINUATION holds a move that is already up; a REVERSAL buys the snap-back off
-a blow-off. They are mutually exclusive: a single ArmedState carries exactly one
-trade_class, and the confirmation only ever tests the level that matches it.
+Any one primitive confirms; the strongest present is reported.
+
+CONTINUATION vs REVERSAL (Spec 3.2) is decided once, at arming, and never flips:
+
+  CONTINUATION  gap_and_go / vwap_hold / first_pullback. Only on FRONT_SIDE
+                holding VWAP. Hard-vetoed when the ticker is BACK_SIDE or has
+                dropped >10% off the HOD in under 5 minutes.
+  REVERSAL      morning_panic_dip_buy / v_reversal. Requires a completed flush
+                bar (bar[-2]) and a confirmed green reversal bar (bar[-1]); never
+                fires on the first red dump bar.
+
+A single ArmedState carries exactly one mode, and the confirmation tests only the
+structure that matches it.
 """
 
 from __future__ import annotations
@@ -38,47 +42,59 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 from .candles import clean_bars
+from .indicators import range_position
 
-# Never chase more than this % above the armed price. A setup that ran away is
-# not the same trade at a worse price; it is a different trade.
+# Never chase more than this % above the armed trigger.
 CHASE_PCT = 4.0
 # An armed setup that never confirms is abandoned rather than held forever.
 ARMED_TTL_S = 600.0
 
-# Trigger names that name a REVERSAL. Everything else is a CONTINUATION. The
-# list is short on purpose: a reversal must be proven by the trigger's own
-# mechanic, not inferred from a soft agreement.
-REVERSAL_TRIGGERS = frozenset({"v_reversal"})
-# Primaries whose mechanic is buying a post-drop recovery. Used only when the
-# gate supplied no trigger at all.
-REVERSAL_PRIMARIES = frozenset({"v_reversal", "liquidity_grab"})
+# Primitive A thresholds (Spec 3.1).
+VOL_REVERSAL_MULT = 2.0      # bar volume vs the 5-bar average
+VOL_REVERSAL_LOOKBACK = 5
+RANGE_POSITION_MIN = 0.5     # close must be in the upper half of the bar
 
-# Phases a fresh long may be armed from. PARABOLIC is excluded: it is the
-# chase-by-definition phase and the state machine is the anti-chase.
-ARMABLE_PHASES = frozenset({"PRE_BREAKOUT", "FRONT_SIDE"})
-
-EntryState = Literal["ARMED", "ENTER", "NO_TRADE", "REJECT"]
+# Continuation hard-veto (Spec 3.2).
+CONT_DROP_OFF_HOD = 10.0     # % off the HOD ...
+CONT_DROP_WINDOW_S = 300.0   # ... within this many seconds
 
 CONTINUATION = "CONTINUATION"
 REVERSAL = "REVERSAL"
 
+# Trigger names -> mode (Spec 3.2).
+CONTINUATION_TRIGGERS = frozenset({"gap_and_go", "vwap_hold", "first_pullback"})
+REVERSAL_TRIGGERS = frozenset({"morning_panic_dip_buy", "v_reversal"})
+
+# Phases a fresh long may be armed from. PARABOLIC is the chase-by-definition
+# phase and the state machine is the anti-chase.
+ARMABLE_PHASES = frozenset({"PRE_BREAKOUT", "FRONT_SIDE"})
+
+EntryState = Literal["ARMED", "ENTER", "NO_TRADE", "REJECT"]
+
 
 @dataclass
 class ArmedState:
-    """Stage 1 output: a setup remembered, not an entry."""
+    """Stage 1 output: a qualified setup remembered, not an entry."""
 
     symbol: str
     ts: float                 # epoch seconds when armed
     price: float              # price at arming (the chase reference)
     trigger: float            # level a closed 1m bar must confirm above
     phase: str                # supernova phase at arming
-    trade_class: str          # CONTINUATION | REVERSAL -- exactly one
+    mode: str                 # CONTINUATION | REVERSAL -- exactly one
     from_high: Optional[float] = None
+    day_high: Optional[float] = None
+    hod_ts: Optional[float] = None   # when the HOD was set (continuation veto)
+
+    @property
+    def trade_class(self) -> str:
+        """Back-compat alias: the mode is the trade class."""
+        return self.mode
 
     def as_dict(self) -> dict:
         return {"symbol": self.symbol, "ts": self.ts, "price": round(self.price, 4),
                 "trigger": round(self.trigger, 4), "phase": self.phase,
-                "trade_class": self.trade_class}
+                "mode": self.mode, "trade_class": self.mode}
 
 
 @dataclass
@@ -99,51 +115,70 @@ class Confirmation:
                 "chase_pct": round(self.chase_pct, 2), "reasons": list(self.reasons)}
 
 
-def trade_class_for(gate) -> str:
-    """Decide CONTINUATION xor REVERSAL from the gate's winning mechanic.
+def mode_for(trigger: Optional[str], primary: Optional[str] = None) -> str:
+    """Decide CONTINUATION xor REVERSAL from the setup's own mechanic.
 
-    The trigger, when one fired, names the class outright. With no trigger, a
+    The trigger, when one fired, names the mode outright. With no trigger, a
     reversal primary names REVERSAL and everything else is CONTINUATION. Exactly
     one is returned; there is no path that returns both or neither.
     """
-    trigger = getattr(gate, "entry_trigger", None)
     if trigger:
-        return REVERSAL if trigger in REVERSAL_TRIGGERS else CONTINUATION
-    primary = getattr(gate, "primary", None)
-    if primary in REVERSAL_PRIMARIES:
+        if trigger in REVERSAL_TRIGGERS:
+            return REVERSAL
+        return CONTINUATION
+    if primary in REVERSAL_TRIGGERS:
         return REVERSAL
     return CONTINUATION
 
 
-def arm(bundle, gate, *, phase: str, now_ts: Optional[float] = None) -> Optional[ArmedState]:
+# Back-compat alias (earlier callers used trade_class_for(gate)).
+def trade_class_for(gate) -> str:
+    return mode_for(getattr(gate, "entry_trigger", None), getattr(gate, "primary", None))
+
+
+def continuation_veto(armed: ArmedState, bundle, now_ts: float) -> Optional[str]:
+    """The continuation hard-veto (Spec 3.2), or None when it may proceed.
+
+    A continuation trade is refused when the name is already BACK_SIDE, or when
+    it has dropped more than 10% off the HOD inside 5 minutes -- both are the
+    falling-knife case a continuation must never buy.
+    """
+    phase = getattr(bundle, "supernova_phase", None)
+    if phase == "BACK_SIDE":
+        return "BACK_SIDE"
+    fh = getattr(bundle, "from_high", None)
+    if fh is not None and fh * 100.0 <= -CONT_DROP_OFF_HOD:
+        hod_ts = getattr(armed, "hod_ts", None)
+        if hod_ts is None or (now_ts - hod_ts) <= CONT_DROP_WINDOW_S:
+            return f"dropped {abs(fh) * 100:.0f}% off HOD in under 5m"
+    return None
+
+
+def arm(bundle, gate, *, phase: str, now_ts: Optional[float] = None,
+        mode: Optional[str] = None) -> Optional[ArmedState]:
     """Stage 1. Return the armed setup, or None when nothing may be armed.
 
-    Nothing is armed from a dangerous phase (the caller has already seen the
-    phase). The trigger level is the session high -- the breakout the setup is
-    waiting on -- falling back to a small step above the current price when no
-    high is known yet.
+    Nothing arms from a dangerous phase. The mode is the gate's own mechanic
+    unless the caller overrides it. The trigger level is the session high -- the
+    breakout being waited on -- falling back to a hair above the current price.
     """
-    if bundle is None:
-        return None
-    if phase not in ARMABLE_PHASES:
+    if bundle is None or phase not in ARMABLE_PHASES:
         return None
     price = float(getattr(bundle, "price", 0.0) or 0.0)
     if price <= 0:
         return None
     day_high = float(getattr(bundle, "day_high", 0.0) or 0.0)
-    if day_high > 0:
-        # Confirm above the high the setup must clear. A hair above the high
-        # avoids confirming on a print that merely equals it.
-        trigger = day_high * 1.001
-    else:
-        trigger = price * 1.001
+    trigger = day_high * 1.001 if day_high > 0 else price * 1.001
     if now_ts is None:
         now = getattr(bundle, "now_et", None)
         now_ts = now.timestamp() if now is not None and hasattr(now, "timestamp") else 0.0
+    if mode is None:
+        mode = mode_for(getattr(gate, "entry_trigger", None), getattr(gate, "primary", None))
     return ArmedState(symbol=getattr(bundle, "symbol", ""), ts=float(now_ts),
-                      price=price, trigger=trigger, phase=phase,
-                      trade_class=trade_class_for(gate),
-                      from_high=getattr(bundle, "from_high", None))
+                      price=price, trigger=trigger, phase=phase, mode=mode,
+                      from_high=getattr(bundle, "from_high", None),
+                      day_high=day_high or None,
+                      hod_ts=getattr(bundle, "hod_ts", None))
 
 
 def _closed_bars(bars_1m) -> list[dict]:
@@ -155,13 +190,58 @@ def _closed_bars(bars_1m) -> list[dict]:
     return cleaned[:-1]
 
 
+def _primitive_a(bar: dict, bars: list[dict]) -> Optional[str]:
+    """Volume reversal bar: >=2x the 5-bar average, green, close in upper half."""
+    try:
+        o, c, v = float(bar["o"]), float(bar["c"]), float(bar["v"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if c <= o:
+        return None
+    look = bars[-VOL_REVERSAL_LOOKBACK:]
+    if len(look) < 2:
+        return None
+    avg = sum(float(b.get("v", 0.0) or 0.0) for b in look) / len(look)
+    if avg <= 0 or v < VOL_REVERSAL_MULT * avg:
+        return None
+    pos = range_position(bar)
+    if pos is None or pos < RANGE_POSITION_MIN:
+        return None
+    return "A"
+
+
+def _primitive_b(bars: list[dict]) -> Optional[str]:
+    """Higher-low structure: the last closed low is above the prior low."""
+    if len(bars) < 2:
+        return None
+    try:
+        last_low = float(bars[-1]["l"])
+        prev_low = float(bars[-2]["l"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return "B" if last_low > prev_low else None
+
+
+def _primitive_c(bar: dict, trigger: float, chase_pct: float,
+                 armed_price: float) -> Optional[str]:
+    """Trigger break: the bar closed above the trigger, inside the chase cap."""
+    try:
+        c = float(bar["c"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if c <= trigger:
+        return None
+    if armed_price > 0 and (c - armed_price) / armed_price * 100.0 > chase_pct:
+        return None
+    return "C"
+
+
 def confirm(armed: Optional[ArmedState], bundle, *, now_ts: Optional[float] = None,
             chase_pct: float = CHASE_PCT, ttl_s: float = ARMED_TTL_S) -> Confirmation:
     """Stage 2. Confirm ENTER from the last closed 1m bar, or report why not.
 
-    Order of checks is deliberate: TTL first (a stale setup is dead whatever the
-    tape says), then the chase guard (a runaway price invalidates the setup),
-    then the primitives.
+    Order is deliberate: TTL first (a stale setup is dead whatever the tape
+    says), then the mode's hard-veto, then the chase cap, then the primitives.
     """
     if armed is None:
         return Confirmation(state="REJECT", reasons=["no armed setup"])
@@ -171,14 +251,18 @@ def confirm(armed: Optional[ArmedState], bundle, *, now_ts: Optional[float] = No
         now = getattr(bundle, "now_et", None)
         ts = now.timestamp() if now is not None and hasattr(now, "timestamp") else armed.ts
 
-    # TTL: a setup that took too long to confirm is no longer the setup.
     if ttl_s and ts - armed.ts > ttl_s:
-        return Confirmation(state="NO_TRADE",
-                            reasons=[f"expired after {int(ts - armed.ts)}s"])
+        return Confirmation(state="NO_TRADE", reasons=[f"expired after {int(ts - armed.ts)}s"])
 
     price = float(getattr(bundle, "price", 0.0) or 0.0)
     if price <= 0:
         return Confirmation(state="ARMED", reasons=["no price"])
+
+    # CONTINUATION hard-veto (Spec 3.2) before anything else structural.
+    if armed.mode == CONTINUATION:
+        veto = continuation_veto(armed, bundle, ts)
+        if veto:
+            return Confirmation(state="NO_TRADE", reasons=[f"continuation vetoed: {veto}"])
 
     chase = abs(price - armed.price) / armed.price * 100.0 if armed.price > 0 else 0.0
     if chase > chase_pct:
@@ -191,34 +275,53 @@ def confirm(armed: Optional[ArmedState], bundle, *, now_ts: Optional[float] = No
                             reasons=["no closed 1m bar yet"])
 
     last = bars[-1]
-    o = float(last["o"])
-    h = float(last["h"])
-    low = float(last["l"])
-    c = float(last["c"])
-    v = float(last["v"])
-    trigger = float(armed.trigger)
 
-    volx_ok = False
-    if len(bars) >= 3:
-        mean_v = sum(float(b["v"]) for b in bars[-3:]) / 3.0
-        volx_ok = mean_v > 0 and v >= mean_v
+    # REVERSAL (Spec 3.2): needs a completed flush then a confirmed green bar.
+    if armed.mode == REVERSAL:
+        ok, why = _reversal_ready(bars, armed, chase_pct)
+        if not ok:
+            return Confirmation(state="ARMED", chase_pct=round(chase, 2), reasons=[why])
 
-    # Primitive A: break & hold -- closed above the trigger, low held it.
-    if c > trigger and low >= trigger:
-        if volx_ok:
-            return Confirmation(state="ENTER", primitive="C", chase_pct=round(chase, 2),
-                                reasons=[f"break+hold close {c:.4f} above {trigger:.4f} on volume"])
+    # Primitive A (volume reversal bar) is the strongest single confirmation.
+    prim_a = _primitive_a(last, bars)
+    if prim_a:
         return Confirmation(state="ENTER", primitive="A", chase_pct=round(chase, 2),
-                            reasons=[f"break+hold close {c:.4f} above {trigger:.4f}"])
+                            reasons=["volume reversal bar >=2x, close in upper half"])
 
-    # Primitive B: reclaim -- wicked under, opened under, closed back above.
-    if low < trigger and o < trigger <= c:
-        if volx_ok:
-            return Confirmation(state="ENTER", primitive="C", chase_pct=round(chase, 2),
-                                reasons=[f"reclaim close {c:.4f} above {trigger:.4f} on volume"])
+    # Primitive C (trigger break) -- priced against the trigger and chase cap.
+    prim_c = _primitive_c(last, float(armed.trigger), chase_pct, armed.price)
+    if prim_c:
+        return Confirmation(state="ENTER", primitive="C", chase_pct=round(chase, 2),
+                            reasons=[f"closed {float(last['c']):.4f} above trigger "
+                                     f"{float(armed.trigger):.4f}"])
+
+    # Primitive B (higher-low) -- weakest, only if the bar is still constructive.
+    prim_b = _primitive_b(bars)
+    if prim_b and float(last["c"]) >= float(last["o"]):
         return Confirmation(state="ENTER", primitive="B", chase_pct=round(chase, 2),
-                            reasons=[f"reclaim close {c:.4f} above {trigger:.4f}"])
+                            reasons=["higher-low structure held"])
 
     return Confirmation(state="ARMED", chase_pct=round(chase, 2),
-                        reasons=[f"no close above trigger {trigger:.4f} "
-                                 f"(last close {c:.4f})"])
+                        reasons=["no confirmation yet"])
+
+
+def _reversal_ready(bars: list[dict], armed: ArmedState,
+                    chase_pct: float) -> tuple[bool, str]:
+    """Spec 3.2 reversal precondition: a completed flush, then a green bar.
+
+    bar[-2] must be a capitulation flush (down bar, heavy volume) and bar[-1] a
+    confirmed green reversal bar. The first red dump bar never fires.
+    """
+    if len(bars) < 2:
+        return False, "need a flush bar and a reversal bar"
+    flush, rev = bars[-2], bars[-1]
+    try:
+        fo, fc, fv = float(flush["o"]), float(flush["c"]), float(flush["v"])
+        ro, rc = float(rev["o"]), float(rev["c"])
+    except (KeyError, TypeError, ValueError):
+        return False, "malformed bar"
+    if fc >= fo:
+        return False, "prior bar is not a flush"
+    if rc <= ro:
+        return False, "reversal bar is not green"
+    return True, "flush then green reversal"
