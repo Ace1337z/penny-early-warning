@@ -197,6 +197,12 @@ class Bundle:
     # Peer 15m moves as {symbol: pct}, when a peer feed is wired. None means
     # "not fetched" -- sympathy_move reports INSUFFICIENT_DATA, never a guess.
     sector_peers: Optional[dict] = None
+    # Catalyst-aware routing (Spec 3.3). Computed by the wiring layer from the
+    # ranked news: 1 = company event, 2 = sector, 3 = tape/rumor. Defaults to 3
+    # (the most conservative) so an unwired bundle is never sized as Tier 1.
+    catalyst_tier: int = 3
+    # Sizing multiplier for the tier (1.0 / 0.75 / 0.5). Applied to share count.
+    size_multiplier: float = 0.5
 
     # blocker survives even if that detector did not itself reach a verdict.
     dilution: str = ""

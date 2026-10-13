@@ -17,6 +17,8 @@ from .gate import (ALL_PRIMARY_NAMES, ALL_TRIGGER_NAMES, evaluate_gate, gate_sum
 from .news_cause import Cause, cause_lines, classify, extract_cause, rank_catalysts
 from .confirmation import (CONTINUATION, REVERSAL, ArmedState, Confirmation, arm,
                            confirm, mode_for_name, mode_for_trigger_or_name)
+from .routing import (TIER_1, TIER_2, TIER_3, catalyst_tier, continuation_allowed,
+                      routing_line, size_multiplier)
 from .supernova import (PHASES, SupernovaPhase,
                         classify as classify_supernova,
                         classify_bundle as classify_supernova_bundle,
@@ -31,6 +33,8 @@ __all__ = [
     "Cause", "cause_lines", "classify", "extract_cause", "rank_catalysts",
     "CONTINUATION", "REVERSAL", "ArmedState", "Confirmation", "arm", "confirm",
     "mode_for_name", "mode_for_trigger_or_name",
+    "TIER_1", "TIER_2", "TIER_3", "catalyst_tier", "continuation_allowed",
+    "routing_line", "size_multiplier",
     "PHASES", "SupernovaPhase", "classify_supernova", "classify_supernova_bundle",
     "telemetry_guard",
 ]

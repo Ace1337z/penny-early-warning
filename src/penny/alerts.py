@@ -196,6 +196,23 @@ def supernova_line(bundle) -> Optional[str]:
     return line
 
 
+def catalyst_tier_line(bundle) -> Optional[str]:
+    """The TIER line for a card (Spec 3.3): the driver class and the sizing.
+
+    Reads the tier the wiring already computed, so the card and the sizing agree.
+    None when no tier was computed (an unwired bundle), rather than inventing a
+    Tier 1 the reader would size at full.
+    """
+    if bundle is None:
+        return None
+    tier = getattr(bundle, "catalyst_tier", None)
+    if tier is None:
+        return None
+    from .strategies.routing import routing_line
+    mult = float(getattr(bundle, "size_multiplier", 0.5) or 0.5)
+    return routing_line(int(tier), mult)
+
+
 # --------------------------------------------------------------------------
 # cause-first news
 # --------------------------------------------------------------------------
@@ -500,6 +517,9 @@ def format_alert1(m: Metrics, *, shariah_line: str = "Shariah: checking...",
     phase_line = supernova_line(bundle)
     if phase_line:
         msg.line(phase_line)
+    tier_line = catalyst_tier_line(bundle)
+    if tier_line:
+        msg.line(tier_line)
     msg.line(shariah_line)
 
     text = msg.text()
@@ -571,6 +591,9 @@ def format_alert2(m: Metrics, enr: Optional[Enrichment], market, *,
     phase_line = supernova_line(bundle)
     if phase_line:
         msg.line(phase_line)
+    tier_line = catalyst_tier_line(bundle)
+    if tier_line:
+        msg.line(tier_line)
 
     if gate is not None:
         summary = gate_summary_lines(gate, limit=6)
@@ -746,6 +769,10 @@ def build_ai_facts(m: Metrics, enr: Optional[Enrichment], market, *,
         # Spec 2.3: the supernova phase, so the red team judges the stage of the
         # arc rather than only the most recent percentage.
         "supernova_phase": getattr(bundle, "supernova_phase", None),
+        # Spec 3.3: the catalyst tier and the sizing it implies, so the red team
+        # can object to a full-size Tier 3 rather than only the price.
+        "catalyst_tier": getattr(bundle, "catalyst_tier", None),
+        "size_multiplier": getattr(bundle, "size_multiplier", None),
         "minutes_since_low": (int(m.minutes_since_low)
                               if m.minutes_since_low is not None else None),
         "session": session,

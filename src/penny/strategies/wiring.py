@@ -95,7 +95,40 @@ def metrics_to_bundle(m, *, enr=None, cfg=None, now=None, history=None,
         import logging
         logging.getLogger(__name__).debug("supernova phase failed: %s", exc)
 
+    # Catalyst tier + sizing (Spec 3.3). Derived from the same ranked news the
+    # cause line uses, so the tier can never name a driver the alert does not.
+    try:
+        from .news_cause import rank_catalysts
+        from .routing import catalyst_tier, size_multiplier
+        _, ranked, _ = rank_catalysts(b)
+        b.catalyst_tier = catalyst_tier(b, ranked)
+        b.size_multiplier = size_multiplier(b.catalyst_tier)
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).debug("catalyst tier failed: %s", exc)
+
+    # Apply the sizing multiplier to the trade plan's share count (Spec 3.3).
+    # The plan is scaled on a copy so the enrichment's own plan is untouched and
+    # a Tier 3 setup cannot be sized at full risk.
+    if b.plan is not None and b.size_multiplier < 1.0:
+        try:
+            b.plan = _scaled_plan(b.plan, b.size_multiplier)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).debug("plan scaling failed: %s", exc)
+
     return b
+
+
+def _scaled_plan(plan, multiplier: float):
+    """A copy of the plan with its share count scaled by ``multiplier`` (Spec 3.3)."""
+    import copy
+    scaled = copy.copy(plan)
+    try:
+        scaled.shares = max(0, int((getattr(plan, "shares", 0) or 0) * multiplier))
+    except Exception:  # noqa: BLE001
+        return plan
+    return scaled
 
 
 def _num(value) -> Optional[float]:

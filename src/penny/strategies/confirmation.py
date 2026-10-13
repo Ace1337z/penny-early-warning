@@ -169,11 +169,13 @@ def trade_class_for(gate) -> str:
 
 
 def continuation_veto(armed: ArmedState, bundle, now_ts: float) -> Optional[str]:
-    """The continuation hard-veto (Spec 3.2), or None when it may proceed.
+    """The continuation hard-veto (Spec 3.2 + 3.3), or None when it may proceed.
 
-    A continuation trade is refused when the name is already BACK_SIDE, or when
-    it has dropped more than 10% off the HOD inside 5 minutes -- both are the
-    falling-knife case a continuation must never buy.
+    A continuation trade is refused when the name is already BACK_SIDE, when it
+    has dropped more than 10% off the HOD inside 5 minutes -- both are the
+    falling-knife case a continuation must never buy -- or (Spec 3.3) when it is
+    a Tier 3 setup (no real driver) after the 10:30 ET cutoff, where a pure-tape
+    breakout is a chase into lunch rather than a trade.
     """
     phase = getattr(bundle, "supernova_phase", None)
     if phase == "BACK_SIDE":
@@ -183,6 +185,13 @@ def continuation_veto(armed: ArmedState, bundle, now_ts: float) -> Optional[str]
         hod_ts = getattr(armed, "hod_ts", None)
         if hod_ts is None or (now_ts - hod_ts) <= CONT_DROP_WINDOW_S:
             return f"dropped {abs(fh) * 100:.0f}% off HOD in under 5m"
+    # Spec 3.3: Tier 3 continuation after 10:30 ET is refused.
+    tier = getattr(bundle, "catalyst_tier", None)
+    if tier == 3:
+        from .routing import continuation_allowed
+        now_et = getattr(bundle, "now_et", None)
+        if not continuation_allowed(tier, now_et, CONTINUATION):
+            return "Tier 3 continuation after 10:30 ET"
     return None
 
 

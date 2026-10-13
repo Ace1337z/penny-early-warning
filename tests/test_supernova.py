@@ -492,3 +492,60 @@ def _cfg(tmp_path):
 def _metrics(symbol="ABCD"):
     from penny.scoring import Metrics
     return Metrics(symbol=symbol, ts=1_700_000_000.0, price=1.0)
+
+
+# --- catalyst-aware routing (Spec 3.3) --------------------------------------
+
+
+def test_catalyst_tier_company_event_is_tier_1():
+    from penny.strategies.routing import TIER_1, catalyst_tier
+    ranked = [{"class": "HARD", "headline": "Acme awarded $12M contract"}]
+    assert catalyst_tier(bundle(), ranked) == TIER_1
+
+
+def test_catalyst_tier_sector_is_tier_2():
+    from penny.strategies.routing import TIER_2, catalyst_tier
+    ranked = [{"class": "MEDIUM", "headline": "sector rally lifts small caps"}]
+    assert catalyst_tier(bundle(), ranked) == TIER_2
+
+
+def test_catalyst_tier_no_news_is_tier_3():
+    from penny.strategies.routing import TIER_3, catalyst_tier
+    assert catalyst_tier(bundle(), []) == TIER_3
+
+
+def test_size_multiplier_by_tier():
+    from penny.strategies import routing as r
+    assert r.size_multiplier(r.TIER_1) == 1.0
+    assert r.size_multiplier(r.TIER_2) == 0.75
+    assert r.size_multiplier(r.TIER_3) == 0.5
+
+
+def test_tier3_continuation_vetoed_after_1030_et():
+    from datetime import datetime
+    from penny.strategies import routing as r
+    late = datetime(2026, 1, 2, 11, 0)
+    early = datetime(2026, 1, 2, 10, 0)
+    assert r.continuation_allowed(r.TIER_3, late, "CONTINUATION") is False
+    assert r.continuation_allowed(r.TIER_3, early, "CONTINUATION") is True
+    # Reversal and Tier 1/2 continuations are unaffected at any hour.
+    assert r.continuation_allowed(r.TIER_3, late, "REVERSAL") is True
+    assert r.continuation_allowed(r.TIER_1, late, "CONTINUATION") is True
+
+
+def test_tier3_continuation_veto_in_confirmation():
+    from datetime import datetime
+    b = bundle(price=1.05, supernova_phase=sn.FRONT_SIDE, from_high=-0.01,
+               catalyst_tier=3, now_et=datetime(2026, 1, 2, 11, 0),
+               bars_1m=bars((1.00, 1.06, 1.00, 1.05, 100),
+                            (1.05, 1.07, 1.04, 1.06, 100)))
+    res = conf.confirm(armed(), b, now_ts=1100.0)
+    assert res.state == "NO_TRADE"
+    assert "Tier 3" in res.reasons[0]
+
+
+def test_catalyst_tier_line_renders():
+    from penny.alerts import catalyst_tier_line
+    assert catalyst_tier_line(bundle(catalyst_tier=1, size_multiplier=1.0)) == "TIER 1 -- full size"
+    assert catalyst_tier_line(bundle(catalyst_tier=3, size_multiplier=0.5)) == "TIER 3 -- 0.50x size"
+    assert catalyst_tier_line(None) is None
