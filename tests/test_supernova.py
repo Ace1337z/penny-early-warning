@@ -393,10 +393,12 @@ def test_bundle_carries_a_supernova_phase_from_the_wiring(tmp_path):
     assert b.supernova_phase in sn.PHASES
 
 
-# --- engine state machine (flag off = unchanged; flag on = two-step) --------
+# --- engine state machine (two-step is the default; flag off = one-step) ----
 
 
-def test_armed_confirm_flag_defaults_off(tmp_path):
+def test_armed_confirm_flag_defaults_on(tmp_path):
+    """Spec 3 is the live default (per the rollout decision): a passing setup is
+    ARMED and only fires on a closed-1m-bar confirmation."""
     from penny.engine import Engine
     from penny.store import open_journal, open_state
     from penny.telegram import FakeTelegram
@@ -404,6 +406,9 @@ def test_armed_confirm_flag_defaults_off(tmp_path):
     db = open_state(tmp_path / "state.db")
     journal = open_journal(tmp_path / "journal.db")
     engine = Engine(cfg, db, journal, FakeTelegram(cfg))
+    assert engine._armed_confirm_enabled() is True
+    # ...and the flag can still return the one-step flow for comparison.
+    cfg.set("ARMED_CONFIRM", "0")
     assert engine._armed_confirm_enabled() is False
 
 

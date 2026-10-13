@@ -293,8 +293,13 @@ def test_a_refused_setup_costs_no_alert(cfg, tmp_path, monkeypatch):
 
 def test_a_passing_enriched_gate_fires_the_alert(cfg, tmp_path, monkeypatch):
     """The same fetch the detail thread used to pay for, paid once, ahead of
-    Alert 1 -- and the STRATEGY block on Alert 1 is the enriched verdict."""
+    Alert 1 -- and the STRATEGY block on Alert 1 is the enriched verdict.
+
+    ARMED_CONFIRM=0 here: this test isolates the fire-on-pass path. The
+    two-stage flow (the default) has its own tests in test_supernova.py.
+    """
     cfg.set("STRATEGY_GATE", "1")
+    cfg.set("ARMED_CONFIRM", "0")
     engine = _engine(cfg, tmp_path)
     m = _passing_metrics()
     gate, _ = run_gate(m, enr=None, cfg=cfg, now=to_et())
@@ -339,6 +344,7 @@ def test_a_refused_symbol_is_not_re_enriched_inside_the_cooldown(cfg, tmp_path,
 def test_the_advisory_gate_never_enriches_ahead_of_the_alert(cfg, tmp_path,
                                                              monkeypatch):
     """With STRATEGY_GATE=0 the detail thread keeps paying for enrichment."""
+    cfg.set("ARMED_CONFIRM", "0")
     engine = _engine(cfg, tmp_path)
     monkeypatch.setattr(engine, "_alert_detail_worker", lambda *a, **k: None)
 

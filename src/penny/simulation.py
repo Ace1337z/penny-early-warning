@@ -461,6 +461,11 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     # because the shipped default is now gate-on, and a gate pass fires before
     # the tier reaches Early -- which is the point of the gate, not a regression.
     cfg.set("STRATEGY_GATE", "0")
+    # The two-stage ARMED->ENTER flow is the live default (Spec 3), but this
+    # end-to-end run is about the deterministic fire path; pin it off so the
+    # gate acceptance checks below see the alert fire on the passing cycle. The
+    # state machine has its own checks.
+    cfg.set("ARMED_CONFIRM", "0")
     cfg.set("RISK_USD", "50")
     # The periodic build digest is off by default (item 1); this run exists to
     # exercise that subsystem, so it opts in.
@@ -690,6 +695,47 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     report.add("a parabolic move near its high on declining volume is blocked",
                gate_for(price=1.43, day_high=1.44, volx={3: 1.2, 5: 1.4, 15: 1.1},
                         vwap=1.20).blocked_by == "EXHAUSTED", "EXHAUSTED")
+
+    # -- Spec 3 acceptance: a passing setup ARMS, it does not fire ----------
+    # The two-stage state machine is the live default. A gate pass is not an
+    # entry: stage 1 arms and holds, stage 2 needs a closed 1m bar.
+    from .strategies import arm, deterministic_verdict
+    g3 = gate_for()
+
+    def _sim_bars(*rows):
+        return [{"t": 1000 + i * 60, "o": o, "h": h, "l": l, "c": c, "v": v}
+                for i, (o, h, l, c, v) in enumerate(rows)]
+
+    def _sim_bundle(**kw):
+        b = dict(symbol="SIM", price=1.42, day_high=1.44, from_high=0.01,
+                 accel=1.0, volx={3: 9.0}, pct_vs_close=0.31)
+        b.update(kw)
+        return Bundle(**b)
+
+    armed = arm(_sim_bundle(), g3, phase="FRONT_SIDE", now_ts=1000.0)
+    report.add("Spec 3: a passing setup is ARMED, not fired",
+               armed is not None and armed.mode in ("CONTINUATION", "REVERSAL"),
+               armed.mode if armed else "not armable")
+
+    # No confirmation yet -> still ARMED.
+    flat = _sim_bundle(price=1.42,
+                       bars_1m=_sim_bars((1.40, 1.42, 1.39, 1.41, 100),
+                                         (1.41, 1.42, 1.40, 1.41, 100)))
+    report.add("Spec 3: without a confirming bar the setup stays ARMED",
+               deterministic_verdict(g3, armed, flat, now_ts=1100.0) in ("ARMED", "NO_TRADE"),
+               deterministic_verdict(g3, armed, flat, now_ts=1100.0))
+    # A closed bar clears the trigger within the 4% chase cap -> ENTER.
+    burst = _sim_bundle(price=1.46,
+                        bars_1m=_sim_bars((1.40, 1.42, 1.39, 1.41, 100),
+                                          (1.41, 1.44, 1.40, 1.43, 100),
+                                          (1.43, 1.47, 1.42, 1.46, 400)))
+    report.add("Spec 3: a closed confirming bar routes to ENTER",
+               deterministic_verdict(g3, armed, burst, now_ts=1120.0) == "ENTER",
+               deterministic_verdict(g3, armed, burst, now_ts=1120.0))
+    report.add("Spec 5: a blocked gate routes to REJECT, purely",
+               deterministic_verdict(gate_for(price=1.09, rise={3: 0.001, 5: 0.002},
+                                              volx={3: 1.0, 5: 1.0, 15: 1.0}),
+                                      armed, burst) == "REJECT")
 
     _, ranked, _ = rank_catalysts(Bundle(symbol="SIM", price=1.42, prev_close=1.09,
                                          open_price=1.10,

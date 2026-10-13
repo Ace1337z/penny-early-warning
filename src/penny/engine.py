@@ -138,7 +138,7 @@ class Engine:
         self._gates: dict[str, object] = {}
         self._gate_rejects: dict[str, dict] = {}
         # Spec 3: per-symbol ARMED setups awaiting a closed-1m-bar confirmation.
-        # Empty unless ARMED_CONFIRM=1, so the default path is unchanged.
+        # Populated on the default (two-stage) path; empty when ARMED_CONFIRM=0.
         self._armed: dict[str, object] = {}
         self._split_cache: dict[str, bool] = {}
         self._last_alert: dict[str, tuple[float, int]] = {}
@@ -1102,14 +1102,13 @@ class Engine:
         return self.cfg.bool("STRATEGY_GATE", False)
 
     def _armed_confirm_enabled(self) -> bool:
-        """ARMED_CONFIRM=0 (default) keeps the single-shot alert path.
+        """ARMED_CONFIRM=1 (default) is the two-stage flow.
 
-        With it on, a passing setup is ARMED on the first cycle and only fires
-        an alert once a CLOSED 1m bar confirms above the armed level (Spec 3).
-        The flag exists so the two-step flow can be compared against the
-        one-step flow and rolled back without a code change.
+        A passing setup is ARMED on the first cycle and only fires an alert once
+        a CLOSED 1m bar confirms above the armed level (Spec 3). ARMED_CONFIRM=0
+        restores the one-step flow so the two can be compared.
         """
-        return self.cfg.bool("ARMED_CONFIRM", False)
+        return self.cfg.bool("ARMED_CONFIRM", True)
 
     def _armed_chase_pct(self) -> float:
         from .strategies.confirmation import CHASE_PCT

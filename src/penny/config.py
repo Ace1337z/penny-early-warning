@@ -209,9 +209,10 @@ DEFAULTS: dict[str, str] = {
     # --- Two-stage ARMED -> ENTER confirmation (Spec 3) -------------------
     # ARMED_CONFIRM=1 arms a passing setup and holds the alert until a CLOSED
     # 1m bar confirms above the armed level (primitives A/B/C) within the chase
-    # cap. 0 (default) keeps the single-shot alert path so the two flows can be
-    # compared before switching over.
-    "ARMED_CONFIRM": "0",
+    # cap. Spec 3 is now the live default: a setup is not an entry, and the
+    # state machine is what stops the bot chasing a sign it has not seen.
+    # ARMED_CONFIRM=0 restores the single-shot alert path for comparison.
+    "ARMED_CONFIRM": "1",
     # Never chase more than this % above the armed price: a setup that ran away
     # is a different trade at a worse price, not the same trade.
     "ARMED_CHASE_PCT": "4",
