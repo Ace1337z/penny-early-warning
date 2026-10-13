@@ -1173,3 +1173,139 @@ el_volume),
   "wait" into a decision -- either the tape closes above the level inside the
   chase cap, or the setup is dropped -- which is the whole difference between
   reacting to a move and chasing a sign.
+
+## C50. The phase maths was approximate, and "confirm" had no shared definition
+
+- **Question:** the supernova phase and the ARMED->ENTER primitives had to be
+  *exact*: a phase rule that rounds differently on two machines is not a rule,
+  and a confirmation the alert path and the tests compute differently is not a
+  gate.
+- **Finding:** the phase thresholds and the confirmation primitives were stated
+  in prose ("> ~35% above the EMA", "roughly double volume"), which is
+  unimplementable exactly and untestable. There was also no shared place for the
+  pure math the phase, the confirmation and the risk layer all need.
+- **Fix (Spec 2.3/3.1):** `strategies/indicators.py` (new) holds the pure,
+  I/O-free primitives -- EMA, time-of-day volume fraction, float turnover, range
+  position, structural overhead levels. `supernova.py` is rewritten to the exact
+  spec maths: PARABOLIC at `>35%` above the 1m EMA9 *or* `>45%` above VWAP;
+  BACK_SIDE at `>15%` below HOD; FORMER_SUPERNOVA by days/weeks off the high.
+  `confirmation.py` implements primitives A/B/C to the letter: A = volume
+  `>=2.0x` the **5-bar** average **and** `close>open` **and** the close in the
+  upper 50% of the bar's range; B = `bar[-1].low > bar[-2].low`; C =
+  `bar[-1].close > trigger` within the `<=4%` chase cap.
+- **Where:** src/penny/strategies/indicators.py (new),
+  src/penny/strategies/supernova.py, src/penny/strategies/confirmation.py,
+  tests/test_supernova.py.
+- **Why it matters:** the phase and the confirmation are now the same numbers
+  everywhere, which is what makes the two-stage machine trustworthy rather than
+  approximately right.
+
+## C51. `trade_class` was a label, not a decision, and a reversal had no qualifier
+
+- **Question:** Spec 3.2 wants CONTINUATION and REVERSAL to be mutually
+  exclusive, decided once, and each with its own hard-veto. Nothing measured
+  whether that held.
+- **Finding:** the mode was carried as a free `trade_class` string set in more
+  than one place, so a later stage could disagree with the arming stage. And no
+  detector qualified a *reversal* candidate at all -- a morning panic flush worth
+  buying on the turn had no way to arm.
+- **Fix (Spec 3.2):** the mode is decided once at the gate
+  (`gate.confirmation_mode`) and read by `trade_class_for`; name->mode registries
+  live in `confirmation.py`; a new `morning_panic_dip_buy` reversal qualification
+  detector joins the gate. CONTINUATION and REVERSAL now cannot both be true,
+  and each carries its own veto.
+- **Where:** src/penny/strategies/confirmation.py, src/penny/strategies/gate.py,
+  src/penny/strategies/detectors.py, tests/test_supernova.py.
+- **Why it matters:** a continuation and a reversal are different trades with
+  different risk; conflating them is how a machine buys a falling knife.
+
+## C52. Every setup was sized the same, whatever the driver
+
+- **Question:** Spec 3.3 wants position size to answer to the *kind* of catalyst:
+  a name with a real, dated driver is worth full size; a pure-tape mover is not.
+- **Finding:** the gate passed or blocked; it never graded the catalyst, so a
+  cause-free breakout and a contract-win breakout took the same size.
+- **Fix (Spec 3.3):** `strategies/routing.py` (new) computes a catalyst tier
+  (1/2/3) and a size multiplier (1.0/0.75/0.5) in `metrics_to_bundle`; the plan's
+  shares are scaled on a copy; Tier-3 continuations are vetoed after 10:30 ET;
+  both cards render a `TIER:` line and the AI facts carry `catalyst_tier`.
+- **Where:** src/penny/strategies/routing.py (new),
+  src/penny/strategies/wiring.py, src/penny/alerts.py, tests/test_supernova.py.
+- **Why it matters:** sizing is the only risk control this tool has, so it has to
+  reflect how real the driver is, not just that a move happened.
+
+## C53. A percentage target is a ghost, and the stop was arbitrary
+
+- **Question:** Spec 4 deletes T1/T2 and asks for structural levels: real
+  overhead supply above the entry, a stop that sits under a real bar, and a cap
+  on how wide that stop may be.
+- **Finding:** the plan printed fixed-percentage T1/T2 targets -- numbers that
+  existed because a grid said so, not because the tape put supply there -- and
+  the stop came off a fixed ratio rather than the last bar.
+- **Fix (Spec 4):** `strategies/levels.py` (new) owns level suppression (no
+  levels on a blocked gate), structural stops (CONTINUATION under the last bar's
+  low, REVERSAL under the flush bar's low), a `STOP_TOO_WIDE` refusal at 15%/30%,
+  and the early-failure + ATR-trailing exit rules. `TradePlan` now carries
+  `overhead` (a real resistance list) instead of `target1`/`target2`; the plan is
+  attached in `run_gate` via `apply_structural_plan`; tracking maps the first two
+  overhead levels onto the existing `plan_t1`/`plan_t2` columns.
+- **Where:** src/penny/strategies/levels.py (new), src/penny/fib.py,
+  src/penny/strategies/wiring.py, src/penny/enrich.py, src/penny/tracking.py,
+  src/penny/ai/decision.py, tests/test_supernova.py.
+- **Why it matters:** a plan you can actually trade has a stop the tape defined
+  and a target the tape can reach; a percentage grid is a decoration.
+
+## C54. "WAIT" was on the menu, and a screening outage looked like a pass
+
+- **Question:** Spec 5 bans `WAIT` (a hedge is not a verdict) and wants the
+  deterministic decision to lead and the model to follow as an asynchronous red
+  team. It also wants a Shariah outage to say so.
+- **Finding:** the verdict vocabulary was `ENTER/WAIT/PASS`, so a report could
+  decline to decide; and when the Shariah service could not be reached the label
+  was `UNKNOWN`, which reads like "screened and inconclusive" when the truth is
+  "could not screen".
+- **Fix (Spec 5):** the vocabulary is `ENTER/ARMED/NO_TRADE/REJECT` (there is no
+  `WAIT`); a pure `deterministic_verdict()` router returns the rules' decision
+  with no I/O in the hot path, and the LLM only runs afterwards as a red team
+  that can downgrade, never gate. Shariah `combine` returns `UNVERIFIED` on an
+  all-failed set and renders `UNVERIFIED (Service Offline)`; an outage never
+  suppresses an alert in `only_compliant` mode.
+- **Where:** src/penny/ai/decision.py, src/penny/ai/gateway.py,
+  src/penny/strategies/confirmation.py, src/penny/shariah.py,
+  src/penny/tracking.py, src/penny/prompts/methodology_v2.md,
+  tests/test_decision.py, tests/test_shariah.py, tests/test_supernova.py.
+- **Why it matters:** a decision support tool that is allowed to say "wait" has
+  not made a decision, and a network outage must never be mistakable for a
+  compliance pass.
+
+## C55. The alert printed blocks the reader had to interpret
+
+- **Question:** Spec 6 fixes the exact Telegram layout: a fixed section order,
+  no ghost blocks, and the exits stated as a structural stop and real overhead.
+- **Finding:** the layout had drifted -- targets could still render as T1/T2, and
+  the decision exit line named percentages rather than structure.
+- **Fix (Spec 6):** the AI DECISION block renders `STOP (structural)` and
+  `OVERHEAD`, never T1/T2; the section order (WHY IT MOVED -> evidence ->
+  AI DECISION) is asserted; and no TECH/FIB/PLAN/target block appears anywhere.
+- **Where:** src/penny/ai/decision.py, src/penny/alerts.py,
+  tests/test_alerts.py, tests/test_decision.py.
+- **Why it matters:** the reader decides in seconds on a phone, so the layout is
+  a decision about what they have time for -- and a ghost target is noise.
+
+## C56. The two-stage machine shipped off by default, then turned on
+
+- **Question:** the Spec 3 two-stage ARMED->ENTER flow was implemented behind
+  `ARMED_CONFIRM=0`. Once the refactor was verified green, the decision was to
+  make it the live default rather than a comparison mode.
+- **Finding:** every spec feature except the state machine was already the
+  default code path; `ARMED_CONFIRM` was the one live-behaviour switch still off.
+  The simulation and two gate-wiring tests assumed the single-shot path.
+- **Fix:** `ARMED_CONFIRM=1` by default (Spec 3 is the live behaviour); the
+  simulation harness pins the one-step path where it is testing the deterministic
+  fire, and gains end-to-end two-stage checks (a pass arms, a closed confirming
+  bar routes to ENTER, a blocked gate routes to REJECT).
+- **Where:** src/penny/config.py, src/penny/engine.py, src/penny/simulation.py,
+  tests/test_gate_wiring.py, tests/test_supernova.py.
+- **Why it matters:** a setup is not an entry. The default now behaves the way
+  the specification intends, and the comparison path is still one flag away.
+

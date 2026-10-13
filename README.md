@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-529%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-579%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -111,8 +111,9 @@ Reading it fast:
   confidence - or, when there is no headline, the **mechanism** the tape ran on
   (`MECHANISM: silent accumulation`), and `unidentified` rather than `none found`
   when even that cannot be said.
-- **AI DECISION** is the only place the verdict appears: `ENTER` / `WAIT` /
-  `PASS`, led by the model's own judgment fields (`CATALYST QUALITY`,
+- **AI DECISION** is the only place the verdict appears: `ENTER` / `ARMED` /
+  `NO_TRADE` / `REJECT` (there is no `WAIT`), led by the model's own judgment
+  fields (`CATALYST QUALITY`,
   `STRONGEST RISK`), not by a restatement of the gate. Every block ends with a
   `SOURCE:` line - `ai`, `ai_rejected` or `rules` - so the reader always knows
   whether the AI spoke or the rules did.
@@ -189,7 +190,7 @@ The engine ranks stocks by **momentum quality**, not the % level:
 | `WHY IT MOVED` | Exactly one cause (outlet, age, confidence), or `none found` |
 | `STRATEGY` | The detector setups that passed, and the entry trigger if one has not fired |
 | `PHASE` | Where in the supernova arc this is (`PRE_BREAKOUT` / `FRONT_SIDE` / `PARABOLIC` / `BLOW_OFF_CRASH` / `BACK_SIDE` / `FORMER_SUPERNOVA`), with a telemetry-corrected label on a fading move |
-| `AI DECISION` | The one report: `ENTER` / `WAIT` / `PASS`, with the entry and exit levels |
+| `AI DECISION` | The one report: `ENTER` / `ARMED` / `NO_TRADE` / `REJECT`, with the entry and exit levels |
 | `SETUP` | Why this is an alert - or, for a `NONE` tier, which threshold is not met |
 | `MARKET BACKDROP` | Index direction and risk-on/off, which drives small-cap appetite |
 
@@ -234,12 +235,13 @@ actually produced.
   plus a full sweep of sub-$10 US stocks, in all three sessions, so nothing depends on a
   single screener's ranking.
 - **Long-only, always** - the tool never proposes a short. Exhaustion and distribution
-  can only produce `WAIT` / `PASS` or an exit warning. An offering priced below the open
+  can only produce `NO_TRADE` / `REJECT` or an exit warning. An offering priced below the open
   blocks the gate outright (`DILUTION`); a quote that disagrees with the verified price
   blocks it too (`DATA_CONFLICT`).
-- **A strategy gate between the screener and the alert** - 18 named detectors (first
+- **A strategy gate between the screener and the alert** - 20 named detectors (first
   green day, low-float squeeze, $1 breakout, VWAP reclaim, failed breakout, WORG, day-3
-  surge, float rotation, and six entry triggers). A stock has to *match a setup* before
+  surge, float rotation, three tape mechanisms, a morning-panic reversal qualification,
+  and four entry triggers). A stock has to *match a setup* before
   it becomes an alert, so the alerts that arrive are setups rather than movers. Detector
   failures are shown, so you can see what the gate examined. On by default
   (`STRATEGY_GATE=1`); set it to 0 to compare against the old tier path. When on it
@@ -249,14 +251,16 @@ actually produced.
 - **A supernova phase and a two-stage entry** - every symbol carries exactly one phase
   (`PRE_BREAKOUT`, `FRONT_SIDE`, `PARABOLIC`, `BLOW_OFF_CRASH`, `BACK_SIDE`,
   `FORMER_SUPERNOVA`) named from the shape of the move, and a telemetry guard means a
-  backing-off move can never be reported as accelerating. With `ARMED_CONFIRM=1` a
-  passing setup is *armed* first and only fires once a **closed** 1-minute bar confirms
-  above the armed level (break-and-hold, reclaim, or volume-confirmed) within a `≤4%`
-  chase cap; the trade is tagged `CONTINUATION` xor `REVERSAL`, never both. Verdicts are
-  `ARMED` / `ENTER` / `NO_TRADE` / `REJECT` - there is no `WAIT`. Default `0` keeps the
-  single-shot alert path so the two flows can be compared.
+  backing-off move can never be reported as accelerating. A passing setup is *armed* first
+  and only fires once a **closed** 1-minute bar confirms above the armed level
+  (break-and-hold, reclaim, or volume-confirmed) within a `≤4%` chase cap; the trade is
+  tagged `CONTINUATION` xor `REVERSAL`, never both. Verdicts are
+  `ARMED` / `ENTER` / `NO_TRADE` / `REJECT` - there is no `WAIT`. On by default
+  (`ARMED_CONFIRM=1`); set it to 0 to compare against the single-shot alert path.
 - **One AI decision per alert** - a single call returns one DECISION REPORT: the verdict
-  (`ENTER` / `WAIT` / `PASS`), the rating, the findings, and the entry and exit levels.
+  (`ENTER` / `ARMED` / `NO_TRADE` / `REJECT`), the rating, the findings, and the entry and
+  exit levels. The rules decide first, at under 10 ms, with no network in the hot path; the
+  model is an asynchronous red team that can only downgrade, never gate the alert.
   No panel, no leaderboard, no agreement score, no persona. A report that claims `ENTER`
   on a gate that did not pass is rejected, not repaired.
 - **Cause-first alerts** - every message names exactly one reason the stock moved, with
@@ -288,7 +292,8 @@ actually produced.
   holding`, never a short) - and the abort appears in the EOD's `ABORTS` section.
 - **Confidence that answers to the tape** - once a (rating, strategy) bucket has
   `CALIBRATION_MIN_SAMPLES` (30) closed alerts, the confidence shown is clamped to that
-  bucket's realised T1 hit rate plus `CALIBRATION_CLAMP_MARGIN` (0.15). The EOD's
+  bucket's realised hit rate on the first overhead level, plus `CALIBRATION_CLAMP_MARGIN`
+  (0.15). The EOD's
   `BY AI RATING` section puts what was claimed next to what actually happened.
 - **Context blocks for the reader and the model** - historical analogs (nearest tracked
   alerts by feature vector, suppressed below `ANALOG_MIN_K` samples), a multi-timeframe
@@ -456,7 +461,7 @@ reported as an error, not a silent success.
 
 There is exactly one call per alert, bounded by `AI_TIMEOUT` (default 45 s): a
 slow endpoint is dropped instead of retried for every body variant, and a
-rejected report degrades to `PASS` rather than to an entry. So a slow provider
+rejected report degrades to the rules-only block rather than to an entry. So a slow provider
 costs you the decision, never the alert.
 
 ```text
@@ -598,6 +603,9 @@ fake Telegram, and asserts the documented acceptance results:
 - a valid Decision Report passes validation; a missing required field, an `ENTER`
   on a gate that did not pass, an `ENTER` with no rubric, a short entry zone, a
   `SHORT` verdict and HTML in place of JSON are all rejected
+- a passing setup **arms** and only routes to `ENTER` on a closed confirming
+  bar; without one it stays `ARMED`; a blocked gate routes to `REJECT` - all
+  decided by the pure rules router with no network in the hot path
 - a parabolic move, an offering priced below the open and a quote that disagrees
   with the verified price each block the gate
 - the tracker closes every open alert at the close, marks one that stopped being
@@ -615,8 +623,8 @@ fake Telegram, and asserts the documented acceptance results:
   a hot sector gets a line and a cold sector gets none
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
-Current status: `selftest` **ALL PASS** (85 checks), `simulate` **ALL PASS** (54 checks),
-`pytest` **529 passed** (1 skipped).
+Current status: `selftest` **ALL PASS** (93 checks), `simulate` **ALL PASS** (58 checks),
+`pytest` **579 passed** (1 skipped).
 
 ---
 
