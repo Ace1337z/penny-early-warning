@@ -65,6 +65,39 @@ REVERSAL = "REVERSAL"
 CONTINUATION_TRIGGERS = frozenset({"gap_and_go", "vwap_hold", "first_pullback"})
 REVERSAL_TRIGGERS = frozenset({"morning_panic_dip_buy", "v_reversal"})
 
+# Every detector's mode, decided once (Spec 3.2). Continuation buys strength
+# holding VWAP; reversal buys a capitulation flush turning back up. A name not in
+# this table is a continuation, because a breakout that cannot be shown to be a
+# reversal must not be routed as one.
+REVERSAL_NAMES = frozenset({
+    "v_reversal", "liquidity_grab", "failed_breakout", "red_to_green",
+    "morning_panic_dip_buy",
+})
+CONTINUATION_NAMES = frozenset({
+    "gap_and_go", "vwap_hold", "first_pullback", "mss_break", "bull_flag",
+    "worg", "day3_surge", "dollar_breakout", "catalyst_volume", "sympathy_play",
+    "silent_accumulation", "sympathy_move", "short_squeeze_mechanics",
+})
+
+
+def mode_for_name(name: Optional[str]) -> str:
+    """The mode a detector name trades in. Reversal only when named; else CONTINUATION."""
+    return REVERSAL if name in REVERSAL_NAMES else CONTINUATION
+
+
+def mode_for_trigger_or_name(trigger: Optional[str], primary: Optional[str]) -> str:
+    """Mode from the setup that actually fired.
+
+    The trigger names the entry mechanic when one fired; otherwise the primary
+    does. Exactly one mode is returned.
+    """
+    if trigger:
+        if trigger in REVERSAL_TRIGGERS or trigger in REVERSAL_NAMES:
+            return REVERSAL
+        return CONTINUATION
+    return mode_for_name(primary)
+
+
 # Phases a fresh long may be armed from. PARABOLIC is the chase-by-definition
 # phase and the state machine is the anti-chase.
 ARMABLE_PHASES = frozenset({"PRE_BREAKOUT", "FRONT_SIDE"})
@@ -118,21 +151,20 @@ class Confirmation:
 def mode_for(trigger: Optional[str], primary: Optional[str] = None) -> str:
     """Decide CONTINUATION xor REVERSAL from the setup's own mechanic.
 
-    The trigger, when one fired, names the mode outright. With no trigger, a
-    reversal primary names REVERSAL and everything else is CONTINUATION. Exactly
-    one is returned; there is no path that returns both or neither.
+    The trigger, when one fired, names the mode outright. With no trigger, the
+    primary's registered mode decides (Spec 3.2), and an unregistered primary
+    defaults to CONTINUATION. Exactly one is returned; there is no path that
+    returns both or neither.
     """
-    if trigger:
-        if trigger in REVERSAL_TRIGGERS:
-            return REVERSAL
-        return CONTINUATION
-    if primary in REVERSAL_TRIGGERS:
-        return REVERSAL
-    return CONTINUATION
+    return mode_for_trigger_or_name(trigger, primary)
 
 
-# Back-compat alias (earlier callers used trade_class_for(gate)).
+# Back-compat alias (earlier callers used trade_class_for(gate)). Prefers the
+# gate's own recorded mode (Spec 3.2) and only falls back to re-deriving it.
 def trade_class_for(gate) -> str:
+    recorded = getattr(gate, "confirmation_mode", None)
+    if recorded in (CONTINUATION, REVERSAL):
+        return recorded
     return mode_for(getattr(gate, "entry_trigger", None), getattr(gate, "primary", None))
 
 
@@ -173,7 +205,7 @@ def arm(bundle, gate, *, phase: str, now_ts: Optional[float] = None,
         now = getattr(bundle, "now_et", None)
         now_ts = now.timestamp() if now is not None and hasattr(now, "timestamp") else 0.0
     if mode is None:
-        mode = mode_for(getattr(gate, "entry_trigger", None), getattr(gate, "primary", None))
+        mode = trade_class_for(gate)
     return ArmedState(symbol=getattr(bundle, "symbol", ""), ts=float(now_ts),
                       price=price, trigger=trigger, phase=phase, mode=mode,
                       from_high=getattr(bundle, "from_high", None),

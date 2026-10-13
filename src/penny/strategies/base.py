@@ -38,6 +38,10 @@ class StrategyResult:
     # judges a 1.2% spread and an 8% spread differently, but only one of them
     # is untakeable.
     flags: list[str] = field(default_factory=list)
+    # Spec 3.2: every setup declares its mode -- CONTINUATION or REVERSAL --
+    # once, at the detector. The confirmation layer reads this rather than
+    # guessing from the trigger name, so the two can never disagree.
+    confirmation_mode: str = "CONTINUATION"
 
     @property
     def counts_as_pass(self) -> bool:
@@ -46,7 +50,7 @@ class StrategyResult:
     def as_dict(self) -> dict:
         return {"name": self.name, "verdict": self.verdict, "score": round(self.score, 1),
                 "reasons": self.reasons, "failed_on": self.failed_on, "kind": self.kind,
-                "flags": self.flags}
+                "flags": self.flags, "confirmation_mode": self.confirmation_mode}
 
 
 @dataclass
@@ -57,6 +61,9 @@ class StrategyGate:
     entry_trigger: Optional[str] = None
     gate_score: float = 0.0
     blocked_by: Optional[str] = None
+    # Spec 3.2: the winning setup's mode, carried up so the engine and the alert
+    # card never re-derive it. Exactly one of CONTINUATION | REVERSAL.
+    confirmation_mode: str = "CONTINUATION"
     # Soft warnings that never block by themselves (the SEC toxicity checks put
     # ACTIVE_ATM here): they rate the setup rather than reject it.
     warnings: list[str] = field(default_factory=list)
@@ -85,7 +92,8 @@ class StrategyGate:
     def as_dict(self) -> dict:
         return {"passed": self.passed, "primary": self.primary,
                 "entry_trigger": self.entry_trigger, "gate_score": round(self.gate_score, 1),
-                "blocked_by": self.blocked_by, "warnings": self.warnings,
+                "blocked_by": self.blocked_by, "confirmation_mode": self.confirmation_mode,
+                "warnings": self.warnings,
                 "strategies": [r.as_dict() for r in self.strategies]}
 
 

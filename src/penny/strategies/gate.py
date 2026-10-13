@@ -49,6 +49,9 @@ PRIMARY: dict[str, Detector] = {
     "silent_accumulation": detectors.silent_accumulation,
     "sympathy_move": detectors.sympathy_move,
     "short_squeeze_mechanics": detectors.short_squeeze_mechanics,
+    # Spec 3.2 REVERSAL qualification: a morning panic flush worth buying if the
+    # tape turns back up. Qualifies only -- the ARMED->ENTER machine confirms.
+    "morning_panic_dip_buy": detectors.morning_panic_dip_buy,
 }
 
 TRIGGERS: dict[str, Detector] = {
@@ -213,25 +216,29 @@ def evaluate_gate(b: Bundle, *, min_score: float = 55.0,
     # already qualified.
     primary = max(primaries, key=lambda r: r.score)
     entry_trigger = max(triggers, key=lambda r: r.score) if triggers else None
+    # Spec 3.2: the mode is decided once, here, from the setup that fired.
+    from .confirmation import mode_for_trigger_or_name
+    mode = mode_for_trigger_or_name(
+        entry_trigger.name if entry_trigger else None, primary.name)
 
     if require_catalyst and not any(r.name == "catalyst_volume" and r.verdict == "PASS"
                                     for r in primaries):
         return StrategyGate(passed=False, strategies=results, primary=primary.name,
                             entry_trigger=entry_trigger.name if entry_trigger else None,
                             gate_score=primary.score, blocked_by="no_catalyst",
-                            warnings=warnings)
+                            confirmation_mode=mode, warnings=warnings)
 
     threshold = min_score + time_of_day_adjustment(b.now_et, time_filter)
     if primary.score < threshold:
         return StrategyGate(passed=False, strategies=results, primary=primary.name,
                             entry_trigger=entry_trigger.name if entry_trigger else None,
                             gate_score=primary.score, blocked_by="below_min_score",
-                            warnings=warnings)
+                            confirmation_mode=mode, warnings=warnings)
 
     return StrategyGate(passed=True, strategies=results, primary=primary.name,
                         entry_trigger=entry_trigger.name if entry_trigger else None,
                         gate_score=primary.score, blocked_by=None,
-                        warnings=warnings)
+                        confirmation_mode=mode, warnings=warnings)
 
 
 def gate_summary_lines(gate: StrategyGate, limit: int = 8) -> list[str]:

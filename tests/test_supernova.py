@@ -116,6 +116,50 @@ def test_mode_from_primary_when_no_trigger():
     assert conf.mode_for(None, "dollar_breakout") == conf.CONTINUATION
 
 
+def test_mode_for_name_routes_the_spec_sets():
+    # Spec 3.2: reversal names are reversal, everything else continuation.
+    assert conf.mode_for_name("v_reversal") == conf.REVERSAL
+    assert conf.mode_for_name("morning_panic_dip_buy") == conf.REVERSAL
+    assert conf.mode_for_name("liquidity_grab") == conf.REVERSAL
+    assert conf.mode_for_name("first_pullback") == conf.CONTINUATION
+    assert conf.mode_for_name("mss_break") == conf.CONTINUATION
+    assert conf.mode_for_name(None) == conf.CONTINUATION
+
+
+def test_trigger_or_name_prefers_the_trigger():
+    # The trigger names the entry mechanic when one fired.
+    assert conf.mode_for_trigger_or_name("mss_break", "v_reversal") == conf.CONTINUATION
+    assert conf.mode_for_trigger_or_name("v_reversal", "dollar_breakout") == conf.REVERSAL
+    assert conf.mode_for_trigger_or_name(None, "v_reversal") == conf.REVERSAL
+
+
+def test_gate_records_a_confirmation_mode():
+    from penny.strategies.gate import evaluate_gate
+    b = bundle(price=1.10, day_high=1.10, from_high=0.0, vwap=1.05,
+               volx={3: 3.0, 5: 3.0}, rise={3: 0.05, 5: 0.05}, pct_vs_close=0.10,
+               news=[{"title": "Acme awarded $12M contract", "source": "Benzinga",
+                      "url": "", "age": "1h"}])
+    gate = evaluate_gate(b)
+    assert gate.confirmation_mode in (conf.CONTINUATION, conf.REVERSAL)
+    assert gate.as_dict()["confirmation_mode"] == gate.confirmation_mode
+
+
+def test_morning_panic_dip_buy_qualifies_a_flush():
+    from penny.strategies.detectors import morning_panic_dip_buy
+    b = bundle(price=0.84, day_high=1.05, from_high=-0.20, prev_close=1.00,
+               minutes_since_low=30.0, volx={3: 3.0, 5: 3.0})
+    res = morning_panic_dip_buy(b)
+    assert res.verdict == "PASS"
+    assert conf.mode_for_name("morning_panic_dip_buy") == conf.REVERSAL
+
+
+def test_morning_panic_dip_buy_refuses_a_small_drop():
+    from penny.strategies.detectors import morning_panic_dip_buy
+    b = bundle(price=0.98, day_high=1.00, from_high=-0.02, prev_close=1.00,
+               minutes_since_low=20.0, volx={3: 3.0, 5: 3.0})
+    assert morning_panic_dip_buy(b).verdict == "FAIL"
+
+
 def test_mode_is_always_one_of_two():
     for primary in (None, "a", "v_reversal", "dollar_breakout"):
         for trigger in (None, "v_reversal", "mss_break", "gap_and_go"):

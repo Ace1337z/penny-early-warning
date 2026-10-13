@@ -380,7 +380,13 @@ def test_a_trigger_alone_does_not_pass_the_gate():
     b.volx = {3: 3.0, 5: 3.0, 15: 3.0}
     b.rise = {3: 0.03, 5: 0.03, 15: 0.03, 60: 0.03}
     gate = evaluate_gate(b)
-    if gate.triggers():
+    primaries_passed = [r for r in gate.strategies
+                        if r.kind == "primary" and r.verdict == "PASS"]
+    # A trigger with no qualifying primary must never pass. (A 20%-off-the-high
+    # fixture can now qualify as a Spec 3.2 panic-dip reversal, so the invariant
+    # is stated against the primaries that actually passed, not against the
+    # fixture's shape.)
+    if gate.triggers() and not primaries_passed:
         assert gate.passed is False
         assert gate.blocked_by in ("no_strategy", "below_min_score", "no_catalyst")
 

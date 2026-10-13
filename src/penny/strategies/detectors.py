@@ -465,6 +465,39 @@ def v_reversal(b: Bundle) -> StrategyResult:
                      {"drop": drop, "volx": volx})
 
 
+def morning_panic_dip_buy(b: Bundle) -> StrategyResult:
+    """Spec 3.2 REVERSAL qualification: a capitulation flush off the open.
+
+    This is Stage 1 for the panic-dip play -- it recognises the *shape* (a hard
+    morning flush on heavy volume) and nothing else. It never declares an entry:
+    the ARMED->ENTER machine requires a completed flush bar then a confirmed
+    green reversal bar on closed 1m candles before anything is actionable. The
+    detector's only job here is to say "this could be bought if the tape turns".
+    """
+    if b.from_high is None or b.prev_close is None:
+        return insufficient("morning_panic_dip_buy", "no session high / prior close")
+    drop = -b.from_high * 100
+    if drop < 15.0:
+        return failed("morning_panic_dip_buy", [], [f"drop {drop:.1f}% < 15%"],
+                      {"drop": drop})
+    # A morning flush: the low printed early, and price is off that low (not
+    # still making it). A name pinned at the low is a knife, not a dip.
+    if (b.minutes_since_low is None) or b.minutes_since_low > 180.0:
+        return failed("morning_panic_dip_buy", [],
+                      [f"low {b.minutes_since_low or 0:.0f}m ago - not a morning flush"],
+                      {"minutes_since_low": b.minutes_since_low})
+    volx = max(b.volx_of(3), b.volx_of(5))
+    if volx < 2.0:
+        return failed("morning_panic_dip_buy", [], [f"flush volx {volx:.1f} < 2.0"],
+                      {"volx": volx})
+    score = 40.0 + min(30.0, drop) + min(20.0, volx * 4.0)
+    return passed("morning_panic_dip_buy", score,
+                  [f"panic flush {drop:.0f}% off the high",
+                   f"low {b.minutes_since_low:.0f}m ago", f"volx {volx:.1f}"],
+                  {"drop": drop, "volx": volx,
+                   "minutes_since_low": b.minutes_since_low})
+
+
 def exhaustion_blocker(b: Bundle) -> StrategyResult:
     """Refuse a new long when a move is already spent.
 
