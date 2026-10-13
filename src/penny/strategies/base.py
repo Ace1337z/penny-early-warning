@@ -163,6 +163,14 @@ class Bundle:
     vwap: Optional[float] = None
     from_high: Optional[float] = None
     minutes_since_low: Optional[float] = None
+    # Volume acceleration ratio from the rolling state (>=1 means the pace is
+    # holding or building). Carried so the supernova classifier can read the
+    # shape of the move without reaching back into Metrics.
+    accel: float = 1.0
+    # Supernova phase (Spec 2.3), computed once by the wiring layer from the
+    # inputs above and the bar shape. Exactly one phase, or None before the
+    # wiring has run. Read by the confirmation machine and the alert card.
+    supernova_phase: Optional[str] = None
     minutes_tracked: float = 0.0
     session: str = "regular"
     now_et: Any = None

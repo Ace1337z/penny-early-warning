@@ -35,6 +35,7 @@ from .scoring import (PHASE_EXTENDED, PHASE_FADING, TIER_CONFIRMED, TIER_EARLY,
                       TIER_NONE, TIER_WATCH, Metrics)
 from .strategies import cause_lines, extract_cause, gate_summary_lines, rank_catalysts
 from .strategies.news_cause import UNEXPLAINED
+from .strategies.supernova import telemetry_guard
 from .util import compact, money, num, pct, safe_div
 
 log = logging.getLogger(__name__)
@@ -173,6 +174,26 @@ def _pulse(m: Metrics) -> str:
     else:
         bits.append("below VWAP")
     return "PULSE: " + ", ".join(bits)
+
+
+def supernova_line(bundle) -> Optional[str]:
+    """The PHASE line for a card, or None when no phase was computed.
+
+    Spec 2.3/2.4: the phase is stated once, and a dangerous phase can never be
+    rendered as accelerating -- the telemetry guard corrects the label and the
+    line says so, so the reader sees the correction rather than a contradiction.
+    """
+    if bundle is None:
+        return None
+    phase = getattr(bundle, "supernova_phase", None)
+    if not phase:
+        return None
+    accel = float(getattr(bundle, "accel", 1.0) or 1.0)
+    label, corrected = telemetry_guard(phase, accel)
+    line = f"PHASE: {phase} ({label})"
+    if corrected:
+        line += "  [telemetry corrected: back side cannot accelerate]"
+    return line
 
 
 # --------------------------------------------------------------------------
@@ -429,7 +450,7 @@ def book_line(m: Metrics) -> str:
 def format_alert1(m: Metrics, *, shariah_line: str = "Shariah: checking...",
                   pct_rank: Optional[int] = None, resumed: bool = False,
                   fast: bool = False, html: bool = False, gate=None,
-                  no_news: bool = False) -> str:
+                  no_news: bool = False, bundle=None) -> str:
     """Instant Alert 1: no AI, no enrichment. The trigger and nothing else."""
     msg = _Msg(html)
     head = f"{tier_name(m.tier)}  {m.symbol}  {money(m.price)}{phase_tag(m)}"
@@ -476,6 +497,9 @@ def format_alert1(m: Metrics, *, shariah_line: str = "Shariah: checking...",
     if gate is not None:
         for line in gate_block(gate, fast=fast):
             msg.line(line)
+    phase_line = supernova_line(bundle)
+    if phase_line:
+        msg.line(phase_line)
     msg.line(shariah_line)
 
     text = msg.text()
@@ -543,6 +567,10 @@ def format_alert2(m: Metrics, enr: Optional[Enrichment], market, *,
     elif m.tier >= TIER_EARLY:
         setup += " - qualifies for alerts"
     msg.line(("b", "SETUP: "), setup.split("SETUP: ", 1)[1])
+
+    phase_line = supernova_line(bundle)
+    if phase_line:
+        msg.line(phase_line)
 
     if gate is not None:
         summary = gate_summary_lines(gate, limit=6)
@@ -715,6 +743,9 @@ def build_ai_facts(m: Metrics, enr: Optional[Enrichment], market, *,
         "vwap": m.vwap,
         "above_vwap": bool(m.vwap and m.price > m.vwap),
         "from_high": _pct(m.from_high),
+        # Spec 2.3: the supernova phase, so the red team judges the stage of the
+        # arc rather than only the most recent percentage.
+        "supernova_phase": getattr(bundle, "supernova_phase", None),
         "minutes_since_low": (int(m.minutes_since_low)
                               if m.minutes_since_low is not None else None),
         "session": session,

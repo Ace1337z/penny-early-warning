@@ -15,6 +15,10 @@ from .base import (Bundle, StrategyGate, StrategyResult, Verdict, blocked,
 from .gate import (ALL_PRIMARY_NAMES, ALL_TRIGGER_NAMES, evaluate_gate, gate_summary_lines,
                    no_new_entries, run_detectors, time_of_day_adjustment)
 from .news_cause import Cause, cause_lines, classify, extract_cause, rank_catalysts
+from .supernova import (PHASES, SupernovaPhase,
+                        classify as classify_supernova,
+                        classify_bundle as classify_supernova_bundle,
+                        telemetry_guard)
 
 __all__ = [
     "Bundle", "StrategyGate", "StrategyResult", "Verdict",
@@ -23,4 +27,6 @@ __all__ = [
     "evaluate_gate", "gate_summary_lines", "run_detectors", "time_of_day_adjustment",
     "no_new_entries", "ALL_PRIMARY_NAMES", "ALL_TRIGGER_NAMES",
     "Cause", "cause_lines", "classify", "extract_cause", "rank_catalysts",
+    "PHASES", "SupernovaPhase", "classify_supernova", "classify_supernova_bundle",
+    "telemetry_guard",
 ]

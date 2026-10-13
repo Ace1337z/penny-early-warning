@@ -205,6 +205,17 @@ DEFAULTS: dict[str, str] = {
     # Dilution and DATA_CONFLICT still block regardless of this key.
     "CAUSE_REQUIRED": "0",
     "GATE_MAX_PRIMARY": "3",
+    # --- Two-stage ARMED -> ENTER confirmation (Spec 3) -------------------
+    # ARMED_CONFIRM=1 arms a passing setup and holds the alert until a CLOSED
+    # 1m bar confirms above the armed level (primitives A/B/C) within the chase
+    # cap. 0 (default) keeps the single-shot alert path so the two flows can be
+    # compared before switching over.
+    "ARMED_CONFIRM": "0",
+    # Never chase more than this % above the armed price: a setup that ran away
+    # is a different trade at a worse price, not the same trade.
+    "ARMED_CHASE_PCT": "4",
+    # An armed setup that does not confirm within this many seconds is dropped.
+    "ARMED_TTL_S": "600",
     # --- Reality gate: spread + liquidity (Feature 1) ---
     # A setup you cannot fill is not a setup. The spread ceiling is the hard
     # one; the three volume numbers describe whether anyone is actually here.
@@ -369,6 +380,7 @@ GROUPS: dict[str, list[str]] = {
                     "FAST_VOLX5", "FAST_MAX_FROM_HIGH", "FAST_MIN_VOLUME"],
     "Strategy gate": ["STRATEGY_GATE", "GATE_MIN_SCORE", "CAUSE_REQUIRED",
                       "GATE_MAX_PRIMARY", "TIME_FILTER_ENABLED",
+                      "ARMED_CONFIRM", "ARMED_CHASE_PCT", "ARMED_TTL_S",
                       "SPREAD_MAX_PCT", "MIN_DOLLAR_VOL_15M", "MIN_AVG_TRADE_SIZE",
                       "MIN_TRADES_15M", "EXIT_LIQ_500_MAX_SEC", "EXIT_LIQ_MAX_SLIP_PCT",
                       "SHORT_FLOAT_MIN", "AI_ADVERSARIAL", "AI_MIN_ADDITIVE",

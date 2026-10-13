@@ -1114,3 +1114,62 @@ el_volume),
   and nothing in the pipeline could stop an alert on a symbol that had just
   priced an offering or split 1-for-60. Now the window is honest and the veto
   is fail-closed, deterministic and logged with a reason code.
+
+## C49. "Which part of the arc is this?" had no answer, and "armed" was never distinguished from "enter"
+
+- **Question:** the card said a number went up, but never *where in the move* it
+  was -- coiling, breaking out, vertical, or already rolling over -- so a
+  front-side breakout and a blow-off top read identically. And there was no
+  line between "this could be a long" and "the tape just confirmed it": a gate
+  pass fired the alert on the same tick.
+- **Finding:** the pipeline had no single label for the shape of the move.
+  `Metrics.phase` (BUILDING/EXTENDED/FADING) is a score-relative tag, not a
+  supernova shape, and the exhaustion blocker is the only thing that ever
+  refused a spent move -- so a symbol 8% off its high with volume still
+  accelerating could be presented as "back side" by the pulse line even though
+  the tape was alive. Downstream, `entry_trigger` named a pattern but nothing
+  required the pattern to *close* before the alert went out, which is the
+  definition of chasing a sign.
+- **Fix (Spec 2.3/2.4/3, the strategy-engine phase):**
+  - `strategies/supernova.py` (new): `SupernovaPhaseClassifier` names exactly
+    one of PRE_BREAKOUT / FRONT_SIDE / PARABOLIC / BLOW_OFF_CRASH / BACK_SIDE /
+    FORMER_SUPERNOVA from price, % off the high, acceleration, 3m volume
+    multiple and VWAP side. It is a pure, total function (a fallback, never an
+    "unknown") so a dangerous tape can never go unlabelled.
+  - Telemetry guard (2.4): a reading that is off the high *but still
+    accelerating* is contradictory ("back side" cannot accelerate), so the
+    classifier resolves it to PARABOLIC and sets `guard_fired`; the card's
+    `PHASE:` line and `telemetry_guard()` never render a BACK_SIDE/
+    BLOW_OFF_CRASH/FORMER_SUPERNOVA phase as the front of the tape.
+  - `strategies/confirmation.py` (new): the two-stage ARMED -> ENTER machine.
+    Stage 1 arms a passing setup (only from PRE_BREAKOUT/FRONT_SIDE) with a
+    trigger just above the session high. Stage 2 confirms on a CLOSED 1m bar --
+    primitive A (break & hold: close above the trigger, low held it), B
+    (reclaim: wicked under, opened under, closed back above) or C (A or B with
+    the bar's volume at/above the 3-bar mean). A ≤4% chase cap and a TTL bound
+    it. Verdicts are ARMED / ENTER / NO_TRADE / REJECT -- there is no WAIT.
+  - CONTINUATION vs REVERSAL is decided once, at arming, from the gate's
+    winning mechanic, and carried on the single `trade_class`. It never flips:
+    exactly one class per setup, `v_reversal` (and a liquidity-grab primary with
+    no trigger) names REVERSAL, everything else CONTINUATION.
+  - Wiring computes the phase once per gate evaluation (`Bundle.supernova_phase`,
+    `Bundle.accel`); alerts render a `PHASE:` line on both cards and the AI
+    facts carry `supernova_phase`.
+  - Engine `_armed_decision()` drives the machine behind `ARMED_CONFIRM`
+    (default 0, so the single-shot path is byte-for-byte unchanged); decisions
+    are logged to `screener_decisions` as `PHASE_ARMED`/`PHASE_ENTER`/
+    `PHASE_NO_TRADE`/`PHASE_REJECT`. `ARMED_CHASE_PCT` and `ARMED_TTL_S` tune it.
+- **Where:** src/penny/strategies/supernova.py (new),
+  src/penny/strategies/confirmation.py (new),
+  src/penny/strategies/base.py (Bundle.accel/supernova_phase),
+  src/penny/strategies/wiring.py (classify in metrics_to_bundle),
+  src/penny/strategies/__init__.py (exports),
+  src/penny/alerts.py (supernova_line on alert 1/2, ai facts supernova_phase),
+  src/penny/engine.py (_armed/_armed_decision/_note_armed, format_alert1 bundle),
+  src/penny/config.py (ARMED_CONFIRM/ARMED_CHASE_PCT/ARMED_TTL_S),
+  tests/test_supernova.py (28 tests).
+- **Why it matters:** the system can now say *where* in the arc a name is, and
+  can refuse to call a blow-off top a setup. The two-step confirmation turns
+  "wait" into a decision -- either the tape closes above the level inside the
+  chase cap, or the setup is dropped -- which is the whole difference between
+  reacting to a move and chasing a sign.

@@ -137,6 +137,9 @@ class Engine:
         self._builds: list = []
         self._gates: dict[str, object] = {}
         self._gate_rejects: dict[str, dict] = {}
+        # Spec 3: per-symbol ARMED setups awaiting a closed-1m-bar confirmation.
+        # Empty unless ARMED_CONFIRM=1, so the default path is unchanged.
+        self._armed: dict[str, object] = {}
         self._split_cache: dict[str, bool] = {}
         self._last_alert: dict[str, tuple[float, int]] = {}
         self._alert_ids: dict[str, int] = {}
@@ -565,6 +568,15 @@ class Engine:
             if not gate.passed:
                 return False
 
+        # Spec 3: with ARMED_CONFIRM on, a passing setup is ARMED and only
+        # fires once a closed 1m bar confirms. The stage-2 check needs bars, and
+        # the enriched candidate above already fetched them.
+        if self._armed_confirm_enabled():
+            hold = self._armed_decision(m, gate, bundle)
+            if hold is not None:
+                log.debug("%s: held by confirmation machine (%s)", m.symbol, hold)
+                return False
+
         st = self.scorer.state(m.symbol)
         rank = pct_rank.get(m.symbol)
         resumed = st.halt_resume_pending
@@ -577,7 +589,7 @@ class Engine:
 
         text1 = format_alert1(m, shariah_line=shariah_line, pct_rank=rank, resumed=resumed,
                               fast=fast, html=True, gate=gate,
-                              no_news=_no_news_tag(gate))
+                              no_news=_no_news_tag(gate), bundle=bundle)
         msg_id = None
         try:
             msg_id = self.telegram.send(text1, markup=alert_menu(m.symbol), html=True)
@@ -1088,6 +1100,72 @@ class Engine:
     def _gate_is_mandatory(self) -> bool:
         """STRATEGY_GATE=0 leaves the old tier path running, for comparison."""
         return self.cfg.bool("STRATEGY_GATE", False)
+
+    def _armed_confirm_enabled(self) -> bool:
+        """ARMED_CONFIRM=0 (default) keeps the single-shot alert path.
+
+        With it on, a passing setup is ARMED on the first cycle and only fires
+        an alert once a CLOSED 1m bar confirms above the armed level (Spec 3).
+        The flag exists so the two-step flow can be compared against the
+        one-step flow and rolled back without a code change.
+        """
+        return self.cfg.bool("ARMED_CONFIRM", False)
+
+    def _armed_chase_pct(self) -> float:
+        from .strategies.confirmation import CHASE_PCT
+        return self.cfg.float("ARMED_CHASE_PCT", CHASE_PCT)
+
+    def _armed_ttl_s(self) -> float:
+        from .strategies.confirmation import ARMED_TTL_S
+        return self.cfg.float("ARMED_TTL_S", ARMED_TTL_S)
+
+    def _armed_decision(self, m: Metrics, gate, bundle) -> Optional[str]:
+        """Spec 3 Stage 1/2. Returns None to fire now, or a reason to hold.
+
+        Called from `_fire_alert` with ARMED_CONFIRM on. On a fresh setup it
+        arms (no fire, reason "armed"); on an armed setup it confirms from the
+        last closed 1m bar and either fires (returns None) or holds. It never
+        fires twice for one armed setup and never fires without a confirmation.
+        """
+        from .strategies.confirmation import arm, confirm
+        phase = getattr(bundle, "supernova_phase", None)
+        existing = self._armed.get(m.symbol)
+
+        if existing is not None:
+            # If the phase has turned dangerous, abandon the armed setup.
+            if phase not in ("PRE_BREAKOUT", "FRONT_SIDE"):
+                self._armed.pop(m.symbol, None)
+                return f"disarmed, phase {phase}"
+            conf = confirm(existing, bundle, now_ts=self.clock(),
+                           chase_pct=self._armed_chase_pct(), ttl_s=self._armed_ttl_s())
+            if conf.entered:
+                self._armed.pop(m.symbol, None)
+                self._note_armed(m, "ENTER", conf.as_dict())
+                return None          # confirmed -- let the alert fire
+            if conf.state in ("NO_TRADE", "REJECT"):
+                self._armed.pop(m.symbol, None)
+            self._note_armed(m, conf.state, conf.as_dict())
+            return f"{conf.state.lower()}: {conf.reasons[0] if conf.reasons else ''}"
+
+        setup = arm(bundle, gate, phase=phase, now_ts=self.clock())
+        if setup is None:
+            # Not an armable phase -- with the flag on, a dangerous phase does
+            # not fire a fresh long at all.
+            return f"phase {phase} not armable"
+        self._armed[m.symbol] = setup
+        self._note_armed(m, "ARMED", setup.as_dict())
+        return f"armed above {setup.trigger:.4f}"
+
+    def _note_armed(self, m: Metrics, state: str, detail: dict) -> None:
+        """Record an ARMED/ENTER/NO_TRADE decision for review (Spec 3)."""
+        try:
+            self.db.execute(
+                "INSERT INTO screener_decisions(ts, symbol, reason_code, detail, price) "
+                "VALUES(?,?,?,?,?)",
+                (self.clock(), m.symbol, f"PHASE_{state}",
+                 json.dumps(detail, default=str), m.price))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("armed decision insert failed: %s", exc)
 
     def _gate_vetoes(self, m: Metrics, gate, stats: dict) -> bool:
         """Does the mandatory gate stop this alert? Extracted so it can be tested.

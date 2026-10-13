@@ -53,6 +53,7 @@ def metrics_to_bundle(m, *, enr=None, cfg=None, now=None, history=None,
         vwap=m.vwap,
         from_high=m.from_high,
         minutes_since_low=m.minutes_since_low,
+        accel=float(getattr(m, "accel", 1.0) or 1.0),
         minutes_tracked=_minutes_tracked(m),
         session=getattr(m, "session", "regular"),
         now_et=now or now_et(),
@@ -81,6 +82,18 @@ def metrics_to_bundle(m, *, enr=None, cfg=None, now=None, history=None,
         b.daily_history = history
     elif daily_close is not None:
         b.daily_history = daily_close
+
+    # Supernova phase (Spec 2.3). Computed here, once, from the numbers the
+    # Bundle already carries, so every consumer reads the same label rather than
+    # re-deriving the shape. It is pure and cannot fail the gate.
+    try:
+        from .supernova import classify_bundle
+        b.supernova_phase = classify_bundle(b).phase
+    except Exception as exc:  # noqa: BLE001
+        # A phase that cannot be computed must never take the gate down. The
+        # field stays None and the confirmation machine simply does not arm.
+        import logging
+        logging.getLogger(__name__).debug("supernova phase failed: %s", exc)
 
     return b
 

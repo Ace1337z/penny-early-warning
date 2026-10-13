@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-501%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-529%20passing-brightgreen)](#testing)
 [![Self-test](https://img.shields.io/badge/offline%20self--test-passing-brightgreen)](#testing)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey?logo=linux&logoColor=white)](#requirements)
 [![Not financial advice](https://img.shields.io/badge/%E2%9A%A0-not%20financial%20advice-red)](#disclaimer)
@@ -188,6 +188,7 @@ The engine ranks stocks by **momentum quality**, not the % level:
 |---|---|
 | `WHY IT MOVED` | Exactly one cause (outlet, age, confidence), or `none found` |
 | `STRATEGY` | The detector setups that passed, and the entry trigger if one has not fired |
+| `PHASE` | Where in the supernova arc this is (`PRE_BREAKOUT` / `FRONT_SIDE` / `PARABOLIC` / `BLOW_OFF_CRASH` / `BACK_SIDE` / `FORMER_SUPERNOVA`), with a telemetry-corrected label on a fading move |
 | `AI DECISION` | The one report: `ENTER` / `WAIT` / `PASS`, with the entry and exit levels |
 | `SETUP` | Why this is an alert - or, for a `NONE` tier, which threshold is not met |
 | `MARKET BACKDROP` | Index direction and risk-on/off, which drives small-cap appetite |
@@ -245,6 +246,15 @@ actually produced.
   vetoes on the verdicts the poll pass can reach (the reality and exhaustion blockers)
   and fails closed - a gate that cannot be evaluated suppresses the alert and `/status`
   counts it, rather than letting it through ungated.
+- **A supernova phase and a two-stage entry** - every symbol carries exactly one phase
+  (`PRE_BREAKOUT`, `FRONT_SIDE`, `PARABOLIC`, `BLOW_OFF_CRASH`, `BACK_SIDE`,
+  `FORMER_SUPERNOVA`) named from the shape of the move, and a telemetry guard means a
+  backing-off move can never be reported as accelerating. With `ARMED_CONFIRM=1` a
+  passing setup is *armed* first and only fires once a **closed** 1-minute bar confirms
+  above the armed level (break-and-hold, reclaim, or volume-confirmed) within a `≤4%`
+  chase cap; the trade is tagged `CONTINUATION` xor `REVERSAL`, never both. Verdicts are
+  `ARMED` / `ENTER` / `NO_TRADE` / `REJECT` - there is no `WAIT`. Default `0` keeps the
+  single-shot alert path so the two flows can be compared.
 - **One AI decision per alert** - a single call returns one DECISION REPORT: the verdict
   (`ENTER` / `WAIT` / `PASS`), the rating, the findings, and the entry and exit levels.
   No panel, no leaderboard, no agreement score, no persona. A report that claims `ENTER`
@@ -606,7 +616,7 @@ fake Telegram, and asserts the documented acceptance results:
 - the cache works, staged elimination runs, and cycle time stays well under 500 ms
 
 Current status: `selftest` **ALL PASS** (85 checks), `simulate` **ALL PASS** (54 checks),
-`pytest` **501 passed** (1 skipped).
+`pytest` **529 passed** (1 skipped).
 
 ---
 
