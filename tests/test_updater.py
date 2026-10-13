@@ -16,7 +16,7 @@ from penny import cli
 
 
 def _args(**over):
-    base = dict(version=None, install_dir=None, private=False, no_backup=True)
+    base = dict(version=None, install_dir=None, private=False)
     base.update(over)
     return argparse.Namespace(**base)
 

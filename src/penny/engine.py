@@ -88,7 +88,7 @@ class Engine:
     def __init__(self, cfg, db, journal, telegram, *, finviz=None,
                  alpaca=None, finnhub=None, sec=None, finra=None, yahoo=None,
                  twelvedata=None,
-                 gateway=None, catalog=None, shariah=None, backup=None, clock=None):
+                 gateway=None, catalog=None, shariah=None, clock=None):
         self.cfg = cfg
         self.db = db
         self.journal = journal
@@ -103,7 +103,6 @@ class Engine:
         self.gateway = gateway
         self.catalog = catalog
         self.shariah = shariah
-        self.backup = backup
         self.clock = clock or time.time
 
         self.scorer = Scorer(cfg, clock=self.clock)
@@ -154,8 +153,6 @@ class Engine:
         self._last_build_ts = 0.0
         self._last_build_ids: set[str] = set()
         self._last_eod_day = ""
-        self._last_hourly_backup = 0.0
-        self._last_full_backup = 0.0
         self._sizing_fh = None
         self.started_at = self.clock()
         self.running = False
@@ -297,7 +294,6 @@ class Engine:
         self._maybe_digest(session, metrics_list)
         self.scorer.cycle()
         self.scorer.prune()
-        self._maybe_backups()
         self._maybe_end_of_day()
 
         stats["ms"] = (time.monotonic() - started) * 1000
@@ -1571,8 +1567,6 @@ class Engine:
                     (row["symbol"], day, label, row["peak_pct"], "auto"))
         alerts_today = self.db.scalar("SELECT COUNT(*) FROM alerts WHERE ts>=?",
                                       (self.clock() - 86400,), default=0)
-        last_backup = self.db.scalar("SELECT MAX(ts) FROM backups", default=None)
-        backup_txt = f"{age_str(self.clock() - last_backup)} ago" if last_backup else "none"
 
         # Close the tracked alerts first, so the report counts them correctly.
         self.tracker.close_day(day)
@@ -1585,8 +1579,7 @@ class Engine:
             self._safe_send(
                 f"END OF DAY {day}\n"
                 f"alerts: {alerts_today} | tier>=2 stocks: {len(rows)} | "
-                f"winners: {winners}\n"
-                f"last backup: {backup_txt}")
+                f"winners: {winners}")
 
     def _record_daily(self, m: Metrics) -> None:
         day = to_et().strftime("%Y-%m-%d")
@@ -1601,29 +1594,6 @@ class Engine:
             self.db.execute(
                 "UPDATE daily SET max_tier=MAX(max_tier,?), peak_pct=MAX(peak_pct,?) "
                 "WHERE day=? AND symbol=?", (m.tier, peak, day, m.symbol))
-
-    # -- backups ------------------------------------------------------------
-    def _maybe_backups(self) -> None:
-        if self.backup is None or self.forced_session is not None:
-            return
-        now = to_et()
-        if now.hour == 20 and now.minute >= 30 and self._last_full_backup != now.timetz().replace(
-                hour=20, minute=0, second=0, microsecond=0):
-            pass
-        day = now.strftime("%Y-%m-%d")
-        if now.hour == 20 and now.minute >= 30 and self._last_full_backup != day:
-            self._last_full_backup = day
-            try:
-                self.backup.run("daily")
-            except Exception as exc:  # noqa: BLE001
-                log.warning("daily backup failed: %s", exc)
-        elif self.cfg.bool("BACKUP_HOURLY", True) and self._in_session():
-            if self.clock() - self._last_hourly_backup >= 3600:
-                self._last_hourly_backup = self.clock()
-                try:
-                    self.backup.run("hourly")
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("hourly backup failed: %s", exc)
 
     # -- records ------------------------------------------------------------
     def _record_cycle(self, stats: dict) -> None:
@@ -1705,8 +1675,6 @@ class Engine:
             "SELECT COUNT(*) FROM ai_calls WHERE kind='decision' AND ok=0", default=0)
         gate_on = self.cfg.bool("STRATEGY_GATE", False)
         gate_state = ("on" if gate_on else "off")
-        last_backup = self.db.scalar("SELECT MAX(ts) FROM backups", default=None)
-        backup_txt = f"{age_str(self.clock() - last_backup)} ago" if last_backup else "none"
         return (
             f"STATUS\n"
             f"uptime {age_str(self.clock() - self.started_at)} | session {session_for()} | "
@@ -1718,7 +1686,7 @@ class Engine:
             # purpose; say so rather than let the bot look like a quiet morning.
             + (f" | gate errors {s['gate_errors']}" if s.get('gate_errors') else "")
             + f"\n"
-            f"decisions {decisions} (rejected {rejected}) | last backup: {backup_txt}")
+            f"decisions {decisions} (rejected {rejected})")
 
     def run_forever(self, poll: Optional[float] = None) -> None:
         self.running = True

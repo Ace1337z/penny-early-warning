@@ -166,21 +166,6 @@ def run_doctor(runtime, *, test_models: bool = True) -> DoctorReport:
                 except Exception as exc:  # noqa: BLE001
                     report.add(f"AI model {model}", False, str(exc))
 
-    # -- backup -------------------------------------------------------------
-    if runtime.backup:
-        age = runtime.backup.last_verified_age_hours()
-        max_age = cfg.float("BACKUP_MAX_AGE_HOURS", 26)
-        configured = bool(cfg.raw("BACKUP_REMOTE")) or bool(cfg.raw("BACKUP_LOCAL_DIR"))
-        report.add("backup", True,
-                   f"last verified {age:.1f} h ago" if age is not None else "no verified backup yet",
-                   optional=not configured)
-        if not cfg.raw("BACKUP_REMOTE"):
-            report.add("off-server backup", False,
-                       "no off-server destination configured (strongly recommended)",
-                       optional=True)
-        if cfg.raw("BACKUP_REMOTE") and not cfg.raw("BACKUP_PASSPHRASE"):
-            report.add("backup passphrase", False,
-                       "required when an off-server destination is used", optional=False)
-
+    # -- session ------------------------------------------------------------
     report.add("session", True, f"current session: {session_for()}")
     return report

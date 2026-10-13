@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .ai.gateway import AIGateway
-from .backup import BackupManager
 from .commands import CommandHandler
 from .config import Config
 from .engine import Engine
@@ -43,7 +42,6 @@ class Runtime:
     gateway: Optional[object] = None
     shariah: Optional[ShariahService] = None
     journal: Optional[Journal] = None
-    backup: Optional[BackupManager] = None
     engine: Optional[Engine] = None
     commands: Optional[CommandHandler] = None
     components: list = field(default_factory=list)
@@ -86,13 +84,12 @@ def build(cfg: Config, *, with_engine: bool = True, fake: Optional[dict] = None,
         shariah = ShariahService(cfg, state, sources, telegram)
 
     journal = Journal(cfg, journal_db, alpaca=alpaca, yahoo=yahoo)
-    backup = BackupManager(cfg, state, journal_db, telegram, secrets)
 
     runtime = Runtime(cfg=cfg, state=state, journal_db=journal_db, telegram=telegram,
                       finviz=finviz, alpaca=alpaca, finnhub=finnhub,
                       sec=sec, finra=finra, yahoo=yahoo, twelvedata=twelvedata,
                       gateway=gateway,
-                      shariah=shariah, journal=journal, backup=backup)
+                      shariah=shariah, journal=journal)
     runtime.components = [c for c in (finviz, alpaca, finnhub, sec, finra, yahoo,
                                       twelvedata)
                           if c is not None]
@@ -101,8 +98,8 @@ def build(cfg: Config, *, with_engine: bool = True, fake: Optional[dict] = None,
         engine = Engine(cfg, state, journal_db, telegram, finviz=finviz,
                         alpaca=alpaca, finnhub=finnhub, sec=sec, finra=finra, yahoo=yahoo,
                         twelvedata=twelvedata,
-                        gateway=gateway, shariah=shariah, backup=backup)
+                        gateway=gateway, shariah=shariah)
         runtime.engine = engine
         runtime.commands = CommandHandler(cfg, state, journal, telegram, engine=engine,
-                                          shariah=shariah, backup=backup)
+                                          shariah=shariah)
     return runtime

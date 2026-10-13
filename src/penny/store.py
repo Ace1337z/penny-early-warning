@@ -141,17 +141,6 @@ CREATE TABLE IF NOT EXISTS compliance (
     PRIMARY KEY (symbol, source)
 );
 
-CREATE TABLE IF NOT EXISTS backups (
-    ts REAL NOT NULL,
-    kind TEXT NOT NULL,
-    destination TEXT,
-    path TEXT,
-    size INTEGER,
-    sha256 TEXT,
-    status TEXT,
-    note TEXT
-);
-
 
 -- Per-alert tracking, from alert time to the close. Updated from the quotes the
 -- engine already polls every cycle; no extra fetch. (high_after/low_after are a
@@ -461,15 +450,3 @@ def open_state(path: str | Path) -> Database:
 
 def open_journal(path: str | Path) -> Database:
     return Database(path, JOURNAL_SCHEMA, name="journal")
-
-
-def sqlite_backup(src: Database, dest_path: str | Path) -> None:
-    """Consistent online backup of a live SQLite database."""
-    dest_path = Path(dest_path)
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    dest_conn = sqlite3.connect(str(dest_path))
-    try:
-        src._conn().backup(dest_conn)
-        dest_conn.commit()
-    finally:
-        dest_conn.close()

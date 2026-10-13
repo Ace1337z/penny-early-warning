@@ -47,7 +47,6 @@ Tap a button below, or type a command.
 
 <b>Maintenance</b>
 /halal SYM - Shariah status
-/backup now
 /help"""
 
 # Command menu published to Telegram's UI.
@@ -65,7 +64,6 @@ COMMANDS: list[tuple[str, str]] = [
     ("postmortem", "what an alert got wrong"),
     ("model", "which AI model runs, and change it"),
     ("keys", "what is configured"),
-    ("backup", "run a backup now"),
     ("help", "all commands"),
 ]
 
@@ -78,8 +76,8 @@ MAIN_MENU = inline([
 
 MORE_MENU = inline([
     [button("Status", cb("status")), button("Keys", cb("keys")),
-     button("\U0001F4BE Backup", cb("backup"))],
-    [button("\u2753 Help", cb("help")), button("\U0001F3E0 Menu", cb("menu"))],
+     button("\u2753 Help", cb("help"))],
+    [button("\U0001F3E0 Menu", cb("menu"))],
 ])
 
 MARKET_MENU = inline([
@@ -100,7 +98,7 @@ RESULTS_MENU = inline([
 
 class CommandHandler:
     def __init__(self, cfg, db, journal, telegram, *, engine=None, runner=None,
-                 catalog=None, shariah=None, backup=None):
+                 catalog=None, shariah=None):
         self.cfg = cfg
         self.db = db
         self.journal = journal
@@ -109,7 +107,6 @@ class CommandHandler:
         self.runner = runner
         self.catalog = catalog
         self.shariah = shariah
-        self.backup = backup
         self._offset = 0
         self._last_message_id = 0
         self._stop = threading.Event()
@@ -256,20 +253,11 @@ class CommandHandler:
     def _cb_watch(self, arg: str, mid: Optional[int]) -> None:
         self._render(self._render_watchlist_text(), MAIN_MENU, mid)
 
-    def _cb_backup(self, arg: str, mid: Optional[int]) -> None:
-        if not self.backup:
-            self._render("Backup is not configured.", MAIN_MENU, mid)
-            return
-        self._typing()
-        result = self.backup.run("manual")
-        self._render(f"Backup {h(result.status)}: {result.size / 1024:.0f} KB "
-                     f"({h(result.note or 'ok')})", MAIN_MENU, mid)
-
     def _cb_help(self, arg: str, mid: Optional[int]) -> None:
         self._render(HELP, MAIN_MENU, mid)
 
     def _cb_more(self, arg: str, mid: Optional[int]) -> None:
-        text = (f"{bold('MORE')}\nStatus, keys, backups and help.")
+        text = (f"{bold('MORE')}\nStatus, keys and help.")
         self._render(text, MORE_MENU, mid)
 
     def _cb_check(self, arg: str, mid: Optional[int]) -> None:
@@ -306,7 +294,6 @@ class CommandHandler:
         "tracked": lambda a, m: self._render(self._render_tracked_text(), RESULTS_MENU, m),
         "keys": _cb_keys,
         "watch": _cb_watch,
-        "backup": _cb_backup,
         "help": _cb_help,
         "more": _cb_more,
         "check": _cb_check,
@@ -338,8 +325,6 @@ class CommandHandler:
                 "/setkey": self.cmd_set,
                 "/keys": self.cmd_keys,
                 "/halal": self.cmd_halal,
-                "/backup": self.cmd_backup,
-                "/backups": self.cmd_backups,
                 "/status": self.cmd_status,
                 "/help": self.cmd_help,
                 "/start": self.cmd_start,
@@ -883,7 +868,7 @@ class CommandHandler:
         """Show which settings are configured, masking every secret."""
         important = [
             "FINVIZ_TOKEN", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "AI_BASE_URL", "AI_KEY",
-            "HALALTERMINAL_API_KEY", "SEC_USER_AGENT", "BACKUP_PASSPHRASE", "BACKUP_REMOTE",
+            "HALALTERMINAL_API_KEY", "SEC_USER_AGENT",
         ]
         lines = [bold("KEYS")]
         for key in important:
@@ -913,25 +898,6 @@ class CommandHandler:
             self._reply("Shariah screening is not configured.", markup=MAIN_MENU)
             return
         self._reply(self.cmd_halal_text(symbol), markup=self._check_menu(symbol))
-
-    def cmd_backup(self, args) -> None:
-        if not self.backup:
-            self._reply("Backup is not configured.")
-            return
-        sub = args[0].lower() if args else "now"
-        if sub != "now":
-            self._reply("Usage: <code>/backup now</code>")
-            return
-        self._typing()
-        result = self.backup.run("manual")
-        self._reply(f"\u2705 Backup {h(result.status)}: {result.size / 1024:.0f} KB "
-                    f"({h(result.note or 'ok')})", markup=MAIN_MENU)
-
-    def cmd_backups(self, args) -> None:
-        if not self.backup:
-            self._reply("Backup is not configured.")
-            return
-        self._reply(self.backup.health_text(), html=False, markup=MAIN_MENU)
 
     def cmd_status(self, args) -> None:
         if not self.engine:

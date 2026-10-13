@@ -496,7 +496,7 @@ def run_simulation(*, minutes: int = 150, home=None, cycle_seconds: float = 60.0
     sim_clock = {"t": day_start}
     engine = Engine(cfg, state, journal_db, telegram, finviz=finviz,
                     alpaca=alpaca, finnhub=None, sec=sec, finra=None, yahoo=yahoo,
-                    gateway=gateway, shariah=shariah, backup=None,
+                    gateway=gateway, shariah=shariah,
                     clock=lambda: sim_clock["t"])
     engine.forced_session = "regular"
 

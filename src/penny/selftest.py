@@ -53,7 +53,6 @@ def run_selftest(cfg: Config | None = None) -> SelfTestReport:
         _phase2_checks(report)
         _shariah_checks(report)
         _security_checks(report)
-        _backup_checks(report, home)
     except Exception as exc:  # noqa: BLE001
         report.add("self-test completed", False, f"unexpected error: {exc}")
     finally:
@@ -651,47 +650,3 @@ def _security_checks(report) -> None:
     report.add("telegram bot tokens are scrubbed",
                "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi" not in
                scrub("token 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi here"))
-
-
-def _backup_checks(report, home: Path) -> None:
-    from .backup import BackupManager
-    from .store import open_journal, open_state
-    cfg = Config(home / "backup.env")
-    cfg.set("PENNY_HOME", str(home))
-    cfg.set("BACKUP_LOCAL_DIR", str(home / "backups"))
-    cfg.set("BACKUP_PASSPHRASE", "correct horse battery staple")
-    cfg.save()
-    state = open_state(cfg.state_db)
-    journal = open_journal(cfg.journal_db)
-    state.execute("INSERT INTO alerts(ts, symbol, tier, price, pct, score) VALUES(?,?,?,?,?,?)",
-                  (time.time(), "TEST", 2, 1.23, 23.0, 55.0))
-    journal.execute("INSERT INTO events(symbol, date, label) VALUES('TEST','2026-01-02','winner')")
-    manager = BackupManager(cfg, state, journal)
-    result = manager.run("selftest")
-    report.add("a backup is created and verified",
-               result.status == "ok" and result.verified,
-               f"{result.size} bytes, {result.note}")
-    report.add("the backup archive is encrypted",
-               result.path is not None
-               and (result.path.endswith(".gpg") or result.path.endswith(".penny.enc")))
-    if result.path:
-        raw = Path(result.path).read_bytes()
-        report.add("the encrypted archive contains no plaintext secrets",
-                   b"correct horse battery staple" not in raw)
-        report.add("the archive cannot be read without the passphrase",
-                   not raw.startswith(b"\x1f\x8b"))
-        drill = manager.drill()
-        report.add("the restore drill passes", drill.get("ok") is True)
-        restored = manager.restore(result.path, scope="learning")
-        report.add("a restore reads the backup back",
-                   bool(restored.get("ok"))
-                   and restored.get("summary", {}).get("events") == 1,
-                   str(restored.get("summary")))
-        wrong = Config(home / "wrong.env")
-        wrong.set("PENNY_HOME", str(home))
-        wrong.set("BACKUP_PASSPHRASE", "the wrong passphrase")
-        bad_manager = BackupManager(wrong, state, journal)
-        report.add("a wrong passphrase cannot decrypt the backup",
-                   bad_manager.restore(result.path, scope="learning").get("ok") is False)
-    state.close()
-    journal.close()

@@ -201,7 +201,7 @@ def test_more_reveals_the_maintenance_actions(cfg, tmp_path):
                               "message": {"message_id": 3, "chat": {"id": "1"}}})
     menu = telegram.keyboards[-1]
     datas = [b["callback_data"] for row in menu["inline_keyboard"] for b in row]
-    for action in ("status", "keys", "backup", "help", "menu"):
+    for action in ("status", "keys", "help", "menu"):
         assert action in datas
 
 
