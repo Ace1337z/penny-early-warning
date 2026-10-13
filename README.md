@@ -99,7 +99,7 @@ REASON: reclaimed VWAP on 9x volume and held it for 12 minutes
 - float still tight at 18.5M with the ATM removed
 TREND: rising - 3m accel
 ENTRY 1: 1.4200-1.4600  (first pullback that holds VWAP)
-STOP: 1.3157 | T1: 1.5972 | T2: 1.7457
+STOP (structural): 1.3157 | OVERHEAD: 1.5972, 1.7457
 SOURCE: ai
 
 Screener and decision support only. No orders are placed. Not investment advice.

@@ -236,9 +236,11 @@ def _ai_checks(report) -> None:
         return Bundle(**base)
 
     class _Plan:
+        # Spec 4: structural levels, no T1/T2 targets.
         stop = 1.14
-        target1 = 1.40
-        target2 = 1.26
+        entry_low = 1.18
+        entry_high = 1.20
+        overhead = [1.40, 1.62]
 
     g = evaluate_gate(mech_bundle())
     b = mech_bundle()
@@ -289,6 +291,13 @@ def _fib_checks(report) -> None:
                pullback is not None and pullback.mode == "pullback")
     report.add("no plan when the risk per share is not positive",
                trade_plan(1.0, fib_levels(1.0, 1.0)) is None)
+    report.add("no fixed T1/T2 targets on the plan (Spec 4.2)",
+               plan is not None and not hasattr(plan, "target1")
+               and not hasattr(plan, "target2") and hasattr(plan, "overhead"))
+    # Spec 4.3: a stop wider than the cap is refused, not silently kept.
+    wide = trade_plan(1.95, fib_levels(1.00, 2.00), risk_usd=50)
+    report.add("a stop wider than the mode cap is flagged STOP_TOO_WIDE",
+               wide is not None and (wide.viable or wide.reason == "STOP_TOO_WIDE"))
 
 
 def _message_checks(report) -> None:

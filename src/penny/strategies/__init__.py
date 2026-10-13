@@ -19,6 +19,9 @@ from .confirmation import (CONTINUATION, REVERSAL, ArmedState, Confirmation, arm
                            confirm, mode_for_name, mode_for_trigger_or_name)
 from .routing import (TIER_1, TIER_2, TIER_3, catalyst_tier, continuation_allowed,
                       routing_line, size_multiplier)
+from .levels import (CONT_STOP_MAX_PCT, REVERSAL_STOP_MAX_PCT, StructuralLevels,
+                     early_failure_exit, levels_allowed, plan_from_bars, stop_ok,
+                     structural_stop, trailing_stop)
 from .supernova import (PHASES, SupernovaPhase,
                         classify as classify_supernova,
                         classify_bundle as classify_supernova_bundle,
@@ -35,6 +38,9 @@ __all__ = [
     "mode_for_name", "mode_for_trigger_or_name",
     "TIER_1", "TIER_2", "TIER_3", "catalyst_tier", "continuation_allowed",
     "routing_line", "size_multiplier",
+    "CONT_STOP_MAX_PCT", "REVERSAL_STOP_MAX_PCT", "StructuralLevels",
+    "early_failure_exit", "levels_allowed", "plan_from_bars", "stop_ok",
+    "structural_stop", "trailing_stop",
     "PHASES", "SupernovaPhase", "classify_supernova", "classify_supernova_bundle",
     "telemetry_guard",
 ]

@@ -549,3 +549,106 @@ def test_catalyst_tier_line_renders():
     assert catalyst_tier_line(bundle(catalyst_tier=1, size_multiplier=1.0)) == "TIER 1 -- full size"
     assert catalyst_tier_line(bundle(catalyst_tier=3, size_multiplier=0.5)) == "TIER 3 -- 0.50x size"
     assert catalyst_tier_line(None) is None
+
+
+# --- risk architecture: levels, stops, exits (Spec 4) -----------------------
+
+
+def test_structural_stop_continuation_uses_last_bar_low():
+    from penny.strategies.levels import structural_stop
+    bs = bars((1.00, 1.05, 0.98, 1.04, 100), (1.04, 1.08, 1.01, 1.07, 120))
+    assert structural_stop(bs, conf.CONTINUATION) == 1.01 - 0.01
+
+
+def test_structural_stop_reversal_uses_flush_bar_low():
+    from penny.strategies.levels import structural_stop
+    bs = bars((1.00, 1.02, 0.90, 0.91, 300), (0.91, 0.95, 0.90, 0.94, 200))
+    assert structural_stop(bs, conf.REVERSAL) == 0.90 - 0.01
+
+
+def test_structural_stop_is_none_without_bars():
+    from penny.strategies.levels import structural_stop
+    assert structural_stop([], conf.CONTINUATION) is None
+    assert structural_stop([{"l": 0.0}], conf.CONTINUATION) is None
+
+
+def test_stop_too_wide_is_refused_above_the_continuation_cap():
+    from penny.strategies.levels import stop_ok
+    # 20% below entry on a continuation -> over the 15% cap.
+    ok, why = stop_ok(1.00, 0.80, conf.CONTINUATION)
+    assert ok is False and why == "STOP_TOO_WIDE"
+    # The same width is allowed on a reversal (30% cap).
+    ok2, _ = stop_ok(1.00, 0.80, conf.REVERSAL)
+    assert ok2 is True
+
+
+def test_plan_from_bars_suppresses_when_told_to():
+    from penny.strategies.levels import plan_from_bars
+    bs = bars((1.00, 1.05, 0.98, 1.04, 100), (1.04, 1.08, 1.01, 1.07, 120))
+    assert plan_from_bars(price=1.07, bars=bs, mode=conf.CONTINUATION,
+                          suppression=True) is None
+
+
+def test_plan_from_bars_builds_structural_levels_with_overhead():
+    from penny.strategies.levels import plan_from_bars
+    bs = bars((1.00, 1.05, 0.98, 1.04, 100), (1.04, 1.08, 1.01, 1.07, 120))
+    plan = plan_from_bars(price=1.07, bars=bs, mode=conf.CONTINUATION,
+                          day_high=1.20, risk_usd=50)
+    assert plan is not None
+    assert plan.stop == 1.00
+    assert plan.overhead and plan.overhead[0] >= 1.07
+    assert not hasattr(plan, "target1")
+
+
+def test_levels_allowed_only_on_a_real_passing_setup():
+    from penny.strategies.levels import levels_allowed
+    assert levels_allowed(None) is False
+    assert levels_allowed(StrategyGate(passed=False, blocked_by="EXHAUSTED")) is False
+    assert levels_allowed(StrategyGate(passed=True, primary="NONE")) is False
+    assert levels_allowed(StrategyGate(passed=True, primary="dollar_breakout")) is True
+
+
+def test_plan_from_bars_suppresses_a_too_wide_stop():
+    from penny.strategies.levels import plan_from_bars
+    # A far-away low on a continuation: 25% below entry -> refused entirely.
+    bs = bars((1.30, 1.31, 1.29, 1.30, 100), (1.30, 1.31, 0.75, 1.30, 100))
+    assert plan_from_bars(price=1.30, bars=bs, mode=conf.CONTINUATION) is None
+
+
+def test_early_failure_exit_triggers_on_a_close_below_trigger():
+    from penny.strategies.levels import early_failure_exit
+    assert early_failure_exit(1.00, trigger=0.99, entry_bar_low=0.98,
+                              closes=[0.985]) is True
+    assert early_failure_exit(1.00, trigger=0.95, entry_bar_low=0.90,
+                              closes=[0.99, 0.98, 0.80]) is False
+
+
+def test_trailing_stop_uses_higher_of_lower_low_and_vwap():
+    from penny.strategies.levels import trailing_stop
+    assert trailing_stop(higher_low=1.10, vwap=1.05, atr=0.04) == 1.10 - 0.02
+    assert trailing_stop(higher_low=None, vwap=1.05, atr=None) == 1.05
+    assert trailing_stop(None, None, None) is None
+
+
+def test_apply_structural_plan_suppresses_levels_on_a_blocked_gate():
+    from penny.strategies.wiring import apply_structural_plan
+    b = bundle(price=1.07, day_high=1.20,
+               bars_1m=bars((1.00, 1.05, 0.98, 1.04, 100),
+                            (1.04, 1.08, 1.01, 1.07, 120)), plan=object())
+    apply_structural_plan(b, StrategyGate(passed=False, blocked_by="EXHAUSTED"))
+    assert b.plan is None
+
+
+def test_trade_plan_has_no_ghost_targets():
+    from penny.fib import fib_levels, trade_plan
+    plan = trade_plan(1.95, fib_levels(1.00, 2.00), risk_usd=50, day_high=2.10)
+    assert plan is not None
+    assert not hasattr(plan, "target1") and not hasattr(plan, "target2")
+    assert hasattr(plan, "overhead")
+
+
+def test_trade_plan_flags_stop_too_wide():
+    from penny.fib import fib_levels, trade_plan
+    # Breakout near the high -> r382 stop sits ~18% under entry, over the cap.
+    plan = trade_plan(1.95, fib_levels(1.00, 2.00), risk_usd=50, day_high=2.10)
+    assert plan is not None and (plan.viable or plan.reason == "STOP_TOO_WIDE")

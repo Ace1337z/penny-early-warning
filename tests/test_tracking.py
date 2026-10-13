@@ -124,8 +124,8 @@ def test_a_trade_plan_object_is_accepted_not_just_a_dict(db):
     from penny.fib import TradePlan
     tr = _tracker(db)
     plan = TradePlan(mode="breakout", entry_low=1.00, entry_high=1.02, entry=1.01,
-                     stop=0.95, target1=1.15, target2=1.30, risk_per_share=0.06,
-                     reward_risk=2.5, shares=800)
+                     stop=0.95, risk_per_share=0.06, reward_risk=2.5, shares=800,
+                     overhead=[1.15, 1.30])
     row = _run_one(tr, "GRND", 1.00, [(1.20, 1.22, 1.00), (0.95, 0.96, 0.94)], plan)
     assert row["hit_t1"] == 1
     assert row["hit_stop"] == 1

@@ -50,10 +50,12 @@ class Tracker:
 
         `plan` is either a mapping ({"stop","t1","t2"}, the shape the tests and
         the older tier path used) or a `TradePlan` object (what the gate path
-        hands over, whose fields are target1/target2/entry_low/entry_high). Read
-        both through one resolver so neither caller has to reshape it -- passing
-        the object straight into `.get()` used to raise, and the broad except
-        below turned that into a silently untracked alert.
+        hands over). Spec 4 replaced T1/T2 with structural overhead levels, so
+        the two DB columns (kept for schema stability) now carry the first and
+        second real resistance levels above the entry. Read both through one
+        resolver so neither caller has to reshape it -- passing the object
+        straight into `.get()` used to raise, and the broad except below turned
+        that into a silently untracked alert.
         """
         def _field(name, *attrs):
             if isinstance(plan, dict):
@@ -63,6 +65,12 @@ class Tracker:
                 if v is not None:
                     return v
             return None
+
+        def _overhead(i, fallback_name=None):
+            if isinstance(plan, dict):
+                return plan.get(fallback_name) if fallback_name else None
+            over = getattr(plan, "overhead", None) or []
+            return over[i] if len(over) > i else None
 
         day = day or to_et().strftime("%Y-%m-%d")
         if plan_entry_low is None:
@@ -85,8 +93,7 @@ class Tracker:
                 "plan_t2=excluded.plan_t2, status='open'",
                 (symbol.upper(), day, alert_ts, alert_price, primary, entry_trigger,
                  gate_score, plan_entry_low, plan_entry_high,
-                 _field("stop", "stop"), _field("t1", "target1"),
-                 _field("t2", "target2")))
+                 _field("stop", "stop"), _overhead(0, "t1"), _overhead(1, "t2")))
             row = self.db.query_one(
                 "SELECT id FROM alert_tracking WHERE symbol=? AND day=?",
                 (symbol.upper(), day))

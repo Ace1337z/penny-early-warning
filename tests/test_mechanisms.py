@@ -205,13 +205,14 @@ def _gate(passed=True, score=80.0, blocked_by=None):
 
 
 def test_rules_fallback_is_a_full_block_with_provenance():
-    plan = SimpleNamespace(stop=1.33, target1=1.55, target2=1.70)
+    plan = SimpleNamespace(stop=1.33, entry_low=1.44, entry_high=1.46,
+                           overhead=[1.55, 1.70])
     text = render_rules_fallback(metrics(), _gate(), bundle(plan=plan),
                                  source="rules", reason="ai: not configured")
     assert "DECISION (rules-only)" in text
     assert "VERDICT: ENTER" in text
     assert "RATING: STRONG" in text
-    assert "LEVELS: stop 1.33 | T1 1.55 | T2 1.70" in text
+    assert "LEVELS: stop (structural) 1.33 | overhead 1.55, 1.70 | entry 1.44-1.46" in text
     assert "SOURCE: rules" in text
     assert "REASON:" not in text
 

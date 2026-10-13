@@ -199,8 +199,13 @@ class Enricher:
             enr.technicals = analyze(enr.bars_1m, price)
             if enr.technicals.swing_low and enr.technicals.swing_high and price:
                 enr.fib = fib_levels(enr.technicals.swing_low, enr.technicals.swing_high)
-                enr.plan = trade_plan(price, enr.fib, self.cfg.float("RISK_USD", 50),
-                                      min_rr=self.cfg.float("MIN_RR", 2.0))
+                # Spec 4: structural plan. The swing high and the session high
+                # are the first real overhead levels above the entry.
+                enr.plan = trade_plan(
+                    price, enr.fib, self.cfg.float("RISK_USD", 50),
+                    min_rr=self.cfg.float("MIN_RR", 2.0),
+                    day_high=quote.get("high_price") or enr.technicals.swing_high,
+                    prior_highs=[enr.technicals.swing_high])
         return enr
 
     @staticmethod

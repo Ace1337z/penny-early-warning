@@ -28,17 +28,25 @@ class FibLevels:
 
 @dataclass
 class TradePlan:
+    """The trade plan (Spec 4). Structural levels, never fixed percentages.
+
+    ``target1``/``target2`` are gone (Spec 4.2): a percentage target is a ghost,
+    so the plan carries ``overhead`` -- the real resistance levels above the
+    entry -- and the reader trails instead of aiming at a number. ``stop`` is a
+    structural low, not a percentage.
+    """
+
     mode: str                     # "pullback" | "breakout"
     entry_low: float
     entry_high: float
     entry: float                  # representative entry used for sizing
     stop: float
-    target1: float
-    target2: float
     risk_per_share: float
-    reward_risk: Optional[float]
     shares: int
-    viable: bool = True           # False when R:R < the configured minimum
+    overhead: list[float] = field(default_factory=list)
+    reward_risk: Optional[float] = None   # kept for callers; sized off overhead
+    viable: bool = True           # False when the stop was too wide
+    reason: str = ""              # why not viable (e.g. STOP_TOO_WIDE)
 
     def as_dict(self) -> dict:
         return {
@@ -47,23 +55,24 @@ class TradePlan:
             "entry_high": round(self.entry_high, 5),
             "entry": round(self.entry, 5),
             "stop": round(self.stop, 5),
-            "target1": round(self.target1, 5),
-            "target2": round(self.target2, 5),
             "risk_per_share": round(self.risk_per_share, 5),
-            "reward_risk": round(self.reward_risk, 2) if self.reward_risk else None,
             "shares": self.shares,
+            "overhead": [round(v, 5) for v in self.overhead],
+            "reward_risk": round(self.reward_risk, 2) if self.reward_risk else None,
             "viable": self.viable,
+            "reason": self.reason,
         }
 
     def text(self, risk_usd: float) -> str:
-        rr = f"{self.reward_risk:.1f}:1" if self.reward_risk else "n/a"
+        over = ", ".join(f"{v:.4f}" for v in self.overhead) or "none overhead"
         out = (
             f"{self.mode.upper()} plan | entry {self.entry_low:.4f}-{self.entry_high:.4f} "
-            f"| stop {self.stop:.4f} | T1 {self.target1:.4f} | T2 {self.target2:.4f} "
-            f"| R:R {rr} | {self.shares} shares for ${risk_usd:.0f} risk"
+            f"| stop (structural) {self.stop:.4f} | risk/share "
+            f"{self.risk_per_share:.4f} | {self.shares} shares for ${risk_usd:.0f} risk "
+            f"| overhead: {over} | trail 1m higher-lows, no fixed targets"
         )
         if not self.viable:
-            out += " | NO TRADE: R:R below minimum"
+            out += f" | NO TRADE: {self.reason or 'R:R below minimum'}"
         return out
 
 
@@ -78,34 +87,41 @@ def fib_levels(swing_low: float, swing_high: float) -> FibLevels:
 
 
 def trade_plan(price: float, levels: FibLevels, risk_usd: float = 50.0,
-               min_rr: Optional[float] = None) -> Optional[TradePlan]:
-    """Entry/stop/targets from the Fibonacci swing (6.9). None if risk per share <= 0.
+               min_rr: Optional[float] = None,
+               day_high: Optional[float] = None,
+               prior_highs: Optional[list] = None,
+               mode: str = "CONTINUATION") -> Optional[TradePlan]:
+    """Structural entry/stop/overhead plan (Spec 4). None if the stop is unusable.
 
-    `min_rr` marks the plan as not viable when the reward:risk on T1 falls below
-    it. The numbers still render -- an operator wants to see *why* there is no
-    trade -- but nothing downstream may treat it as a recommendation.
+    Fixed-percentage targets are gone (Spec 4.2): the plan carries the real
+    resistance above the entry (``overhead``) instead of T1/T2. The stop is the
+    swing level (Spec 4.3), and a stop wider than the mode's cap is flagged
+    STOP_TOO_WIDE and marked not viable -- the numbers still render so the
+    reader sees why, but nothing may treat it as a recommendation.
     """
     if price <= 0 or levels.range <= 0:
         return None
+    from .strategies.indicators import overhead_levels
+    from .strategies.levels import (CONT_STOP_MAX_PCT, REVERSAL_STOP_MAX_PCT,
+                                    REVERSAL)
+
     high = levels.swing_high
     low = levels.swing_low
     rng = levels.range
     r382 = levels.retracements.get("38.2")
     r500 = levels.retracements.get("50.0")
     r618 = levels.retracements.get("61.8")
-    t1 = levels.extensions.get("127.2")
-    t2 = levels.extensions.get("161.8")
-    if None in (r382, r500, r618, t1, t2):
+    if None in (r382, r500, r618):
         return None
 
     if price <= high - 0.3 * rng:
-        mode = "pullback"
+        leg = "pullback"
         entry_low = min(r382, r500)
         entry_high = max(r382, r500)
         entry = (entry_low + entry_high) / 2.0
         stop = r618 * 0.99
     else:
-        mode = "breakout"
+        leg = "breakout"
         entry_low = high * 1.003
         entry_high = high * 1.010
         entry = (entry_low + entry_high) / 2.0
@@ -115,12 +131,26 @@ def trade_plan(price: float, levels: FibLevels, risk_usd: float = 50.0,
     if risk <= 0:
         return None
     shares = max(0, int(risk_usd / risk))
-    rr = (t1 - entry) / risk if risk > 0 else None
-    viable = min_rr is None or (rr is not None and rr >= min_rr)
+
+    # Spec 4.3: the stop must sit inside the mode's cap.
+    cap = REVERSAL_STOP_MAX_PCT if mode == REVERSAL else CONT_STOP_MAX_PCT
+    stop_pct = (entry - stop) / entry * 100.0
+    viable = stop_pct <= cap
+    reason = "" if viable else "STOP_TOO_WIDE"
+
+    # Spec 4.2: real overhead supply, not a percentage target.
+    overhead = overhead_levels(entry, day_high, prior_highs=prior_highs,
+                               extra=[high, r618])
+
+    # R:R is retained for callers that keyed off it, computed against the first
+    # real overhead level (the nearest supply) rather than a ghost target.
+    first_over = overhead[0] if overhead else None
+    rr = ((first_over - entry) / risk) if (first_over and risk > 0) else None
+
     return TradePlan(
-        mode=mode, entry_low=entry_low, entry_high=entry_high, entry=entry, stop=stop,
-        target1=t1, target2=t2, risk_per_share=risk, reward_risk=rr, shares=shares,
-        viable=viable,
+        mode=leg, entry_low=entry_low, entry_high=entry_high, entry=entry, stop=stop,
+        risk_per_share=risk, shares=shares, overhead=overhead, reward_risk=rr,
+        viable=viable, reason=reason,
     )
 
 

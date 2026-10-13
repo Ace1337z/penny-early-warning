@@ -120,6 +120,11 @@ def metrics_to_bundle(m, *, enr=None, cfg=None, now=None, history=None,
     return b
 
 
+# Back-compat no-op kept for callers that referenced the old hook name.
+def _attach_structural_plan(b, cfg) -> None:  # pragma: no cover
+    return None
+
+
 def _scaled_plan(plan, multiplier: float):
     """A copy of the plan with its share count scaled by ``multiplier`` (Spec 3.3)."""
     import copy
@@ -199,7 +204,38 @@ def run_gate(m, *, enr=None, cfg=None, now=None, history=None) -> tuple[Strategy
         time_filter=cfg.bool("TIME_FILTER_ENABLED", True) if cfg else True,
         **gate_limits(cfg),
     )
+    apply_structural_plan(b, gate, cfg)
     return gate, b
+
+
+def apply_structural_plan(b, gate, cfg=None) -> None:
+    """Spec 4: put the structural plan on the bundle, or suppress levels.
+
+    Called once the gate has decided the setup and its mode. When there is no
+    trade -- a blocked/non-passing gate -- the plan is cleared to None so no
+    stop or target is ever rendered for a non-trade (Spec 4.1). With a real
+    setup, the deterministic structural stop and the overhead levels replace the
+    Fibonacci plan (Spec 4.2/4.3).
+    """
+    from .candles import clean_bars
+    from .confirmation import trade_class_for
+    from .levels import levels_allowed, plan_from_bars
+
+    if not levels_allowed(gate):
+        b.plan = None
+        return
+    bars = clean_bars(getattr(b, "bars_1m", None))
+    if not bars:
+        return
+    closed = bars[:-1] if len(bars) >= 2 else bars
+    mode = trade_class_for(gate)
+    risk_usd = cfg.float("RISK_USD", 50.0) if cfg else 50.0
+    plan = plan_from_bars(
+        price=float(getattr(b, "price", 0.0) or 0.0), bars=closed, mode=mode,
+        day_high=getattr(b, "day_high", None),
+        prior_highs=getattr(b, "prior_highs", None), pivots=getattr(b, "pivots", None),
+        risk_usd=risk_usd)
+    b.plan = plan  # None when the stop was unusable or STOP_TOO_WIDE
 
 
 def gate_limits(cfg) -> dict:

@@ -472,14 +472,18 @@ def render_rules_fallback(m, gate, bundle, *, source: str, reason: str,
 
     plan = getattr(bundle, "plan", None) if bundle is not None else None
     if plan is not None and getattr(plan, "stop", None):
-        levels = f"stop {plan.stop:.2f}"
-        if getattr(plan, "target1", None):
-            levels += f" | T1 {plan.target1:.2f}"
-        if getattr(plan, "target2", None):
-            levels += f" | T2 {plan.target2:.2f}"
+        levels = f"stop (structural) {plan.stop:.2f}"
+        overhead = getattr(plan, "overhead", None) or []
+        if overhead:
+            levels += " | overhead " + ", ".join(f"{v:.2f}" for v in overhead[:3])
+        else:
+            levels += " | no overhead supply mapped"
+        entries = getattr(plan, "entry_low", None), getattr(plan, "entry_high", None)
+        if entries[0] and entries[1]:
+            levels += f" | entry {entries[0]:.2f}-{entries[1]:.2f}"
         levels = f"LEVELS: {levels}"
     else:
-        levels = "LEVELS: none computed"
+        levels = "LEVELS: none -- no trade"
 
     lines = [
         "\u2500\u2500 DECISION (rules-only) \u2500",
