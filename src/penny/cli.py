@@ -1,4 +1,5 @@
-"""Command line interface: setup, set, config, run, doctor, simulate, status, models, journal."""
+"""Command line interface: setup, set, config, run, doctor, simulate, status, models, journal,
+update."""
 
 from __future__ import annotations
 
@@ -19,37 +20,14 @@ from .util import mask, session_for
 log = logging.getLogger(__name__)
 
 PROMPTS: dict[str, tuple[str, bool, str]] = {
-    "FINVIZ_TOKEN": ("Finviz Elite API token (all market data: universe, movers, quotes)", True,
-                     "Finviz Elite account, API/export section"),
     "TELEGRAM_TOKEN": ("Telegram bot token (alerts and commands)", True, "@BotFather"),
     "TELEGRAM_CHAT_ID": ("Telegram chat id", True, "detected automatically after a message"),
-    "AI_BASE_URL": ("AI gateway base URL (OpenAI-compatible, e.g. https://host/v1)", False,
-                    "the provider's base URL; /set can also change it later"),
-    "AI_KEY": ("AI gateway key", False, "the AI gateway account; can also be set later with /set"),
-    "AI_MODEL": ("The one model that makes the decision call", False,
-                  "the provider's model id, e.g. deepseek-v4.1-flash"),
-    "SEC_USER_AGENT": ("SEC contact as 'Name email' (required for SEC EDGAR)", False,
-                       "your own name and email"),
-    "ALPACA_KEY": ("Alpaca key id (optional: candles fallback, news)", False, "Alpaca dashboard"),
-    "ALPACA_SECRET": ("Alpaca secret (optional)", False, "Alpaca dashboard"),
-    "FINNHUB_KEY": ("Finnhub key (optional: news)", False, "finnhub.io"),
-    "HALALTERMINAL_API_KEY": ("halalterminal.com API key (optional: Shariah status)", False,
-                              "halalterminal.com dashboard"),
-    "BACKUP_PASSPHRASE": ("Backup passphrase (required for off-server backups)", False,
-                          "chosen by you; store it safely"),
-    "BACKUP_REMOTE": ("Off-server backup destination (rclone remote or a directory)", False,
-                      "your object storage, SFTP or cloud drive"),
-    "GITHUB_TOKEN": ("GitHub read-only token (only for a private repository)", False,
-                     "GitHub settings"),
 }
 
-# Only Telegram is required at install time, so the bot is reachable and every other
-# key can be entered later with /set. Everything else here is optional.
-SETUP_ORDER = [
-    "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "FINVIZ_TOKEN", "AI_BASE_URL", "AI_KEY",
-    "AI_MODEL", "SEC_USER_AGENT", "ALPACA_KEY", "ALPACA_SECRET", "FINNHUB_KEY",
-    "HALALTERMINAL_API_KEY", "BACKUP_PASSPHRASE", "BACKUP_REMOTE", "GITHUB_TOKEN",
-]
+# Setup asks for Telegram only: it is the one thing that must be set for the bot to be
+# reachable. Every other key (Finviz, AI, SEC, Alpaca, Finnhub, halalterminal, GitHub)
+# is optional and can be entered later from Telegram with /set KEY VALUE.
+SETUP_ORDER = ["TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"]
 
 
 # --- helpers ----------------------------------------------------------------
@@ -114,12 +92,10 @@ def cmd_setup(args) -> int:
         if value:
             cfg.set(key, value)
 
-    if cfg.raw("AI_BASE_URL") and cfg.raw("AI_KEY"):
-        _discover_models(cfg)
-
     cfg.save()
     print(f"\nconfiguration written to {cfg.path} (mode 600)")
-    print("Anything you skipped can be set later from Telegram: /set KEY VALUE, /keys to list.")
+    print("Everything else (Finviz, AI, SEC, ...) is optional and can be set later from")
+    print("Telegram: /set KEY VALUE. /keys lists what is configured.")
     _post_setup_checks(cfg, args)
     return 0
 
@@ -137,42 +113,6 @@ def _detect_chat_id(cfg: Config) -> Optional[str]:
     else:
         print("could not detect the chat id; you can enter it manually")
     return chat_id
-
-
-def _discover_models(cfg: Config) -> None:
-    """Pick the one model that will make the decision calls.
-
-    There is no panel and no leaderboard any more, so this is a single choice.
-    The first model the provider lists is offered as the default because there is
-    no evidence-based way to rank a provider's own catalogue from here.
-    """
-    from .ai.gateway import AIGateway
-    gateway = AIGateway(cfg, cfg.secrets())
-    try:
-        models = gateway.list_models()
-    except Exception as exc:  # noqa: BLE001
-        print(f"\nCould not read the model list from the provider ({exc}).")
-        print("Enter the model id to use for decisions.")
-        raw = input("model id: ").strip()
-        if raw:
-            cfg.set("AI_MODEL", raw.split(",")[0].strip())
-        return
-
-    print(f"\nThe provider lists {len(models)} models.")
-    for m in models[:20]:
-        print(f"  {m}")
-    current = cfg.raw("AI_MODEL")
-    if current and current in models:
-        print(f"\ncurrently in use: {current}")
-        return
-    default = models[0] if models else ""
-    if not default:
-        print("The provider listed no models. Set one manually with: "
-              "penny config set AI_MODEL <id>")
-        return
-    print(f"\nOne model makes the decision calls. Suggested: {default}")
-    raw = input(f"model id [{default}]: ").strip() or default
-    cfg.set("AI_MODEL", raw.split(",")[0].strip())
 
 
 def _post_setup_checks(cfg: Config, args) -> None:
@@ -327,9 +267,6 @@ def cmd_status(args) -> int:
     runtime = build(cfg, with_engine=True, console_logs=False)
     try:
         print(runtime.engine.status_text())
-        age = runtime.backup.last_verified_age_hours() if runtime.backup else None
-        print(f"backup: {age:.1f} h since last verified" if age is not None
-              else "backup: none yet")
         counts = runtime.state.row_counts()
         print("state tables: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     finally:
@@ -411,46 +348,6 @@ def cmd_journal(args) -> int:
     return 0
 
 
-def cmd_backup(args) -> int:
-    cfg = _config(args)
-    from .runtime import build
-    runtime = build(cfg, with_engine=False, console_logs=False)
-    try:
-        if args.action == "now":
-            result = runtime.backup.run(args.kind)
-            print(f"{result.status}: {result.path} ({result.size / 1024:.0f} KB) "
-                  f"{result.note}")
-            return 0 if result.status == "ok" else 1
-        if args.action == "list":
-            print(runtime.backup.health_text())
-            return 0
-        if args.action == "drill":
-            result = runtime.backup.drill()
-            print(json.dumps(result, indent=2, default=str))
-            return 0 if result.get("ok") else 1
-    finally:
-        runtime.close()
-    return 0
-
-
-def cmd_restore(args) -> int:
-    cfg = _config(args)
-    from .runtime import build
-    runtime = build(cfg, with_engine=False, console_logs=False)
-    try:
-        print(f"restoring '{args.source}' (scope {args.scope}) - this is destructive")
-        if not args.yes:
-            confirm = input("type RESTORE to continue: ").strip()
-            if confirm != "RESTORE":
-                print("aborted")
-                return 1
-        result = runtime.backup.restore(args.source, scope=args.scope)
-        print(json.dumps(result, indent=2, default=str))
-        return 0 if result.get("ok") else 1
-    finally:
-        runtime.close()
-
-
 # --- updater helpers --------------------------------------------------------
 
 def _git_available() -> bool:
@@ -509,15 +406,6 @@ def _update_git(cfg: Config, args, install_dir: Path, version: str) -> int:
     if not remote_head:
         print(f"could not resolve {fetch_msg} after fetching; nothing was changed")
         return 1
-
-    # Back up the data before touching a single file (matches the archive path).
-    if not args.no_backup:
-        from .runtime import build
-        runtime = build(cfg, with_engine=False, console_logs=False)
-        try:
-            runtime.backup.run("pre-update")
-        finally:
-            runtime.close()
 
     if not changed and version == "main":
         print(f"already up to date at {local_head or remote_head} (origin/main); "
@@ -583,14 +471,6 @@ def _update_archive(cfg: Config, args, install_dir: Path, version: str) -> int:
         if not (new_src / "src" / "penny").exists():
             print("archive did not look like penny-early-warning; aborting")
             return 1
-
-        if not args.no_backup:
-            from .runtime import build
-            runtime = build(cfg, with_engine=False, console_logs=False)
-            try:
-                runtime.backup.run("pre-update")
-            finally:
-                runtime.close()
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         rollback_dir = install_dir / ".rollback" / stamp
@@ -762,23 +642,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--top", type=int, default=15)
     p.set_defaults(func=cmd_journal)
 
-    p = sub.add_parser("backup", help="backups")
-    p.add_argument("action", nargs="?", default="now", choices=["now", "list", "drill"])
-    p.add_argument("--kind", default="manual")
-    p.set_defaults(func=cmd_backup)
-
-    p = sub.add_parser("restore", help="restore a backup (destructive)")
-    p.add_argument("source", help="a path, a remote, or 'latest'")
-    p.add_argument("--scope", default="full",
-                   choices=["full", "learning", "journal"])
-    p.add_argument("--yes", action="store_true")
-    p.set_defaults(func=cmd_restore)
-
     p = sub.add_parser("update", help="update the installation (git pull when it is a checkout)")
     p.add_argument("--version", default=None)
     p.add_argument("--install-dir", default=None)
     p.add_argument("--private", action="store_true", help="use the GitHub read-only token")
-    p.add_argument("--no-backup", action="store_true")
     p.set_defaults(func=cmd_update)
 
     p = sub.add_parser("rollback", help="restore the previous version")

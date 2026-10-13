@@ -18,14 +18,11 @@
 #   PENNY_INSTALL_DIR=/opt/penny
 #   PENNY_VERSION=main            # or a tag such as v1.0.0
 #   PENNY_URL=https://github.com/Ace1337z/penny-early-warning
-#   TELEGRAM_TOKEN=... TELEGRAM_CHAT_ID=...   # required to reach the bot
-#   FINVIZ_TOKEN=...              # optional here; /set FINVIZ_TOKEN works later
-#   AI_BASE_URL=... AI_KEY=... AI_MODELS=... SEC_USER_AGENT="Name email" ...
-#   GITHUB_TOKEN=...              # only for a private repository
-#   PENNY_RESTORE_FROM=... PENNY_BACKUP_PASSPHRASE=...   # optional restore
+#   TELEGRAM_TOKEN=... TELEGRAM_CHAT_ID=...   # the only required credentials
 #
-# Only the Telegram bot token and chat id are required up front, so the bot can
-# then receive every other key. Anything left empty can be set from the chat with
+# Setup asks for Telegram only, so the bot can be reached and every other key
+# (Finviz, AI, SEC, Alpaca, Finnhub, halalterminal, GitHub) can be set from the
+# chat afterwards with
 #   /set FINVIZ_TOKEN <token>        /keys        /help
 #
 set -euo pipefail
@@ -88,56 +85,28 @@ info "install directory: $INSTALL_DIR"
 echo
 info "Step 1/9: credentials (asked before anything is downloaded)"
 echo "Secrets are read with hidden input and are never echoed."
-echo "Only Telegram is required here; everything else can be set later with /set KEY VALUE."
+echo "Only Telegram is required; every other key can be set later with /set KEY VALUE."
 
 if [[ "${PENNY_NONINTERACTIVE:-0}" == "1" || ! -t 0 ]]; then
     info "non-interactive mode: reading values from the environment"
     TELEGRAM_TOKEN="${TELEGRAM_TOKEN:-}"
     TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
-    FINVIZ_TOKEN="${FINVIZ_TOKEN:-}"
-    AI_BASE_URL="${AI_BASE_URL:-}"
-    AI_KEY="${AI_KEY:-}"
-    AI_MODELS="${AI_MODELS:-}"
-    SEC_USER_AGENT="${SEC_USER_AGENT:-}"
-    ALPACA_KEY="${ALPACA_KEY:-}"; ALPACA_SECRET="${ALPACA_SECRET:-}"
-    FINNHUB_KEY="${FINNHUB_KEY:-}"
-    HALALTERMINAL_API_KEY="${HALALTERMINAL_API_KEY:-}"
-    BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE:-}"; BACKUP_REMOTE="${BACKUP_REMOTE:-}"
-    GITHUB_TOKEN="${GITHUB_TOKEN:-}"
-    PENNY_RESTORE_FROM="${PENNY_RESTORE_FROM:-}"
 else
     ask "Telegram bot token (@BotFather)" TELEGRAM_TOKEN 1 1
     TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
-    echo
-    info "the bot can set these later with /set KEY VALUE; fill them in now if you have them"
-    ask "Finviz Elite API token (all market data: universe and movers)" FINVIZ_TOKEN 1 0
-    ask "AI gateway base URL" AI_BASE_URL 0 0
-    ask "AI gateway key" AI_KEY 1 0
-    ask "Active AI panel model ids (comma separated, e.g. a,b,c)" AI_MODELS 0 0
-    ask "SEC contact as 'Name email' (required for SEC EDGAR)" SEC_USER_AGENT 0 0
-    echo
-    info "optional sources (press Enter to skip)"
-    ask "Alpaca key id (candles fallback, news)" ALPACA_KEY 1 0
-    ask "Alpaca secret" ALPACA_SECRET 1 0
-    ask "Finnhub key (news)" FINNHUB_KEY 1 0
-    ask "halalterminal.com API key (Shariah status)" HALALTERMINAL_API_KEY 1 0
-    echo
-    ask "Backup passphrase (required for off-server backups)" BACKUP_PASSPHRASE 1 0
-    ask "Off-server backup destination (rclone remote or a directory)" BACKUP_REMOTE 0 0
-    if [[ -n "$BACKUP_PASSPHRASE" ]]; then
-        echo
-        warn "Store this passphrase somewhere safe: encrypted backups cannot be read without it."
-        confirm "Have you stored the passphrase safely?" || fail "passphrase not confirmed"
-    fi
-    if [[ "$PENNY_URL" == *"github.com"* ]]; then
-        ask "GitHub read-only token (only for a private repository)" GITHUB_TOKEN 1 0
-    fi
-    echo
-    if confirm "Restore the learning state from an existing backup?"; then
-        ask "Backup source (a path, an rclone remote, or 'latest')" PENNY_RESTORE_FROM 0 1
-        ask "Backup passphrase" BACKUP_PASSPHRASE 1 1
-    fi
 fi
+
+# Every optional credential is read from the environment only (not prompted). Set
+# any of these to pre-fill them; otherwise use /set KEY VALUE from the chat.
+FINVIZ_TOKEN="${FINVIZ_TOKEN:-}"
+AI_BASE_URL="${AI_BASE_URL:-}"
+AI_KEY="${AI_KEY:-}"
+AI_MODELS="${AI_MODELS:-}"
+SEC_USER_AGENT="${SEC_USER_AGENT:-}"
+ALPACA_KEY="${ALPACA_KEY:-}"; ALPACA_SECRET="${ALPACA_SECRET:-}"
+FINNHUB_KEY="${FINNHUB_KEY:-}"
+HALALTERMINAL_API_KEY="${HALALTERMINAL_API_KEY:-}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
 # --- 2. system packages ----------------------------------------------------
 info "Step 2/9: system packages"
@@ -192,7 +161,6 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 export TELEGRAM_TOKEN TELEGRAM_CHAT_ID FINVIZ_TOKEN AI_BASE_URL AI_KEY
 export AI_MODELS SEC_USER_AGENT ALPACA_KEY ALPACA_SECRET FINNHUB_KEY HALALTERMINAL_API_KEY
-export BACKUP_PASSPHRASE BACKUP_REMOTE
 "$PENNY" --config "$CONFIG_FILE" setup --non-interactive --skip-doctor
 chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 
@@ -234,11 +202,6 @@ echo
 # --- 9. start --------------------------------------------------------------
 info "Step 9/9: start the service"
 if command -v systemctl >/dev/null 2>&1 && [[ -n "$SUDO" || "$(id -u)" -eq 0 ]]; then
-    if [[ -n "${PENNY_RESTORE_FROM:-}" ]]; then
-        info "restoring the learning state before the first run"
-        "$PENNY" --config "$CONFIG_FILE" restore "$PENNY_RESTORE_FROM" --scope full --yes || \
-            warn "restore failed; starting with an empty learning state"
-    fi
     $SUDO systemctl restart "$SERVICE_NAME"
     sleep 2
     $SUDO systemctl --no-pager status "$SERVICE_NAME" | head -n 12 || true
